@@ -12,3 +12,4 @@ Each ADR has Context / Decision / Consequences / Status. Add a new `NNNN-<slug>.
 | [0006](0006-semgrep-svelte-and-rule-tests.md) | Semgrep coverage of Svelte files, spelling variants and rule self-tests | Accepted |
 | [0007](0007-permission-request-popup-lifecycle.md) | Popup does no work after `permissions.request`; the service worker completes the flow | Accepted |
 | [0008](0008-crypto-primitives-details.md) | Crypto primitive details (strict base64, uniform DecryptError, 32-byte keys, AAD delimiter) | Accepted |
+| [0009](0009-draft-sealing-details.md) | Draft sealing details (ECDH P-256 key schedule, PKCS#8 helpers, public JWK validation) | Accepted |
