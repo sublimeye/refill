@@ -15,7 +15,7 @@ Probe (a), run manually in Brave 1.97.56 (Chromium 155.0.8059.40) on macOS 27.0.
 ## Consequences
 - The passphrase stays mandatory. It is the recovery path if the passkey is lost, removed or unavailable, and the only wrap created at onboarding.
 - The only confirmed working path is Apple Passwords (iCloud Keychain). With iCloud Keychain sync on, that passkey syncs across the user's Apple ID devices, so Touch ID is not device-bound. The spec §8.3 disclosure applies and must appear on the Touch ID enable screen.
-- Third-party passkey managers such as 1Password do not work for this origin and flow (1Password failed to save the passkey). The enable-Touch-ID UI must tell the user to choose Apple Passwords when Brave asks where to save, and must handle a failed or cancelled enrolment without changing the vault.
+- 1Password failed to save the passkey in this flow; other third-party passkey managers are untested. The enable-Touch-ID UI must tell the user to choose Apple Passwords when Brave asks where to save, and must handle a failed or cancelled enrolment without changing the vault.
 - Not verified: Chrome's local profile authenticator (optional M0 row, still pending) and non-Apple platforms.
 - The probe ran under its own path-derived extension origin. The result is expected to hold for Refill's origin, but it must be re-checked with the Refill build during Plan 6.
 - e2e tests use the CDP virtual authenticator (`WebAuthn.addVirtualAuthenticator` with `hasPrf: true`). Real hardware is checked in a manual release checklist.

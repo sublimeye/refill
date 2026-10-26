@@ -1,7 +1,7 @@
 # ADR 0007: Popup does no work after `permissions.request`; the service worker completes the flow
 
 ## Context
-Site enablement (spec §3.1) starts in the action popup, which calls `chrome.permissions.request` (it needs a user gesture). The browser permission dialog can take focus from the popup and close it, which would kill any code waiting after the `await`. M0 probe (c) tested this in Brave 1.97.56 (Chromium 155.0.8059.40, macOS 27.0.1): the probe wrote a `before` marker, awaited `permissions.request`, then tried to write an `after` marker. Only `before` was present (`{"before":1793043521461}`). Code after the await did not run. See `docs/spikes/m0-results.md`.
+Site enablement (spec §3.1) starts in the action popup, which calls `chrome.permissions.request` (it needs a user gesture). The browser permission dialog can take focus from the popup and close it, which would kill any code waiting after the `await`. M0 probe (c) tested this in Brave 1.97.56 (Chromium 155.0.8059.40, macOS 27.0.1): the probe wrote a `before` marker, awaited `permissions.request`, then tried to write an `after` marker. Only `before` was present (`{"before":1793043521461}`). Code after the await did not run. The expected cause per spec §3.1 is the popup closing when the permission dialog takes focus; this was not directly observed (the evidence is only the missing `after` marker). See `docs/spikes/m0-results.md`.
 
 ## Decision
 Keep the spec §3.1 design:
