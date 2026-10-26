@@ -11,17 +11,8 @@ export const KEYS = {
 export const profileKey = (id: string): string => "p:" + id;
 export const draftKey = (id: string): string => "d:" + id;
 
-// One queue shared by every write and by withStoreLock.
+// One queue shared by every public write and by withStoreLock.
 const enqueue = createQueue();
-
-// True exactly while a withStoreLock job is running. The queue runs one job
-// at a time, so a single flag suffices. Store calls made while it is set are
-// treated as part of the held lock and run directly instead of queueing
-// behind the job that is waiting on them (which would deadlock).
-let lockHeld = false;
-
-const exclusive = <T>(job: () => Promise<T>): Promise<T> =>
-  lockHeld ? job() : enqueue(job);
 
 /** Raw read; callers validate the shape. `undefined` when absent. */
 export async function getItem(key: string): Promise<unknown> {
@@ -41,28 +32,63 @@ export async function getMany(
   return out;
 }
 
+/** Queued: waits for any running `withStoreLock` job and earlier writes. */
 export function setItems(items: Record<string, unknown>): Promise<void> {
-  return exclusive(() => browser.storage.local.set(items));
+  return enqueue(() => browser.storage.local.set(items));
 }
 
+/** Queued: waits for any running `withStoreLock` job and earlier writes. */
 export function removeItems(keys: string[]): Promise<void> {
-  return exclusive(() => browser.storage.local.remove(keys));
+  return enqueue(() => browser.storage.local.remove(keys));
 }
 
 /**
- * Runs `job` exclusively on the shared write queue so a read-modify-write
- * sequence is atomic with respect to other store writes. `setItems` and
- * `removeItems` (and a nested `withStoreLock`) called from inside the job run
- * directly. See ADR 0011 for the limitation of this approach.
+ * Storage access handed to a `withStoreLock` job. Methods hit storage
+ * directly (they are already inside the queue slot) and reject once the job
+ * has settled.
  */
-export function withStoreLock<T>(job: () => Promise<T>): Promise<T> {
-  return exclusive(async () => {
-    if (lockHeld) return job(); // nested: already holding the lock
-    lockHeld = true;
+export interface StoreTx {
+  getItem(key: string): Promise<unknown>;
+  getMany(prefix: string): Promise<Record<string, unknown>>;
+  setItems(items: Record<string, unknown>): Promise<void>;
+  removeItems(keys: string[]): Promise<void>;
+}
+
+/**
+ * Runs `job` exclusively on the shared queue: no other queued write or lock
+ * job runs until it settles, so a read-modify-write through `tx` is atomic
+ * with respect to every other store write.
+ *
+ * Inside the job, write ONLY through `tx`. Calling the public `setItems` /
+ * `removeItems` or nesting `withStoreLock` inside a job DEADLOCKS: it queues
+ * behind the job that is awaiting it, and JavaScript has no async context to
+ * tell it apart from an unrelated caller (see ADR 0011).
+ */
+export function withStoreLock<T>(job: (tx: StoreTx) => Promise<T>): Promise<T> {
+  return enqueue(async () => {
+    let open = true;
+    const live = <A extends unknown[], R>(
+      fn: (...args: A) => Promise<R>,
+    ): ((...args: A) => Promise<R>) => {
+      return async (...args: A) => {
+        if (!open) {
+          throw new Error("store tx used after withStoreLock job settled");
+        }
+        return fn(...args);
+      };
+    };
+    const tx: StoreTx = {
+      getItem: live(getItem),
+      getMany: live(getMany),
+      setItems: live((items: Record<string, unknown>) =>
+        browser.storage.local.set(items),
+      ),
+      removeItems: live((keys: string[]) => browser.storage.local.remove(keys)),
+    };
     try {
-      return await job();
+      return await job(tx);
     } finally {
-      lockHeld = false;
+      open = false;
     }
   });
 }
