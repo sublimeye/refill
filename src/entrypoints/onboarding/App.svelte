@@ -4,6 +4,7 @@
   import { scorePassphrase } from "../../lib/passphrase/strength";
 
   let passphrase = $state("");
+  let confirmation = $state("");
   let acknowledged = $state(false);
   let busy = $state(false);
   let done = $state(false);
@@ -11,7 +12,10 @@
   let message: HTMLElement | undefined = $state();
 
   const strength = $derived(scorePassphrase(passphrase));
-  const canCreate = $derived(acknowledged && strength.acceptable && !busy);
+  const matches = $derived(passphrase === confirmation);
+  const canCreate = $derived(
+    acknowledged && strength.acceptable && matches && !busy,
+  );
 
   async function announce() {
     await tick();
@@ -23,10 +27,13 @@
     if (!canCreate) return;
     busy = true;
     error = "";
+    // Held in a local and cleared from the page at once; any failure means retyping both.
+    const attempt = passphrase;
+    passphrase = "";
+    confirmation = "";
     try {
-      const res = await sendToSw({ type: "vault-create", passphrase });
+      const res = await sendToSw({ type: "vault-create", passphrase: attempt });
       if (res.ok) {
-        passphrase = "";
         done = true;
       } else if (res.error === "exists") {
         error = "A Refill vault already exists. Open Refill from the toolbar.";
@@ -64,14 +71,33 @@
           id="passphrase"
           type="password"
           autocomplete="new-password"
+          maxlength="1024"
           aria-describedby="strength"
           bind:value={passphrase}
           disabled={busy}
         />
       </p>
-      <p id="strength" aria-live="polite">
+      <!-- Not a live region: it changes on every keystroke and would be announced constantly. -->
+      <p id="strength">
         {#if passphrase.length > 0}
           Strength: {strength.score} of 4. {strength.feedback}
+        {/if}
+      </p>
+      <p>
+        <label for="confirmation">Confirm passphrase</label><br />
+        <input
+          id="confirmation"
+          type="password"
+          autocomplete="new-password"
+          maxlength="1024"
+          aria-describedby="mismatch"
+          bind:value={confirmation}
+          disabled={busy}
+        />
+      </p>
+      <p id="mismatch">
+        {#if confirmation.length > 0 && !matches}
+          Passphrases don't match
         {/if}
       </p>
       <p>

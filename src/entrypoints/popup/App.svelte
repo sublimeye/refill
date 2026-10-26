@@ -20,10 +20,14 @@
     return s.state;
   }
 
-  async function announce(text: string) {
-    error = text;
+  async function focusMessage() {
     await tick();
     message?.focus();
+  }
+
+  async function announce(text: string) {
+    error = text;
+    await focusMessage();
   }
 
   async function refresh() {
@@ -31,16 +35,27 @@
       view = viewOf(await sendToSw({ type: "vault-status" }));
     } catch {
       view = "failed";
+      await focusMessage();
     }
+  }
+
+  async function retry() {
+    view = "loading";
+    await refresh();
   }
 
   onMount(refresh);
 
   async function setUp() {
-    await browser.tabs.create({
-      url: browser.runtime.getURL("/onboarding.html"),
-    });
-    window.close();
+    try {
+      await browser.tabs.create({
+        url: browser.runtime.getURL("/onboarding.html"),
+      });
+      window.close();
+    } catch {
+      view = "failed";
+      await focusMessage();
+    }
   }
 
   async function unlock(event: SubmitEvent) {
@@ -68,6 +83,7 @@
           break;
         case "corrupt":
           view = "corrupt";
+          await focusMessage();
           break;
         case "no-vault":
           view = "none";
@@ -108,6 +124,7 @@
     <p bind:this={message} tabindex="-1" aria-live="polite">{DAMAGED}</p>
   {:else if view === "failed"}
     <p bind:this={message} tabindex="-1" aria-live="polite">{GENERIC}</p>
+    <button type="button" onclick={retry}>Try again</button>
   {:else if view === "locked"}
     <form onsubmit={unlock}>
       <p>
@@ -116,6 +133,7 @@
           id="passphrase"
           type="password"
           autocomplete="current-password"
+          maxlength="1024"
           bind:value={passphrase}
           disabled={busy}
         />

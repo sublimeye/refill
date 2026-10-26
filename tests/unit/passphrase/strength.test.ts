@@ -27,9 +27,8 @@ it("counts length after NFC normalization, in code points", () => {
   const composed = "é".repeat(6) + "xK9#mQ";
   const decomposed = composed.normalize("NFD");
   expect(decomposed.length).toBeGreaterThan(12);
-  expect(scorePassphrase(decomposed).acceptable).toBe(
-    scorePassphrase(composed).acceptable,
-  );
+  expect(scorePassphrase(composed).acceptable).toBe(true);
+  expect(scorePassphrase(decomposed).acceptable).toBe(true);
   // 11 code points but 22 UTF-16 units: too short.
   expect(scorePassphrase("😀".repeat(11)).acceptable).toBe(false);
 });
