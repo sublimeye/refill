@@ -17,7 +17,7 @@ export function toB64(b: Uint8Array): string {
   return btoa(s);
 }
 
-/** Strict standard base64 (padded). Throws `TypeError` on anything else. */
+/** Strict canonical standard base64 (padded, zero trailing bits). Throws `TypeError` on anything else. */
 export function fromB64(s: string): Uint8Array {
   if (typeof s !== "string" || !B64_RE.test(s)) {
     throw new TypeError("invalid base64");
@@ -25,6 +25,7 @@ export function fromB64(s: string): Uint8Array {
   const bin = atob(s);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  if (toB64(out) !== s) throw new TypeError("non-canonical base64"); // non-zero trailing bits
   return out;
 }
 
@@ -36,20 +37,49 @@ export function fromUtf8(b: Uint8Array): string {
   return decoder.decode(b);
 }
 
-function sortKeys(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(sortKeys);
-  if (v !== null && typeof v === "object") {
-    const o = v as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
-    for (const k of Object.keys(o).sort()) out[k] = sortKeys(o[k]);
-    return out;
+function canon(v: unknown, stack: object[]): string {
+  if (v === null) return "null";
+  switch (typeof v) {
+    case "string":
+    case "boolean":
+      return JSON.stringify(v);
+    case "number":
+      if (!Number.isFinite(v))
+        throw new TypeError("canonicalJson: non-finite number");
+      return JSON.stringify(v);
+    case "object":
+      break;
+    default:
+      throw new TypeError(`canonicalJson: unsupported value (${typeof v})`);
   }
-  return v;
+  const o = v as object;
+  if (stack.includes(o)) throw new TypeError("canonicalJson: cyclic structure");
+  stack.push(o);
+  let out: string;
+  if (Array.isArray(o)) {
+    const parts: string[] = [];
+    for (let i = 0; i < o.length; i++) parts.push(canon(o[i], stack)); // holes read as undefined -> throw
+    out = `[${parts.join(",")}]`;
+  } else {
+    const proto = Object.getPrototypeOf(o);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new TypeError("canonicalJson: only plain objects are supported");
+    }
+    const rec = o as Record<string, unknown>;
+    const parts = Object.keys(rec)
+      .sort() // UTF-16 code-unit order; no object is rebuilt, so integer-like and "__proto__" keys are safe
+      .map((k) => `${JSON.stringify(k)}:${canon(rec[k], stack)}`);
+    out = `{${parts.join(",")}}`;
+  }
+  stack.pop();
+  return out;
 }
 
-/** JSON with object keys sorted (by UTF-16 code unit) at every level and no whitespace. */
+/**
+ * Canonical JSON: object keys in UTF-16 code-unit order at every level, no whitespace. Accepts only
+ * plain objects, arrays, strings, finite numbers, booleans and null; anything else (undefined,
+ * functions, Date, Map, class instances, bigint, symbols, non-finite numbers, cycles) throws TypeError.
+ */
 export function canonicalJson(v: unknown): string {
-  const s = JSON.stringify(sortKeys(v));
-  if (s === undefined) throw new TypeError("value is not JSON-serializable");
-  return s;
+  return canon(v, []);
 }

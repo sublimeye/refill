@@ -149,7 +149,7 @@ draft public key (plaintext) ──ECDH+HKDF──► per-draft AES key (sealing
 - **Draft sealing (exact):** per draft, generate ephemeral ECDH P-256 key `eph`;
   `ss = ECDH(eph.priv, draftPub)`; `k = HKDF-SHA256(ss, salt=32×0x00,
   info="refill/v1|draft|" + id + "|" + raw(eph.pub) + "|" + raw(draftPub))`; AES-256-GCM with
-  `AAD = "refill/v1|draft|" + id + "|" + expiresAt`. `eph.priv` is generated non-extractable and
+  `AAD = "refill/v1|draft|" + id + "|" + (expiresAt ?? "none")`. `eph.priv` is generated non-extractable and
   dropped immediately after sealing. Changing the TTL re-seals (AAD includes `expiresAt`).
 - **PRF KEK (exact):** `KEK_prf = HKDF-SHA256(prfOutput, salt=32×0x00,
   info="refill/v1|prf-kek|" + credentialId)`.
@@ -187,7 +187,7 @@ vault:integrity             AES-GCM(DEK, AAD="refill/v1|integrity")
 
 d:<random 128-bit id>
   { expiresAt|null,                                   // plaintext: enables purge while locked
-    eph:JWK, iv, ct }  // ECDH(eph, draftPub) → HKDF → AES-GCM, AAD="refill/v1|draft|<id>"
+    eph:JWK, iv, ct }  // ECDH(eph, draftPub) → HKDF → AES-GCM, AAD="refill/v1|draft|<id>|<expiresAt ?? \"none\">"
   ct = { origin, path, formFingerprint, fields:[{sig,value}], savedAt }
 ```
 - Fresh random 96-bit IV per encryption; never reused.

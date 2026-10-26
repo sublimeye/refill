@@ -14,6 +14,8 @@ describe("bytes", () => {
     expect(() => fromB64("%%%")).toThrow(TypeError);
     expect(() => fromB64("abc")).toThrow(TypeError); // bad length
     expect(() => fromB64("YW=j")).toThrow(TypeError); // padding mid-string
+    expect(() => fromB64("YR==")).toThrow(TypeError); // non-zero trailing bits
+    expect(fromB64("YQ==")).toEqual(new Uint8Array([97]));
   });
 
   it("base64 round-trips, including empty", () => {
@@ -39,6 +41,61 @@ describe("bytes", () => {
       '[{"y":[{"a":2,"b":1}],"z":1}]',
     );
     expect(canonicalJson(null)).toBe("null");
+  });
+
+  it("canonicalJson orders integer-like keys by UTF-16 code unit, not numerically", () => {
+    expect(canonicalJson({ b: 1, "10": 2, "2": 3, a: 4 })).toBe(
+      '{"10":2,"2":3,"a":4,"b":1}',
+    );
+  });
+
+  it("canonicalJson keeps an own __proto__ key and distinguishes it", () => {
+    const withProto = JSON.parse('{"__proto__":{"x":1},"a":1}') as unknown;
+    expect(canonicalJson(withProto)).toBe('{"__proto__":{"x":1},"a":1}');
+    expect(canonicalJson(withProto)).not.toBe(canonicalJson({ a: 1 }));
+  });
+
+  it("canonicalJson accepts null-prototype objects and handles unicode strings", () => {
+    const o = Object.assign(Object.create(null) as object, {
+      k: 'é\u2028\n"✓',
+    });
+    expect(canonicalJson(o)).toBe(JSON.stringify({ k: 'é\u2028\n"✓' }));
+    expect(canonicalJson({ ключ: "значение", a: "😀" })).toBe(
+      '{"a":"😀","ключ":"значение"}',
+    );
+  });
+
+  it("canonicalJson handles nested arrays/objects and primitives", () => {
+    expect(
+      canonicalJson([1, [true, null, "x"], { b: [], a: {} }, -0, 1.5]),
+    ).toBe('[1,[true,null,"x"],{"a":{},"b":[]},0,1.5]');
+  });
+
+  it("canonicalJson rejects unsupported values", () => {
+    class C {
+      x = 1;
+    }
+    const cyc: Record<string, unknown> = {};
+    cyc["self"] = cyc;
+    const bad: unknown[] = [
+      undefined,
+      { a: undefined },
+      [undefined],
+      // eslint-disable-next-line no-sparse-arrays
+      [1, , 2],
+      () => 1,
+      new Date(0),
+      new Map(),
+      new C(),
+      new Uint8Array(1),
+      NaN,
+      Infinity,
+      -Infinity,
+      10n,
+      Symbol("s"),
+      cyc,
+    ];
+    for (const v of bad) expect(() => canonicalJson(v)).toThrow(TypeError);
   });
 });
 
