@@ -15,10 +15,12 @@ export interface KdfParams {
 }
 
 export const KDF_FLOOR = { m: 65536, t: 3 } as const;
+/** Upper bounds accepted from a stored header: 256 MiB, and the calibration cap. */
+export const KDF_MAX = { m: 262144, t: 20 } as const;
 
 const SALT_BYTES = 16;
 const CALIBRATE_TARGET_MS = 500;
-const CALIBRATE_MAX_T = 20;
+const CALIBRATE_MAX_T = KDF_MAX.t;
 
 export function newKdfParams(t?: number): KdfParams {
   return {
@@ -31,21 +33,40 @@ export function newKdfParams(t?: number): KdfParams {
   };
 }
 
+/**
+ * Params come from the plaintext vault header, so every field is validated (RangeError for any
+ * failure, including wrong types): floor and upper bounds on m and t so a tampered header can
+ * neither weaken the KDF nor hang or crash unlock.
+ */
 function assertParams(params: KdfParams): void {
-  if (
-    params.alg !== "argon2id" ||
-    !(params.m >= KDF_FLOOR.m) ||
-    !(params.t >= KDF_FLOOR.t)
-  ) {
-    throw new RangeError("KDF parameters below the floor");
+  const ok =
+    params.alg === "argon2id" &&
+    params.v === 1 &&
+    params.p === 1 &&
+    Number.isSafeInteger(params.m) &&
+    params.m >= KDF_FLOOR.m &&
+    params.m <= KDF_MAX.m &&
+    Number.isSafeInteger(params.t) &&
+    params.t >= KDF_FLOOR.t &&
+    params.t <= KDF_MAX.t &&
+    saltLength(params.salt) === SALT_BYTES;
+  if (!ok) throw new RangeError("invalid KDF parameters");
+}
+
+function saltLength(salt: unknown): number {
+  try {
+    return fromB64(salt as string).length;
+  } catch {
+    return -1;
   }
 }
 
 /** Internal (exported for known-answer tests): raw 32-byte Argon2id output for the NFC-normalized passphrase. */
-export function argon2Raw(
+export async function argon2Raw(
   passphrase: string,
   params: KdfParams,
 ): Promise<Uint8Array> {
+  assertParams(params);
   return argon2id({
     password: passphrase.normalize("NFC"),
     salt: fromB64(params.salt),
@@ -61,7 +82,6 @@ export async function deriveKek(
   passphrase: string,
   params: KdfParams,
 ): Promise<CryptoKey> {
-  assertParams(params);
   const raw = await argon2Raw(passphrase, params);
   try {
     return await importAesKey(raw);

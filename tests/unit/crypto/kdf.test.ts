@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { aad } from "../../../src/lib/crypto/aad";
 import { open, seal } from "../../../src/lib/crypto/aead";
-import { fromB64, utf8, fromUtf8 } from "../../../src/lib/crypto/bytes";
+import { fromB64, toB64, utf8, fromUtf8 } from "../../../src/lib/crypto/bytes";
 import {
   KDF_FLOOR,
   argon2Raw,
@@ -87,16 +87,33 @@ describe("kdf", () => {
     SLOW,
   );
 
-  it("deriveKek rejects params below floor", async () => {
-    await expect(deriveKek("pw", params({ m: 32768 }))).rejects.toBeInstanceOf(
-      RangeError,
-    );
-    await expect(deriveKek("pw", params({ t: 2 }))).rejects.toBeInstanceOf(
-      RangeError,
-    );
-    await expect(
-      deriveKek("pw", { ...params(), alg: "argon2i" } as unknown as KdfParams),
-    ).rejects.toBeInstanceOf(RangeError);
+  describe("deriveKek and argon2Raw reject invalid params with RangeError", () => {
+    const cases: [string, Partial<KdfParams>][] = [
+      ["m below floor", { m: 32768 }],
+      ["t below floor", { t: 2 }],
+      ["m above max (256 MiB)", { m: 262145 }],
+      ["t above max (20)", { t: 21 }],
+      ["m not an integer", { m: 65536.5 }],
+      ["t not an integer", { t: 3.5 }],
+      ["m NaN", { m: NaN }],
+      ["t Infinity", { t: Infinity }],
+      ["m unsafe integer", { m: 2 ** 53 }],
+      ["alg not argon2id", { alg: "argon2i" } as unknown as Partial<KdfParams>],
+      ["v not 1", { v: 2 } as unknown as Partial<KdfParams>],
+      ["p not 1", { p: 2 } as unknown as Partial<KdfParams>],
+      ["salt 15 bytes", { salt: toB64(new Uint8Array(15)) }],
+      ["salt 17 bytes", { salt: toB64(new Uint8Array(17)) }],
+      ["salt not base64", { salt: "!!!" }],
+      ["salt not a string", { salt: 5 } as unknown as Partial<KdfParams>],
+    ];
+    it.each(cases)("%s", async (_name, over) => {
+      await expect(deriveKek("pw", params(over))).rejects.toBeInstanceOf(
+        RangeError,
+      );
+      await expect(argon2Raw("pw", params(over))).rejects.toBeInstanceOf(
+        RangeError,
+      );
+    });
   });
 
   it("newKdfParams uses a fresh 16-byte salt and clamps t to the floor", () => {
