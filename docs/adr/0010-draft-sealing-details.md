@@ -1,4 +1,4 @@
-# 0009 — Draft sealing details (ECDH P-256)
+# 0010 — Draft sealing details (ECDH P-256)
 
 ## Context
 
@@ -10,7 +10,7 @@ Spec §4.1 fixes the draft key schedule (ephemeral ECDH P-256, HKDF-SHA256, AES-
 - **Ephemeral key**: generated non-extractable and dropped when `sealDraft` returns. `SealedDraft.eph` is the public JWK reduced to `{kty, crv, x, y}`; `iv`/`ct` use the `Sealed` base64 format.
 - **Draft key pair**: the private key is generated extractable so the vault can wrap it. To keep `crypto.subtle` inside `src/lib/crypto/`, the module also exports `exportDraftPrivateKey` (PKCS#8 bytes) and `importDraftPrivateKey` (non-extractable, ECDH, usages `["deriveBits"]`) (controller ruling R4). The unlocked in-memory key is the non-extractable import.
 - **Public JWK validation**: both `sealDraft` and `openDraft` accept only `kty "EC"`, `crv "P-256"`, string `x`/`y` and no `d`, otherwise `TypeError`; only `{kty, crv, x, y}` is passed to `importKey`. A tampered vault header therefore cannot substitute a private JWK, another curve or extra members (`key_ops`, `ext`).
-- **Errors in `openDraft`**: a malformed `draftPub` (header) throws `TypeError`; anything wrong with the record (bad or swapped `eph`, changed `id`/`expiresAt`, tampered `iv`/`ct`, wrong recipient) throws `DecryptError`, uninformative as in ADR 0008. Invalid curve points in `eph` fail at `importKey` and are mapped to `DecryptError`.
+- **Errors**: a structurally invalid `draftPub` (wrong `kty`/`crv`, a `d` member, or missing `x`/`y`) throws `TypeError` from both `sealDraft` and `openDraft`. Malformed `x`/`y` bytes (not a point on the curve) surface as `DataError` from `sealDraft` and as `DecryptError` from `openDraft`. Everything wrong with the record `d` (bad or swapped `eph`, changed `id`/`expiresAt`, tampered `iv`/`ct`, wrong recipient) throws `DecryptError`, uninformative as in ADR 0008.
 - Ids containing `|` are rejected by `aad.draft` (ADR 0008) before any key work.
 
 ## Consequences
