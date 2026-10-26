@@ -1,0 +1,59 @@
+# Refill custom Semgrep rules for Svelte files (spec §8.4, ADR 0006).
+# Semgrep cannot parse .svelte, so these are generic-language regexes over the whole file
+# (script and template). Deliberately blunt: a banned word in a comment also fails.
+# Same bans as refill.yml. Run via scripts/semgrep.sh.
+rules:
+  - id: refill-svelte-no-network
+    severity: ERROR
+    languages: [generic]
+    message: Network APIs are banned in Svelte files (fetch, XMLHttpRequest, WebSocket, EventSource, sendBeacon).
+    paths:
+      include: ["/src/**/*.svelte"]
+    pattern-regex: |-
+      \b(?:fetch|sendBeacon)\s*\(|\b(?:XMLHttpRequest|WebSocket|EventSource)\b|\[\s*["'`](?:fetch|sendBeacon|XMLHttpRequest|WebSocket|EventSource)["'`]\s*\]
+
+  - id: refill-svelte-no-html-sinks
+    severity: ERROR
+    languages: [generic]
+    message: >-
+      HTML-string sinks and {@html} are banned in Svelte files. Render text, not markup.
+    paths:
+      include: ["/src/**/*.svelte"]
+    pattern-regex: |-
+      \{@html|\b(?:innerHTML|outerHTML|insertAdjacentHTML|setHTMLUnsafe|parseHTMLUnsafe)\b|\bdocument\s*(?:\.\s*write|\[\s*["'`]write)|\[\s*["'`](?:innerHTML|outerHTML|insertAdjacentHTML|setHTMLUnsafe)["'`]\s*\]
+
+  - id: refill-svelte-no-eval
+    severity: ERROR
+    languages: [generic]
+    message: Dynamic code evaluation is banned in Svelte files (eval, Function, string timers).
+    paths:
+      include: ["/src/**/*.svelte"]
+    pattern-regex: |-
+      \b(?:eval|Function)\s*\(|\bnew\s+Function\b|\b(?:setTimeout|setInterval)\s*\(\s*["'`]|\[\s*["'`](?:eval|Function)["'`]\s*\]
+
+  - id: refill-svelte-no-sync-storage
+    severity: ERROR
+    languages: [generic]
+    message: storage.sync is banned in Svelte files.
+    paths:
+      include: ["/src/**/*.svelte"]
+    pattern-regex: |-
+      \bstorage\s*(?:\.\s*sync\b|\[\s*["'`]sync["'`]\s*\])
+
+  - id: refill-svelte-no-subtle
+    severity: ERROR
+    languages: [generic]
+    message: crypto.subtle may only be used inside src/lib/crypto/ (never in Svelte files).
+    paths:
+      include: ["/src/**/*.svelte"]
+    pattern-regex: |-
+      \bcrypto\s*(?:\.\s*subtle\b|\[\s*["'`]subtle["'`]\s*\])
+
+  - id: refill-svelte-no-storage-local
+    severity: ERROR
+    languages: [generic]
+    message: storage.local may only be used inside src/lib/store/ (never in Svelte files).
+    paths:
+      include: ["/src/**/*.svelte"]
+    pattern-regex: |-
+      \bstorage\s*(?:\.\s*local\b|\[\s*["'`]local["'`]\s*\])

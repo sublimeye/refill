@@ -3,7 +3,9 @@ import ts from "typescript-eslint";
 import svelte from "eslint-plugin-svelte";
 
 export default ts.config(
-  { ignores: [".output/", ".wxt/", "node_modules/", "dist/"] },
+  {
+    ignores: [".output/", ".wxt/", "node_modules/", "dist/", ".semgrep/"],
+  },
   js.configs.recommended,
   ...ts.configs.recommended,
   ...svelte.configs["flat/recommended"],

@@ -1,5 +1,11 @@
-# Refill custom Semgrep rules (spec §8.4, §8.5). Run from the repo root:
-#   semgrep --config .semgrep/refill.yml --error src
+# Refill custom Semgrep rules for TS/JS (spec §8.4, §8.5; ADR 0005, 0006).
+#   scripts/semgrep.sh scan       scan the repo with the pinned image (what CI runs)
+#   scripts/semgrep.sh selftest   run the rule tests in .semgrep/tests and the path checks
+#
+# "Global object" prefixes (window., self., globalThis.) and bracket spellings (x["prop"]) are
+# covered via metavariable-regex on the callee/receiver text. Svelte files are covered by
+# refill-svelte.yml. Known limit: aliasing (`const f = fetch`, `const {subtle} = crypto`) is
+# not caught.
 rules:
   - id: refill-no-network
     severity: ERROR
@@ -10,21 +16,25 @@ rules:
     paths:
       include: ["/src/**"]
     pattern-either:
-      - pattern: fetch(...)
-      - pattern: window.fetch(...)
-      - pattern: self.fetch(...)
-      - pattern: globalThis.fetch(...)
-      - pattern: new XMLHttpRequest(...)
-      - pattern: new WebSocket(...)
-      - pattern: new EventSource(...)
-      - pattern: navigator.sendBeacon(...)
+      - patterns:
+          - pattern: $F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: |-
+                ^(?:(?:window|self|globalThis)\s*\.\s*)*(?:fetch|navigator\s*(?:\.\s*sendBeacon|\[\s*["']sendBeacon["']\s*\]))$|^(?:window|self|globalThis)\s*\[\s*["']fetch["']\s*\]$
+      - patterns:
+          - pattern: new $C(...)
+          - metavariable-regex:
+              metavariable: $C
+              regex: |-
+                ^(?:(?:window|self|globalThis)\s*\.\s*)*(?:XMLHttpRequest|WebSocket|EventSource)$
 
   - id: refill-no-html-sinks
     severity: ERROR
     languages: [typescript, javascript]
     message: >-
-      HTML-string sinks are banned (innerHTML, outerHTML, insertAdjacentHTML,
-      document.write). Build DOM with createElement/textContent.
+      HTML-string sinks are banned (innerHTML, outerHTML, insertAdjacentHTML, setHTMLUnsafe,
+      parseHTMLUnsafe, document.write/writeln). Build DOM with createElement/textContent.
     paths:
       include: ["/src/**"]
     pattern-either:
@@ -32,27 +42,51 @@ rules:
       - pattern: $X.innerHTML += ...
       - pattern: $X.outerHTML = ...
       - pattern: $X.outerHTML += ...
+      - pattern: $X["innerHTML"] = ...
+      - pattern: $X["innerHTML"] += ...
+      - pattern: $X["outerHTML"] = ...
+      - pattern: $X["outerHTML"] += ...
       - pattern: $X.insertAdjacentHTML(...)
-      - pattern: document.write(...)
-
-  - id: refill-no-html-sinks-svelte
-    severity: ERROR
-    languages: [generic]
-    message: >-
-      {@html} is banned in Svelte templates (HTML-string sink). Render text, not markup.
-    paths:
-      include: ["/src/**/*.svelte"]
-    pattern-regex: '\{@html'
+      - pattern: $X["insertAdjacentHTML"](...)
+      - pattern: $X.setHTMLUnsafe(...)
+      - pattern: $X["setHTMLUnsafe"](...)
+      - pattern: $X.parseHTMLUnsafe(...)
+      - pattern: $X["parseHTMLUnsafe"](...)
+      - patterns:
+          - pattern: $F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: |-
+                ^(?:(?:window|self|globalThis)\s*\.\s*)*document\s*(?:\.\s*(?:write|writeln)|\[\s*["'](?:write|writeln)["']\s*\])$
 
   - id: refill-no-eval
     severity: ERROR
     languages: [typescript, javascript]
-    message: Dynamic code evaluation is banned (eval, new Function).
+    message: >-
+      Dynamic code evaluation is banned (eval, Function constructor, string timers).
     paths:
       include: ["/src/**"]
     pattern-either:
-      - pattern: eval(...)
-      - pattern: new Function(...)
+      - patterns:
+          - pattern: $F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: |-
+                ^(?:(?:window|self|globalThis)\s*\.\s*)*(?:eval|Function)$|^(?:window|self|globalThis)\s*\[\s*["'](?:eval|Function)["']\s*\]$
+      - patterns:
+          - pattern: new $C(...)
+          - metavariable-regex:
+              metavariable: $C
+              regex: |-
+                ^(?:(?:window|self|globalThis)\s*\.\s*)*Function$
+      - patterns:
+          - pattern-either:
+              - pattern: $F("...", ...)
+              - pattern: $F(`...`, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: |-
+                ^(?:(?:window|self|globalThis)\s*\.\s*)*(?:setTimeout|setInterval)$
 
   - id: refill-no-sync-storage
     severity: ERROR
@@ -62,7 +96,11 @@ rules:
       user's Google account).
     paths:
       include: ["/src/**"]
-    pattern: $B.storage.sync
+    pattern-either:
+      - pattern: $B.storage.sync
+      - pattern: $B.storage["sync"]
+      - pattern: $B["storage"]["sync"]
+      - pattern: $B["storage"].sync
 
   - id: refill-subtle-only-in-crypto
     severity: ERROR
@@ -74,6 +112,8 @@ rules:
     pattern-either:
       - pattern: crypto.subtle
       - pattern: $X.crypto.subtle
+      - pattern: crypto["subtle"]
+      - pattern: $X.crypto["subtle"]
 
   - id: refill-storage-local-only-in-store
     severity: ERROR
@@ -83,6 +123,12 @@ rules:
     paths:
       include: ["/src/**"]
       exclude: ["/src/lib/store/**"]
-    pattern-either:
-      - pattern: browser.storage.local
-      - pattern: chrome.storage.local
+    patterns:
+      - pattern-either:
+          - pattern: $B.storage.local
+          - pattern: $B.storage["local"]
+          - pattern: $B["storage"]["local"]
+          - pattern: $B["storage"].local
+      - metavariable-regex:
+          metavariable: $B
+          regex: ^(?:.+\.)?(?:chrome|browser)$

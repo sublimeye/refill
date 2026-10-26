@@ -56,14 +56,13 @@ jobs:
           cat a.txt b.txt
           diff a.txt b.txt
 
-      # Image pinned by digest (semgrep/semgrep 1.182.0). Target is "." (not "src") so the
-      # rules' /src/** path filters resolve against the repo root even if Semgrep cannot
-      # detect the git root inside the container.
+      # scripts/semgrep.sh runs the digest-pinned image (ADR 0005). selftest proves the rules
+      # still bite (rule tests + path include/exclude); scan is the gate (ADR 0006).
+      - name: Semgrep rule self-test
+        run: scripts/semgrep.sh selftest
+
       - name: Semgrep (custom Refill rules)
-        run: |
-          docker run --rm -v "$PWD:/src" -w /src \
-            semgrep/semgrep@sha256:4a34048c04fef049f71665047f074cffb00cc3d89482f965a5cd151d589237af \
-            semgrep --config .semgrep/refill.yml --error --metrics=off .
+        run: scripts/semgrep.sh scan
 
       - name: OSV-Scanner
         uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
