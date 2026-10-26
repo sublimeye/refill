@@ -12,6 +12,8 @@ export default ts.config(
   {
     files: ["**/*.svelte", "**/*.svelte.ts"],
     languageOptions: { parserOptions: { parser: ts.parser } },
+    // TypeScript already checks undefined names (DOM types); no-undef only gets browser globals wrong.
+    rules: { "no-undef": "off" },
   },
   {
     files: ["scripts/**/*.mjs"],

@@ -18,3 +18,4 @@ Each ADR has Context / Decision / Consequences / Status. Add a new `NNNN-<slug>.
 | [0012](0012-vault-core-details.md) | Vault core details (strict header parsing, lock serialization, fail-closed integrity, backoff) | Accepted |
 | [0013](0013-lock-triggers-and-sw-wake.md) | Lock triggers and service-worker wake (`lockIfExpired`, re-arming, synchronous registration) | Accepted |
 | [0014](0014-messaging-router.md) | Messaging router (sendResponse listener, generic rejections, strict parsing, `sendToSw` errors) | Accepted |
+| [0015](0015-onboarding-popup-and-e2e-harness.md) | Onboarding, popup, e2e harness (zxcvbn only in onboarding, shared length rule, create-before-calibrate, idle settle in fixture) | Accepted |

@@ -2,7 +2,7 @@
 // sender is classified, and the payload is parsed before any handler runs. Decisions: ADR 0014.
 import { browser, type Browser } from "wxt/browser";
 import {
-  MAX_MESSAGE_BYTES,
+  MAX_MESSAGE_CHARS,
   parsePageRequest,
   type PageRequest,
   type RouterError,
@@ -18,9 +18,13 @@ export function classifySender(
   sender: Browser.runtime.MessageSender,
   runtimeId: string,
 ): SenderKind | null {
-  if (sender.id !== runtimeId) return null;
+  if (!runtimeId || sender.id !== runtimeId) return null;
   const prefix = `chrome-extension://${runtimeId}/`;
   if (sender.url?.startsWith(prefix)) {
+    // Chrome sets `origin` on extension pages; when present it must be ours.
+    if (sender.origin !== undefined && sender.origin !== prefix.slice(0, -1)) {
+      return null;
+    }
     // An extension page opened as a tab is fine; one framed inside a web page is not.
     if (!sender.tab || sender.tab.url?.startsWith(prefix)) return "page";
     return null;
@@ -47,7 +51,7 @@ const INTERNAL: RouterError = { ok: false, error: "internal" };
 function tooLarge(msg: unknown): boolean {
   try {
     const json = JSON.stringify(msg);
-    return json === undefined || json.length > MAX_MESSAGE_BYTES;
+    return json === undefined || json.length > MAX_MESSAGE_CHARS;
   } catch {
     return true; // cyclic, BigInt, or a throwing toJSON: not a valid message
   }
@@ -105,7 +109,15 @@ export function toRuntimeListener(
   return (msg, sender, sendResponse) => {
     const answer = router(msg, sender);
     if (answer === undefined) return false;
-    answer.then(sendResponse, () => sendResponse(INTERNAL));
+    // sendResponse throws when the sender (a popup) closed before the answer was ready.
+    const reply = (res: unknown): void => {
+      try {
+        sendResponse(res);
+      } catch {
+        // Nobody is listening any more; nothing to do.
+      }
+    };
+    answer.then(reply, () => reply(INTERNAL));
     return true;
   };
 }

@@ -7,7 +7,7 @@ Task 10 adds the typed page-to-service-worker protocol and a sender-validated ro
 ## Decision
 
 - **`sendResponse` and `return true`, not a returned Promise.** In Chrome, WXT's `browser` is the `chrome` object (it only differs where a `browser` global with a runtime id exists, as in Firefox), and Chrome ignores a Promise returned from an `onMessage` listener. The router itself returns a Promise, as the plan specifies; `toRuntimeListener` adapts it: it calls `sendResponse` when the Promise settles and returns `true`, which keeps the channel open for that one answer. A real-Chromium e2e test (`smoke.spec.ts`) sends messages from the popup page and checks the answers, including a rejection.
-- **Rejected messages are answered, not dropped.** Oversized, unserializable (`JSON.stringify` throws or returns `undefined`), unclassified, wrong-kind and unparseable messages resolve `{ ok: false, error: "rejected" }` at once, so no channel stays open and a caller cannot tell why. `MAX_MESSAGE_BYTES` is compared with the JSON string length, as the plan says; the per-string cap (1024 UTF-16 units) bounds the real payload anyway.
+- **Rejected messages are answered, not dropped.** Oversized, unserializable (`JSON.stringify` throws or returns `undefined`), unclassified, wrong-kind and unparseable messages resolve `{ ok: false, error: "rejected" }` at once, so no channel stays open and a caller cannot tell why. `MAX_MESSAGE_CHARS` (renamed from `MAX_MESSAGE_BYTES` in ADR 0015) is compared with the JSON string length, as the plan says; the per-string cap (1024 UTF-16 units) bounds the real payload anyway.
 - **Handler failures are generic.** A handler that throws or rejects resolves `{ ok: false, error: "internal" }`. The log line holds the request type and the error's `name` only, never its message or stack.
 - **Strict parsing.** `parsePageRequest` accepts only a plain object (prototype `Object.prototype` or `null`) with exactly the keys of its type, and returns a fresh object. A `now` or any other extra key is a rejection, so a timestamp from a message can never reach the vault (ADR 0012, ADR 0013). Handlers also never pass a `now`.
 - **Page classification.** An extension page opened as a tab is a page: `sender.tab.url` starts with the extension prefix. A tab with no `url`, or an extension page framed inside a web page (`tab.url` is the web page), is not a page. Content classification is implemented and tested, but `ContentRequest` is `never`, so the router rejects every content-classified message until Plan 2 adds handlers.
@@ -17,7 +17,7 @@ Task 10 adds the typed page-to-service-worker protocol and a sender-validated ro
 
 ## Consequences
 
-- `vault-create` runs `calibrate()` before the vault checks strength, so a too-short passphrase costs one calibration pass before `weak` comes back. The onboarding UI validates strength first, so this is only reachable by a direct caller.
+- ~~`vault-create` runs `calibrate()` before the vault checks strength.~~ Superseded by ADR 0015: the handler now checks `status()` and the minimum length first, so an invalid create never calibrates.
 - The listener is registered synchronously at worker top level, after `setAccessLevel` and `installLockTriggers`, with no `await` before it.
 - There is no `onMessageExternal` listener, matching the empty `externally_connectable`.
 

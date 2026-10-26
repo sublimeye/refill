@@ -1,6 +1,7 @@
 // Page-request handlers backed by the vault. None of them forwards a timestamp or any other
 // value from a message into the vault except the passphrase (ADR 0012 / 0014).
 import type { KdfParams } from "../crypto/kdf";
+import { meetsMinLength } from "../passphrase/rules";
 import {
   createVault,
   lock,
@@ -16,6 +17,11 @@ export function createPageHandlers(
   return {
     "vault-status": () => status(),
     "vault-create": async ({ passphrase }) => {
+      // Cheap checks first: an invalid create must not burn seconds of Argon2 calibration.
+      // createVault repeats both authoritatively.
+      if ((await status()).state !== "none")
+        return { ok: false, error: "exists" };
+      if (!meetsMinLength(passphrase)) return { ok: false, error: "weak" };
       try {
         await createVault(passphrase, await calibrate());
         return { ok: true };

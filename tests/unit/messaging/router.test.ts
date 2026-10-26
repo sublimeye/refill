@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { newKdfParams } from "../../../src/lib/crypto/kdf";
 import { createPageHandlers } from "../../../src/lib/messaging/page-handlers";
 import {
-  MAX_MESSAGE_BYTES,
+  MAX_MESSAGE_CHARS,
   MessagingError,
   parsePageRequest,
   sendToSw,
@@ -103,6 +103,29 @@ describe("classifySender", () => {
         ID,
       ),
     ).toBeNull();
+  });
+
+  it("a falsy runtime id classifies nothing, even a sender with no id", () => {
+    expect(classifySender(mk({ url: "chrome-extension:///x" }), "")).toBeNull();
+    expect(
+      classifySender(mk({ id: "", url: "chrome-extension:///popup.html" }), ""),
+    ).toBeNull();
+    expect(
+      classifySender(mk({ id: undefined, origin: "https://a.example" }), ""),
+    ).toBeNull();
+  });
+
+  it("a page whose origin is present must be this extension's origin", () => {
+    expect(
+      classifySender({ ...popup, origin: `chrome-extension://${ID}` }, ID),
+    ).toBe("page");
+    expect(
+      classifySender({ ...popup, origin: `chrome-extension://${OTHER}` }, ID),
+    ).toBeNull();
+    expect(
+      classifySender({ ...popup, origin: "https://evil.example" }, ID),
+    ).toBeNull();
+    expect(classifySender({ ...popup, origin: "null" }, ID)).toBeNull();
   });
 
   it("sender.frameId 1 is not content", () => {
@@ -247,6 +270,17 @@ describe("router", () => {
     expect(h["vault-lock"]).not.toHaveBeenCalled();
   });
 
+  it("rejects everything when the runtime has no id", async () => {
+    const { h, handlers } = spyHandlers();
+    (fakeBrowser.runtime as { id: string | undefined }).id = undefined;
+    const res = await createRouter(handlers)(
+      { type: "vault-lock" },
+      mk({ url: "chrome-extension://undefined/popup.html" }),
+    );
+    expect(res).toEqual(REJECTED);
+    expect(h["vault-lock"]).not.toHaveBeenCalled();
+  });
+
   it("extra keys rejected", async () => {
     const { h, handlers } = spyHandlers();
     const res = await createRouter(handlers)(
@@ -270,7 +304,7 @@ describe("router", () => {
   it("oversized message rejected", async () => {
     const { h, handlers } = spyHandlers();
     const big = { type: "vault-unlock", passphrase: "a".repeat(70 * 1024) };
-    expect(JSON.stringify(big).length).toBeGreaterThan(MAX_MESSAGE_BYTES);
+    expect(JSON.stringify(big).length).toBeGreaterThan(MAX_MESSAGE_CHARS);
     expect(await createRouter(handlers)(big, popup)).toEqual(REJECTED);
     expect(h["vault-unlock"]).not.toHaveBeenCalled();
   });
@@ -352,6 +386,47 @@ describe("runtime listener adapter", () => {
     expect(sendResponse).not.toHaveBeenCalled();
   });
 
+  it("a sendResponse that throws (closed popup) causes no unhandled rejection", async () => {
+    const { handlers } = spyHandlers();
+    const listener = toRuntimeListener(createRouter(handlers));
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      const sendResponse = vi.fn(() => {
+        throw new Error(
+          "The message port closed before a response was received",
+        );
+      });
+      expect(listener({ type: "vault-status" }, popup, sendResponse)).toBe(
+        true,
+      );
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      // The INTERNAL fallback must not run a second sendResponse either.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(sendResponse).toHaveBeenCalledOnce();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
+  it("a sendResponse that throws for the fallback answer is swallowed too", async () => {
+    const listener = toRuntimeListener(() => Promise.reject(new Error("x")));
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      const sendResponse = vi.fn(() => {
+        throw new Error("closed");
+      });
+      listener({}, popup, sendResponse);
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
   it("a rejecting router still answers", async () => {
     const listener = toRuntimeListener(() => Promise.reject(new Error("x")));
     const sendResponse = vi.fn();
@@ -376,6 +451,27 @@ describe("sendToSw", () => {
       name: "MessagingError",
       code: res.error,
     });
+  });
+
+  it("wraps a rejected transport (no receiver, lastError) in MessagingError", async () => {
+    vi.spyOn(fakeBrowser.runtime, "sendMessage").mockRejectedValue(
+      new Error(
+        "Could not establish connection. Receiving end does not exist.",
+      ),
+    );
+    const err = await sendToSw({ type: "vault-lock" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MessagingError);
+    expect(err).toMatchObject({ code: "internal" });
+    expect(String((err as Error).message)).not.toContain("Receiving end");
+  });
+
+  it("wraps a synchronously throwing transport too", async () => {
+    vi.spyOn(fakeBrowser.runtime, "sendMessage").mockImplementation(() => {
+      throw new Error("Extension context invalidated.");
+    });
+    await expect(sendToSw({ type: "vault-lock" })).rejects.toBeInstanceOf(
+      MessagingError,
+    );
   });
 
   it("throws on a missing response", async () => {
@@ -437,6 +533,35 @@ describe("vault through the router", SLOW, () => {
         error: "exists",
       },
     );
+  });
+
+  it("an invalid create never calibrates", async () => {
+    const calibrate = vi.fn(async () => newKdfParams());
+    const route = createRouter({ page: createPageHandlers(calibrate) });
+    expect(
+      await route({ type: "vault-create", passphrase: "short" }, popup),
+    ).toEqual({ ok: false, error: "weak" });
+    // 11 code points after NFC, however many UTF-16 units: still weak.
+    expect(
+      await route(
+        { type: "vault-create", passphrase: "e\u0301".repeat(5) + "x" },
+        popup,
+      ),
+    ).toEqual({ ok: false, error: "weak" });
+    expect(calibrate).not.toHaveBeenCalled();
+  });
+
+  it("create over an existing vault never calibrates", async () => {
+    const calibrate = vi.fn(async () => newKdfParams());
+    const route = createRouter({ page: createPageHandlers(calibrate) });
+    expect(await route({ type: "vault-create", passphrase: P }, popup)).toEqual(
+      { ok: true },
+    );
+    expect(calibrate).toHaveBeenCalledOnce();
+    expect(await route({ type: "vault-create", passphrase: P }, popup)).toEqual(
+      { ok: false, error: "exists" },
+    );
+    expect(calibrate).toHaveBeenCalledOnce();
   });
 
   it("an unexpected create failure is internal", async () => {
