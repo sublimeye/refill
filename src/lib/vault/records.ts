@@ -3,10 +3,8 @@
 import { DecryptError, open, seal } from "../crypto/aead";
 import { fromUtf8, utf8 } from "../crypto/bytes";
 import { getItem, setItems, type StoreTx } from "../store/local";
-import { parseSealed } from "./header";
+import { TAG_BYTES, parseSealed } from "./header";
 import { getDek } from "./vault";
-
-const TAG_BYTES = 16;
 
 /**
  * Seals `JSON.stringify(value)` and writes it. Pass `tx` when called inside a `withStoreLock`

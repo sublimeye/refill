@@ -42,7 +42,13 @@ export type UnlockResult =
   | { ok: true; warning?: "integrity-restored" }
   | {
       ok: false;
-      reason: "wrong-passphrase" | "no-vault" | "corrupt" | "backoff";
+      /** `locked-during-unlock`: the passphrase was right, but `lock()` ran before the unlock committed. */
+      reason:
+        | "wrong-passphrase"
+        | "no-vault"
+        | "corrupt"
+        | "backoff"
+        | "locked-during-unlock";
       retryAfterMs?: number;
     };
 

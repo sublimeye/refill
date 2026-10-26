@@ -9,7 +9,8 @@ import type { IntegrityPayload, LockPolicy, VaultHeader } from "./types";
 type Obj = Record<string, unknown>;
 
 const IV_BYTES = 12;
-const TAG_BYTES = 16;
+/** AES-GCM tag length; the minimum ciphertext of any sealed value. */
+export const TAG_BYTES = 16;
 /** A sealed 32-byte DEK: ciphertext || tag. */
 const WRAPPED_DEK_BYTES = 32 + TAG_BYTES;
 /** PKCS#8 for P-256 is ~138 bytes; the cap only bounds work on a tampered header. */

@@ -44,7 +44,8 @@ vi.mock("../../../src/lib/crypto/kdf", async (importOriginal) => {
 });
 
 const P = "correct horse battery staple";
-const T0 = 1_700_000_000_000;
+// Real "now": getDek's session rebuild checks the hard max against Date.now() (R24).
+const T0 = Date.now();
 const HOUR = 3_600_000;
 const SLOW = { timeout: 30_000 };
 
@@ -62,6 +63,34 @@ async function lockedVault(): Promise<void> {
     await fakeBrowser.storage.local.set(structuredClone(snapshot));
   }
   await lock();
+}
+
+/**
+ * Makes the next deriveKek call wait until `release()`: lets a test land `lock()` mid-KDF.
+ * `started` resolves once the derivation has begun (i.e. the caller holds the store lock).
+ */
+function pauseNextKdf(): { started: Promise<void>; release: () => void } {
+  const real = vi.mocked(deriveKek).getMockImplementation()!;
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const started = new Promise<void>((r) => (entered = r));
+  vi.mocked(deriveKek).mockImplementationOnce(async (pw, kdf) => {
+    entered();
+    await gate;
+    return real(pw, kdf);
+  });
+  return { started, release };
+}
+
+/** Records every value written to `vault:session` (including writes later cleared). */
+function watchSessionWrites(): unknown[] {
+  const writes: unknown[] = [];
+  fakeBrowser.storage.session.onChanged.addListener((changes) => {
+    const v = changes["vault:session"]?.newValue;
+    if (v !== undefined && v !== null) writes.push(v);
+  });
+  return writes;
 }
 
 async function rawHeader(): Promise<VaultHeader> {
@@ -389,6 +418,21 @@ describe("changePassphrase", SLOW, () => {
     ).rejects.toThrow("weak");
   });
 
+  it("restores a tampered header before re-sealing integrity", async () => {
+    await lockedVault();
+    const h = await rawHeader();
+    await setItems({
+      [KEYS.header]: { ...h, lock: { ...h.lock, maxHours: 72 } },
+    });
+    const P2 = "a completely new passphrase";
+    expect(await changePassphrase(P, P2, newKdfParams(), T0)).toEqual({
+      ok: true,
+      warning: "integrity-restored",
+    });
+    expect((await rawHeader()).lock.maxHours).toBe(12);
+    expect(await unlockWithPassphrase(P2, T0)).toEqual({ ok: true });
+  });
+
   it("does not unlock a locked vault", async () => {
     await lockedVault();
     expect(await changePassphrase(P, P + " v2", newKdfParams(), T0)).toEqual({
@@ -403,7 +447,7 @@ describe("session and service-worker restart", SLOW, () => {
     await lockedVault();
     await unlockWithPassphrase(P, T0);
     __resetForTests();
-    const dek = await getDek();
+    const dek = await getDek(T0 + 60_000);
     expect(dek.extractable).toBe(false);
     expect(await status(T0)).toMatchObject({
       state: "unlocked",
@@ -425,6 +469,28 @@ describe("session and service-worker restart", SLOW, () => {
     await expect(getDek()).rejects.toBeInstanceOf(LockedError);
   });
 
+  it("getDek's session rebuild enforces the hard max (R24)", async () => {
+    await lockedVault();
+    await unlockWithPassphrase(P, T0);
+    __resetForTests();
+    await expect(getDek(T0 + 12 * HOUR)).rejects.toBeInstanceOf(LockedError);
+    expect(await readSession()).toBeNull(); // expired session is locked, not just refused
+    expect((await status(T0)).state).toBe("locked");
+
+    await unlockWithPassphrase(P, T0);
+    __resetForTests();
+    expect((await getDek(T0 + 12 * HOUR - 1)).extractable).toBe(false);
+  });
+
+  it("getDek's session rebuild next to an unreadable header locks", async () => {
+    await lockedVault();
+    await unlockWithPassphrase(P, T0);
+    __resetForTests();
+    await setItems({ [KEYS.header]: "garbage" });
+    await expect(getDek(T0)).rejects.toBeInstanceOf(LockedError);
+    expect(await readSession()).toBeNull();
+  });
+
   it("readSession rejects malformed state", async () => {
     await writeSession(new Uint8Array(32).fill(7), T0);
     expect(await readSession()).toEqual({
@@ -441,6 +507,92 @@ describe("session and service-worker restart", SLOW, () => {
       await fakeBrowser.storage.session.set({ "vault:session": bad });
       expect(await readSession()).toBeNull();
     }
+  });
+});
+
+describe("lock wins races (R23)", SLOW, () => {
+  it("lock() during unlock's KDF: no keys installed, no session written, reason locked-during-unlock", async () => {
+    await lockedVault();
+    const seen: boolean[] = [];
+    const off = onLockChange((u) => seen.push(u));
+    const writes = watchSessionWrites();
+    const { started, release } = pauseNextKdf();
+    const pending = unlockWithPassphrase(P, T0);
+    await started;
+    await lock();
+    release();
+    expect(await pending).toEqual({
+      ok: false,
+      reason: "locked-during-unlock",
+    });
+    expect((await status(T0)).state).toBe("locked");
+    expect(await readSession()).toBeNull();
+    expect(writes).toEqual([]); // the DEK never reached the session mirror
+    await expect(getDek(T0)).rejects.toBeInstanceOf(LockedError);
+    expect(seen).toEqual([false]); // no `true` after the lock
+    off();
+    // the passphrase was right: a fresh attempt unlocks without backoff
+    expect(await unlockWithPassphrase(P, T0)).toEqual({ ok: true });
+  });
+
+  it("lock() during the session write: the commit is undone", async () => {
+    await lockedVault();
+    fakeBrowser.storage.session.onChanged.addListener((changes) => {
+      if (changes["vault:session"]?.newValue) void lock();
+    });
+    expect(await unlockWithPassphrase(P, T0)).toEqual({
+      ok: false,
+      reason: "locked-during-unlock",
+    });
+    expect(await readSession()).toBeNull();
+    await expect(getDek(T0)).rejects.toBeInstanceOf(LockedError);
+  });
+
+  it("lock() during createVault: the vault is created but left locked", async () => {
+    const writes = watchSessionWrites();
+    const { started, release } = pauseNextKdf();
+    const pending = createVault(P, newKdfParams(), T0);
+    await started;
+    await lock();
+    release();
+    await expect(pending).resolves.toBeUndefined();
+    expect(await status(T0)).toEqual({ state: "locked", lock: DEFAULT_LOCK });
+    expect(writes).toEqual([]);
+    await expect(getDek(T0)).rejects.toBeInstanceOf(LockedError);
+    expect(await unlockWithPassphrase(P, T0)).toEqual({ ok: true });
+  });
+
+  it("lock() during getDraftPrivateKey: nothing installed", async () => {
+    await lockedVault();
+    await unlockWithPassphrase(P, T0);
+    const pending = getDraftPrivateKey();
+    await lock();
+    await expect(pending).rejects.toBeInstanceOf(LockedError);
+    await expect(getDraftPrivateKey()).rejects.toBeInstanceOf(LockedError);
+  });
+
+  it("a session rebuild during lock()'s teardown is dropped", async () => {
+    await lockedVault();
+    await unlockWithPassphrase(P, T0);
+    __resetForTests(); // SW restart: next getDek rebuilds from the session
+    // Hold the session removal so a rebuild can read the mirror mid-teardown.
+    const session = fakeBrowser.storage.session;
+    const realRemove = session.remove.bind(session);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const spy = vi
+      .spyOn(session, "remove")
+      .mockImplementationOnce(async (keys: string | string[]) => {
+        await gate;
+        return realRemove(keys);
+      });
+    const locking = lock();
+    await getDek(T0).catch(() => undefined); // may complete before the removal lands
+    release();
+    await locking;
+    spy.mockRestore();
+    await expect(getDek(T0)).rejects.toBeInstanceOf(LockedError);
+    expect((await status(T0)).state).toBe("locked");
   });
 });
 

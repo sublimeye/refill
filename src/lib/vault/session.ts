@@ -1,5 +1,7 @@
-// DEK mirror in storage.session (RAM-only; access level TRUSTED_CONTEXTS is set by the service
-// worker) so a suspended service worker can resume unlocked (spec §4.3, accepted risks §8.3).
+// DEK mirror in storage.session (RAM-only) so a suspended service worker can resume unlocked
+// (spec §4.3, accepted risks §8.3). Readable by trusted extension contexts only: TRUSTED_CONTEXTS
+// is Chrome's default access level for storage.session; nothing here changes it (Task 9 sets it
+// explicitly at service-worker start).
 import { browser } from "wxt/browser";
 import { fromB64, toB64 } from "../crypto/bytes";
 

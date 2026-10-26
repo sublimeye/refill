@@ -15,7 +15,12 @@ import {
 import { deriveKek, isKdfParams, type KdfParams } from "../crypto/kdf";
 import { KEYS, getItem, withStoreLock, type StoreTx } from "../store/local";
 import { checkBackoff, recordFailure, resetBackoff } from "./backoff";
-import { parseHeader, parseIntegrityPayload, parseSealed } from "./header";
+import {
+  TAG_BYTES,
+  parseHeader,
+  parseIntegrityPayload,
+  parseSealed,
+} from "./header";
 import { clearSession, readSession, writeSession } from "./session";
 import {
   DEFAULT_LOCK,
@@ -40,8 +45,9 @@ interface Unlocked {
 
 let mem: Unlocked | null = null;
 /**
- * Bumped by `lock()` (and `__resetForTests`). Work that started in an older epoch (a session
- * rebuild, an unlock commit, a draft-key import) must not install key material afterwards.
+ * Bumped by `lock()` (and `__resetForTests`). Work that started in an older epoch (an unlock or
+ * create, captured on entry before the queue wait and the KDF; a session rebuild; a draft-key
+ * import) must not install key material afterwards: lock always wins (ADR 0012, ruling R23).
  */
 let epoch = 0;
 const listeners = new Set<(unlocked: boolean) => void>();
@@ -91,7 +97,7 @@ async function readIntegrity(
 ): Promise<IntegrityPayload | null> {
   const sealed = parseSealed(
     await tx.getItem(KEYS.integrity),
-    17,
+    TAG_BYTES + 1,
     INTEGRITY_MAX_CT,
   );
   if (!sealed) return null;
@@ -104,18 +110,20 @@ async function readIntegrity(
 }
 
 /**
- * Installs the unlocked state (memory + session mirror). Returns false if `lock()` ran while
- * committing: the lock wins and nothing is left behind.
+ * Installs the unlocked state (memory + session mirror) unless `lock()` ran since epoch `e` (taken
+ * when the caller started). Returns false when the lock won; nothing is left behind.
  */
 async function commitUnlock(
   dekRaw: Uint8Array,
   unlockedAt: number,
+  e: number,
 ): Promise<boolean> {
-  const e = epoch;
-  const dek = await importAesKey(dekRaw);
+  // Before touching the session: a mirror written now would survive a SW kill before cleanup.
   if (epoch !== e) return false;
+  const dek = await importAesKey(dekRaw);
   await writeSession(dekRaw, unlockedAt);
   if (epoch !== e) {
+    // lock() ran during the import or the write.
     await clearSession();
     return false;
   }
@@ -201,14 +209,18 @@ export async function status(now = Date.now()): Promise<VaultStatus> {
 }
 
 /**
- * Creates the vault and leaves it unlocked. Throws `Error("weak")`, `Error("exists")` (also when
- * a concurrent call won), or `RangeError` for invalid KDF params / `now`.
+ * Creates the vault and leaves it unlocked, unless `lock()` runs while it is being created: then
+ * the vault is still created (and this resolves) but stays locked. Throws `Error("weak")`,
+ * `Error("exists")` (also when a concurrent call won), or `RangeError` for invalid KDF params /
+ * `now`. `now` (here and in every vault function) is a test seam: production callers omit it and
+ * must never forward a value from a message.
  */
 export async function createVault(
   passphrase: string,
   kdf: KdfParams,
   now = Date.now(),
 ): Promise<void> {
+  const e = epoch;
   assertStrong(passphrase);
   assertTime(now);
   const params = kdfCopy(kdf);
@@ -245,7 +257,7 @@ export async function createVault(
       }
       await tx.setItems({ [KEYS.header]: header, [KEYS.integrity]: integrity });
     });
-    committed = await commitUnlock(dekRaw, now);
+    committed = await commitUnlock(dekRaw, now, e);
   } finally {
     dekRaw.fill(0);
   }
@@ -256,6 +268,7 @@ export async function unlockWithPassphrase(
   passphrase: string,
   now = Date.now(),
 ): Promise<UnlockResult> {
+  const e = epoch; // before the queue wait and the KDF: a lock() from here on wins
   assertTime(now);
   // Backoff check, verification and failure recording all run under the store lock, so
   // concurrent guesses are serialized and each sees the previous one's backoff.
@@ -267,8 +280,11 @@ export async function unlockWithPassphrase(
         [KEYS.header]: { ...r.header, lastPassphraseAt: now },
       });
       await resetBackoff();
-      const committed = await commitUnlock(r.dekRaw, now);
-      return { result: success(r.restored), committed };
+      const committed = await commitUnlock(r.dekRaw, now, e);
+      const result: UnlockResult = committed
+        ? success(r.restored)
+        : { ok: false, reason: "locked-during-unlock" };
+      return { result, committed };
     } finally {
       r.dekRaw.fill(0);
     }
@@ -282,17 +298,30 @@ export async function lock(): Promise<void> {
   epoch++;
   mem = null;
   await clearSession();
+  // Again after the clear: a rebuild that started during teardown may have read the session
+  // before the removal landed. Invalidate it if still in flight, and drop what it installed.
+  epoch++;
+  mem = null;
   notify(false);
 }
 
-/** The DEK; after a service-worker restart it is rebuilt from the session mirror. */
-export async function getDek(): Promise<CryptoKey> {
+/**
+ * The DEK. After a service-worker restart it is rebuilt from the session mirror, but only within
+ * the hard max (`unlockedAt + lock.maxHours`); an expired session, or one next to an unreadable
+ * header, is locked instead (ruling R24).
+ */
+export async function getDek(now = Date.now()): Promise<CryptoKey> {
   if (mem) return mem.dek;
   const e = epoch;
   const s = await readSession();
   if (!s) throw new LockedError();
   let dek: CryptoKey;
   try {
+    const header = parseHeader(await getItem(KEYS.header));
+    if (!header || now >= s.unlockedAt + header.lock.maxHours * HOUR_MS) {
+      await lock();
+      throw new LockedError();
+    }
     dek = await importAesKey(s.dekRaw);
   } finally {
     s.dekRaw.fill(0);
