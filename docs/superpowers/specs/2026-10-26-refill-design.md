@@ -20,7 +20,7 @@ access to every site (see `docs/research/prior-art.md`).
    Next/Submit themselves.
 2. A long form on an opted-in site survives a failed submit / crash / closed tab and can be
    restored with one click.
-3. Nothing is ever stored in plaintext on disk; passwords, OTPs, CVVs and hidden/CSRF fields are
+3. No form value, profile or draft is ever stored in plaintext on disk; passwords, OTPs, CVVs and hidden/CSRF fields are
    never stored.
 4. Install shows **no permission warnings**; site access is requested per site, in context.
 5. Passes a documented, adversarial security audit and Chrome Web Store review.
@@ -129,7 +129,6 @@ Only `https:` origins are eligible (plus `http://localhost` in the test build on
 passphrase ──Argon2id(salt, m=64MiB, t=3, p=1)──► KEK_pw ─┐
 Touch ID ──WebAuthn PRF(salt_prf)──HKDF──────────► KEK_prf ┼─AES-GCM wrap──► DEK (256-bit random)
                                                            │
-DEK ──HKDF("refill/index/v1")──► K_index (HMAC-SHA256 storage keys)
 DEK ──AES-GCM──► draft private key (ECDH P-256)
 draft public key (plaintext) ──ECDH+HKDF──► per-draft AES key (sealing works while locked)
 ```
@@ -149,25 +148,29 @@ vault:header (plaintext)
     draftPub:JWK, wrappedDraftPriv:{iv,ct},
     lock:{idleMinutes, maxHours, passphraseEveryDays}, lastPassphraseAt }
 
-p:<HMAC(K_index, origin)>   AES-GCM(DEK, iv, AAD="refill/v1|profile|<id>|<origin>")
+sites (plaintext index — needed while locked to run drafts and reconcile scripts)
+  { [origin]: { profileId|null, drafts:boolean, ttl, accessRevoked } }
+
+settings (plaintext; contains no secrets)
+  { globalDrafts, defaultTtl, toastSeconds, ... }
+
+p:<random 128-bit id>       AES-GCM(DEK, iv, AAD="refill/v1|profile|<id>|<origin>")
   { id, name, origin, pathPrefix, fillMode:"auto"|"gesture", createdAt, lastUsedAt,
     steps:[{ index, pathHint, fingerprint:[sig…] }],
     fields:[{ sig, step, value, policy:"save"|"ask"|"skip", kind:"text"|"select"|"checkbox"|"radio" }] }
-
-s:<HMAC(K_index, origin)>   AES-GCM(DEK, …, AAD="refill/v1|site|…")
-  { origin, drafts:boolean, ttl, accessRevoked }
 
 d:<random 128-bit id>
   { expiresAt|null,                                   // plaintext: enables purge while locked
     eph:JWK, iv, ct }  // ECDH(eph, draftPub) → HKDF → AES-GCM, AAD="refill/v1|draft|<id>"
   ct = { origin, path, formFingerprint, fields:[{sig,value}], savedAt }
-
-settings (AES-GCM, DEK): { globalDrafts, defaultTtl, toastSeconds, ... }
 ```
 - Fresh random 96-bit IV per encryption; never reused.
 - AAD binds each ciphertext to its type, id and origin; swapping ciphertexts between keys fails.
-- Storage keys are opaque. Note: Chrome itself stores granted host permissions in plaintext
-  profile prefs, so *which sites are enabled* is not secret from a disk attacker; *values* are.
+- **Site list is not secret, values are.** Chrome itself stores granted host permissions and
+  registered content scripts in plaintext profile prefs, so encrypting Refill's site index would
+  add complexity without hiding anything from a disk attacker. Every field value, profile name and
+  draft is encrypted; the site index and settings are plaintext so drafts and script
+  reconciliation work while locked.
 - Quotas: ≤ 20 drafts and ≤ 512 KB per origin; ≤ 5 MB drafts total; oldest evicted first.
 
 ### 4.3 Key residency and locking
