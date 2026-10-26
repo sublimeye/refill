@@ -33,14 +33,14 @@ Context: page context of an extension page (not the service worker; the probe ma
 | Playwright Chromium 156.0.8078.4 (run 1) | 27.0.1 | 3 | 148, 141, 141 | 141 |
 | | | 4 | 181, 182, 177 | 181 |
 | | | 6 | 271, 277, 267 | 271 |
-| Playwright Chromium 156.0.8078.4 (run 2) | 27.0.1 | 3 | 144, 141, 140 | 141 |
+| Playwright Chromium 156.0.8078.4 (run 2, logged) | 27.0.1 | 3 | 144, 141, 140 | 141 |
 | | | 4 | 182, 188, 185 | 185 |
 | | | 6 | 273, 265, 269 | 269 |
 | Brave 155.1.97.56 (Chromium 155.0.8059.40), launched via Playwright `executablePath`, fresh temp profile | 27.0.1 | 3 | 144, 142, 140 | 142 |
 | | | 4 | 179, 190, 178 | 179 |
 | | | 6 | 263, 270, 263 | 263 |
 
-Raw result lines (run 2, Brave):
+Raw result lines (Brave):
 
 ```
 browser: 155.0.8059.40
@@ -64,7 +64,7 @@ Reading: cost is linear in `t` at about 43 ms per pass at m=64 MiB (141 ms at t=
 | Browser + version | macOS | Outcome | Raw log |
 |---|---|---|---|
 | Playwright Chromium 156.0.8078.4 | 27.0.1 | `isTrusted: true`, `execCommand` returned true, value `"x"` | `{"type":"input","isTrusted":true,"inputType":"insertText","data":"x"}` |
-| Brave 155.1.97.56 (Chromium 155.0.8059.40) | 27.0.1 | same | same |
+| Brave 155.1.97.56 (Chromium 155.0.8059.40) | 27.0.1 | `isTrusted: true`, `execCommand` returned true, value `"x"` | `{"type":"input","isTrusted":true,"inputType":"insertText","data":"x"}` |
 
 Observation: only an `input` event was recorded; a `beforeinput` listener on the same element did not fire for the `execCommand` call in either browser. Fill code must not depend on `beforeinput`.
 
