@@ -1,30 +1,30 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 
-interface Manifest {
-  permissions: string[];
-  optional_host_permissions?: string[];
-  host_permissions?: string[];
-  externally_connectable?: unknown;
-  content_security_policy?: unknown;
-  web_accessible_resources?: unknown[];
-  content_scripts?: unknown[];
-  minimum_chrome_version?: string;
-  key?: string;
-}
+type Manifest = Record<string, unknown>;
 
 const built = JSON.parse(
   readFileSync(".output/chrome-mv3/manifest.json", "utf8"),
 ) as Manifest;
 
+// Absent arrays become [] and absent objects become null, so a missing or
+// unexpected key shows up as a snapshot diff, never as a TypeError.
+const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+const obj = (v: unknown): unknown => v ?? null;
+
 const pick = (m: Manifest) => ({
-  permissions: [...m.permissions].sort(),
-  optional_host_permissions: m.optional_host_permissions,
-  host_permissions: m.host_permissions ?? [],
-  externally_connectable: m.externally_connectable,
-  content_security_policy: m.content_security_policy,
-  web_accessible_resources: m.web_accessible_resources ?? [],
-  content_scripts: m.content_scripts ?? [],
+  permissions: arr(m.permissions).map(String).sort(),
+  optional_permissions: arr(m.optional_permissions),
+  optional_host_permissions: arr(m.optional_host_permissions),
+  host_permissions: arr(m.host_permissions),
+  externally_connectable: obj(m.externally_connectable),
+  content_security_policy: obj(m.content_security_policy),
+  sandbox: obj(m.sandbox),
+  commands: obj(m.commands),
+  declarative_net_request: obj(m.declarative_net_request),
+  background: obj(m.background),
+  web_accessible_resources: arr(m.web_accessible_resources),
+  content_scripts: arr(m.content_scripts),
   minimum_chrome_version: m.minimum_chrome_version,
   has_key: typeof m.key === "string",
 });

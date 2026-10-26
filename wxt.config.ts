@@ -18,7 +18,7 @@ export default defineConfig({
     optional_host_permissions: ["https://*/*"],
     externally_connectable: { ids: [], matches: [] },
     content_security_policy: {
-      extension_pages: mode === "production" ? PROD_CSP : DEV_CSP,
+      extension_pages: mode === "development" ? DEV_CSP : PROD_CSP,
     },
   }),
 });

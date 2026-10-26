@@ -5,9 +5,9 @@ Chrome derives an unpacked extension's ID from its path unless the manifest carr
 
 ## Decision
 - A 2048-bit RSA key pair was generated with `openssl genrsa`. The private half lives in `.refill-dev-key.pem` (gitignored, never committed; `*.pem` is ignored too). The public half (base64 DER SubjectPublicKeyInfo) is committed as `MANIFEST_KEY` in `src/manifest-key.ts` and used as `key` in `wxt.config.ts`.
-- `EXTENSION_ID` (`mpkgcobephioakhgajlkoogmmhdkbook`) is hard-coded next to it, computed Chrome's way (first 16 bytes of sha256 over the DER bytes, hex nibbles mapped 0-f to a-p). `tests/unit/manifest-key.test.ts` recomputes it from `MANIFEST_KEY` and asserts equality; e2e fixtures import both constants.
+- `EXTENSION_ID` (`mpkgcobephioakhgajlkoogmmhdkbook`) is hard-coded next to it, computed Chrome's way (first 16 bytes of sha256 over the DER bytes, hex nibbles mapped 0-f to a-p). `tests/unit/manifest-key.test.ts` recomputes it from `MANIFEST_KEY` and asserts equality; future e2e fixtures will import both constants.
 - Dev, test and the manifest snapshot all use this key. Before the first Web Store upload (Plan 7, together with release-please changelog setup) `MANIFEST_KEY` is replaced by the store-assigned public key and `EXTENSION_ID` is updated; the unit test keeps them consistent.
-- `externally_connectable` is `{ "ids": [], "matches": [] }`. Verified with Playwright's bundled Chromium (build 1248), loaded unpacked with this manifest: the service worker started, the extension showed no errors or warnings on `chrome://extensions`, and `chrome.runtime.getManifest()` returned the empty lists. The `{ "ids": [] }` fallback was therefore not needed.
+- `externally_connectable` is `{ "ids": [], "matches": [] }`. Verified with Playwright's bundled Chromium (build 1248), loaded unpacked with this manifest: the service worker started, the extension showed no errors on `chrome://extensions` (permission-warning text was not inspected), and `chrome.runtime.getManifest()` returned the empty lists. The `{ "ids": [] }` fallback was therefore not needed.
 
 ## Consequences
 - The extension ID is stable across machines and builds for dev and tests.
