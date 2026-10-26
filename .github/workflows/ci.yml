@@ -16,7 +16,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       # Third-party actions are pinned by full commit SHA (ADR 0005).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,8 +72,16 @@ jobs:
       - name: pnpm audit
         run: pnpm audit --audit-level high
 
+      # No --with-deps (ADR 0009): ubuntu-latest already ships Chromium's shared libraries, and
+      # --with-deps ran apt-get for fonts only, which stalled for 12-15 min on a slow mirror.
+      - name: Install Playwright Chromium
+        timeout-minutes: 5
+        run: pnpm exec playwright install chromium
+
+      - name: Build extension for e2e
+        timeout-minutes: 5
+        run: pnpm build
+
       - name: Playwright e2e
-        run: |
-          pnpm exec playwright install --with-deps chromium
-          pnpm build
-          pnpm test:e2e
+        timeout-minutes: 8
+        run: pnpm test:e2e
