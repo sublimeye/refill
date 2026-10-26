@@ -1,7 +1,7 @@
 import { fakeBrowser } from "wxt/testing/fake-browser";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { aad } from "../../../src/lib/crypto/aad";
-import { open } from "../../../src/lib/crypto/aead";
+import { importAesKey, open } from "../../../src/lib/crypto/aead";
 import { toB64, utf8 } from "../../../src/lib/crypto/bytes";
 import {
   generateDraftKeyPair,
@@ -41,6 +41,13 @@ vi.mock("../../../src/lib/crypto/kdf", async (importOriginal) => {
   const m =
     await importOriginal<typeof import("../../../src/lib/crypto/kdf")>();
   return { ...m, deriveKek: vi.fn(m.deriveKek) };
+});
+
+// Pass-through spy on importAesKey so a test can gate the import inside commitUnlock.
+vi.mock("../../../src/lib/crypto/aead", async (importOriginal) => {
+  const m =
+    await importOriginal<typeof import("../../../src/lib/crypto/aead")>();
+  return { ...m, importAesKey: vi.fn(m.importAesKey) };
 });
 
 const P = "correct horse battery staple";
@@ -83,6 +90,26 @@ function pauseNextKdf(): { started: Promise<void>; release: () => void } {
   return { started, release };
 }
 
+/** A gate: `wait()` blocks until `release()`; `started` resolves when something waits. */
+function gate(): {
+  started: Promise<void>;
+  wait: () => Promise<void>;
+  release: () => void;
+} {
+  let release!: () => void;
+  let entered!: () => void;
+  const open = new Promise<void>((r) => (release = r));
+  const started = new Promise<void>((r) => (entered = r));
+  return {
+    started,
+    release,
+    wait: () => {
+      entered();
+      return open;
+    },
+  };
+}
+
 /** Records every value written to `vault:session` (including writes later cleared). */
 function watchSessionWrites(): unknown[] {
   const writes: unknown[] = [];
@@ -111,6 +138,7 @@ beforeEach(() => {
   fakeBrowser.reset();
   __resetForTests();
   vi.mocked(deriveKek).mockClear();
+  vi.mocked(importAesKey).mockClear();
 });
 
 describe("vault lifecycle", SLOW, () => {
@@ -569,6 +597,150 @@ describe("lock wins races (R23)", SLOW, () => {
     await lock();
     await expect(pending).rejects.toBeInstanceOf(LockedError);
     await expect(getDraftPrivateKey()).rejects.toBeInstanceOf(LockedError);
+  });
+
+  it("lock() during commitUnlock's key import: mirror never written, nothing rebuildable", async () => {
+    await lockedVault();
+    const g = gate();
+    const real = vi.mocked(importAesKey).getMockImplementation()!;
+    vi.mocked(importAesKey).mockImplementation(async (raw, extractable) => {
+      // Only the import inside commitUnlock (the vault code is not minified under Vitest).
+      if (new Error().stack?.includes("commitUnlock")) {
+        vi.mocked(importAesKey).mockImplementation(real);
+        await g.wait();
+      }
+      return real(raw, extractable);
+    });
+    const writes = watchSessionWrites();
+    let rebuild: Promise<unknown> | undefined;
+    fakeBrowser.storage.session.onChanged.addListener((c) => {
+      // Any getDek after lock() returned must not find a mirror to rebuild from.
+      if (c["vault:session"]?.newValue && !rebuild) {
+        rebuild = getDek(T0).catch((err: unknown) => err);
+      }
+    });
+    const pending = unlockWithPassphrase(P, T0);
+    await g.started;
+    await lock();
+    g.release();
+    expect(await pending).toEqual({
+      ok: false,
+      reason: "locked-during-unlock",
+    });
+    expect(writes).toEqual([]);
+    expect(rebuild).toBeUndefined();
+    await expect(getDek(T0)).rejects.toBeInstanceOf(LockedError);
+    expect((await status(T0)).state).toBe("locked");
+  });
+
+  it("a hard-max rebuild acting on a stale session read does not wipe a fresh unlock (getDek)", async () => {
+    await lockedVault();
+    await unlockWithPassphrase(P, T0);
+    __resetForTests(); // SW restart: session at T0 stays
+    const later = T0 + 12 * HOUR; // T0's session is expired at `later`
+    const local = fakeBrowser.storage.local;
+    const realGet = local.get.bind(local) as (
+      k: string,
+    ) => Promise<Record<string, unknown>>;
+    const g = gate();
+    vi.spyOn(local, "get").mockImplementationOnce(async (keys) => {
+      await g.wait(); // getDek has read the stale session; hold its header read
+      return realGet(keys as string);
+    });
+    const dekP = getDek(later);
+    await g.started;
+    expect(await unlockWithPassphrase(P, later)).toEqual({ ok: true });
+    g.release();
+    expect((await dekP).extractable).toBe(false); // the fresh unlock's DEK
+    expect(await status(later)).toMatchObject({
+      state: "unlocked",
+      unlockedAt: later,
+    });
+    expect((await readSession())?.unlockedAt).toBe(later);
+  });
+
+  it("a hard-max check does not lock an unlock that is still committing (session compare)", async () => {
+    await lockedVault();
+    await unlockWithPassphrase(P, T0);
+    __resetForTests();
+    const later = T0 + 12 * HOUR;
+    const local = fakeBrowser.storage.local;
+    const realGet = local.get.bind(local) as (
+      k: string,
+    ) => Promise<Record<string, unknown>>;
+    const g = gate();
+    vi.spyOn(local, "get").mockImplementationOnce(async (keys) => {
+      await g.wait();
+      return realGet(keys as string);
+    });
+    const dekP = getDek(later).catch((err: unknown) => err);
+    await g.started;
+    // Resume getDek while the new mirror is written but memory is not yet set.
+    fakeBrowser.storage.session.onChanged.addListener(async (c) => {
+      const v = c["vault:session"]?.newValue as
+        { unlockedAt?: number } | undefined;
+      if (v?.unlockedAt === later) {
+        g.release();
+        await dekP;
+      }
+    });
+    expect(await unlockWithPassphrase(P, later)).toEqual({ ok: true });
+    expect(await dekP).toBeInstanceOf(LockedError); // transient for that caller only
+    expect(await status(later)).toMatchObject({
+      state: "unlocked",
+      unlockedAt: later,
+    });
+  });
+
+  it("a stale hard-max read does not cancel an unlock that started after a lock()", async () => {
+    await lockedVault();
+    await unlockWithPassphrase(P, T0);
+    __resetForTests();
+    const later = T0 + 12 * HOUR;
+    const local = fakeBrowser.storage.local;
+    const realGet = local.get.bind(local) as (
+      k: string,
+    ) => Promise<Record<string, unknown>>;
+    const g = gate();
+    vi.spyOn(local, "get").mockImplementationOnce(async (keys) => {
+      await g.wait();
+      return realGet(keys as string);
+    });
+    const dekP = getDek(later).catch((err: unknown) => err);
+    await g.started; // stale expired session read
+    await lock();
+    const kdf = pauseNextKdf();
+    const unlockP = unlockWithPassphrase(P, later); // starts after the lock
+    await kdf.started;
+    g.release();
+    expect(await dekP).toBeInstanceOf(LockedError);
+    kdf.release();
+    expect(await unlockP).toEqual({ ok: true });
+    expect((await status(later)).state).toBe("unlocked");
+  });
+
+  it("status's hard-max backstop does not wipe a fresh unlock after a stale read", async () => {
+    await lockedVault();
+    await unlockWithPassphrase(P, T0);
+    __resetForTests();
+    const later = T0 + 12 * HOUR;
+    const session = fakeBrowser.storage.session;
+    const realGet = session.get.bind(session);
+    const g = gate();
+    vi.spyOn(session, "get").mockImplementationOnce(async (keys) => {
+      const stale = await realGet(keys as string); // read now, delivered late
+      await g.wait();
+      return stale;
+    });
+    const statusP = status(later);
+    await g.started;
+    expect(await unlockWithPassphrase(P, later)).toEqual({ ok: true });
+    g.release();
+    expect(await statusP).toMatchObject({
+      state: "unlocked",
+      unlockedAt: later,
+    });
+    await expect(getDek(later)).resolves.toBeDefined();
   });
 
   it("a session rebuild during lock()'s teardown is dropped", async () => {

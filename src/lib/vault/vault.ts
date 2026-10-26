@@ -44,6 +44,7 @@ interface Unlocked {
 }
 
 let mem: Unlocked | null = null;
+const installed = (): Unlocked | null => mem;
 /**
  * Bumped by `lock()` (and `__resetForTests`). Work that started in an older epoch (an unlock or
  * create, captured on entry before the queue wait and the KDF; a session rebuild; a draft-key
@@ -118,12 +119,15 @@ async function commitUnlock(
   unlockedAt: number,
   e: number,
 ): Promise<boolean> {
-  // Before touching the session: a mirror written now would survive a SW kill before cleanup.
-  if (epoch !== e) return false;
+  // Storage ops apply in issue order. A lock() at any point before the write (including during
+  // the caller's KDF and this import) is caught right before it, so the mirror is never written:
+  // a SW kill cannot leave it behind and no rebuild can read it. A lock() during the write is
+  // caught after it.
   const dek = await importAesKey(dekRaw);
+  if (epoch !== e) return false;
   await writeSession(dekRaw, unlockedAt);
   if (epoch !== e) {
-    // lock() ran during the import or the write.
+    // lock() ran during the write; its remove may have landed before our set.
     await clearSession();
     return false;
   }
@@ -186,6 +190,26 @@ const success = (restored: boolean): UnlockResult =>
   restored ? { ok: true, warning: "integrity-restored" } : { ok: true };
 
 /**
+ * Hard-max lock for a session judged expired from a read of `unlockedAt` made in epoch `e`. Skips
+ * the lock (returns false) when that read is stale: `lock()` already ran, or an unlock has since
+ * written a session mirror with a different `unlockedAt` (committed or still committing), which
+ * must not be wiped. A commit writes the mirror before memory, so checking the mirror suffices.
+ */
+async function lockIfStillExpired(
+  e: number,
+  unlockedAt: number,
+): Promise<boolean> {
+  const cur = await readSession();
+  cur?.dekRaw.fill(0);
+  // epoch: a lock() already ran (and an unlock started after it must not be cancelled).
+  if (epoch !== e || (cur !== null && cur.unlockedAt !== unlockedAt)) {
+    return false;
+  }
+  await lock();
+  return true;
+}
+
+/**
  * `unlocked` when key material is in memory or in the session mirror. An unlocked vault past its
  * hard max (`unlockedAt + lock.maxHours`) is locked here (backstop for the alarm, ADR 0012).
  */
@@ -194,18 +218,29 @@ export async function status(now = Date.now()): Promise<VaultStatus> {
   if (raw === undefined) return { state: "none" };
   const header = parseHeader(raw);
   if (!header) return { state: "corrupt" };
-  let unlockedAt = mem?.unlockedAt;
-  if (unlockedAt === undefined) {
-    const s = await readSession();
-    s?.dekRaw.fill(0);
-    unlockedAt = s?.unlockedAt;
+  const locked: VaultStatus = { state: "locked", lock: header.lock };
+  const unlocked = (unlockedAt: number): VaultStatus => ({
+    state: "unlocked",
+    unlockedAt,
+    lock: header.lock,
+  });
+  const e = epoch;
+  const unlockedAt = await currentUnlockedAt();
+  if (unlockedAt === undefined) return locked;
+  if (now < unlockedAt + header.lock.maxHours * HOUR_MS) {
+    return unlocked(unlockedAt);
   }
-  if (unlockedAt === undefined) return { state: "locked", lock: header.lock };
-  if (now >= unlockedAt + header.lock.maxHours * HOUR_MS) {
-    await lock();
-    return { state: "locked", lock: header.lock };
-  }
-  return { state: "unlocked", unlockedAt, lock: header.lock };
+  if (await lockIfStillExpired(e, unlockedAt)) return locked;
+  // The read was stale (a lock or a fresh unlock happened meanwhile): report the current state.
+  const current = await currentUnlockedAt();
+  return current === undefined ? locked : unlocked(current);
+}
+
+async function currentUnlockedAt(): Promise<number | undefined> {
+  if (mem) return mem.unlockedAt;
+  const s = await readSession();
+  s?.dekRaw.fill(0);
+  return s?.unlockedAt;
 }
 
 /**
@@ -318,8 +353,12 @@ export async function getDek(now = Date.now()): Promise<CryptoKey> {
   let dek: CryptoKey;
   try {
     const header = parseHeader(await getItem(KEYS.header));
+    const fresh = installed(); // TS keeps `mem` narrowed to null across the await
+    if (fresh) return fresh.dek; // an unlock committed during the header read
     if (!header || now >= s.unlockedAt + header.lock.maxHours * HOUR_MS) {
-      await lock();
+      // Not locked when the session read is stale (a fresh unlock is committing); either way
+      // this caller gets LockedError and may retry.
+      await lockIfStillExpired(e, s.unlockedAt);
       throw new LockedError();
     }
     dek = await importAesKey(s.dekRaw);
