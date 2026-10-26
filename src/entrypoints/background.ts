@@ -1,3 +1,1 @@
-export default defineBackground(() => {
-  fetch("x");
-});
+export default defineBackground(() => {});
