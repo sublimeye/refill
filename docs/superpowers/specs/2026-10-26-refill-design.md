@@ -1,6 +1,6 @@
 # Refill — Design Spec
 
-**Status:** Draft for review · **Date:** 2026-10-26 · **Author:** Roman Morozov (with Claude)
+**Status:** Approved (2026-10-26) · **Date:** 2026-10-26 · **Author:** Roman Morozov (with Claude)
 **One-liner:** Refill is a local-only, encrypted Chromium extension that remembers the forms you fill
 repeatedly (e.g. a water-bill wizard), pre-fills them on return, and protects long-form drafts from loss.
 
@@ -32,7 +32,7 @@ access to every site (see `docs/research/prior-art.md`).
 | Unlock convenience | Touch ID via WebAuthn PRF (gated by a spike, §11) |
 | Wizard automation | **Fill only** — never clicks Next/Submit |
 | Fill trigger | Per-profile setting: **Auto** (default) or **One gesture** (popup "Fill now"); no hotkey |
-| Draft scope | Per-site opt-in; optional global mode via runtime `<all_urls>` request with loud warning |
+| Draft scope | Per-site opt-in only (global mode deferred to v1.1) |
 | Draft saving | Only after a user-originated change; untouched pages never produce drafts |
 | Stack | WXT + TypeScript (strict) + Svelte 5 for extension pages; vanilla TS content script |
 | Browsers | Chromium (Brave, Chrome) for v1 |
@@ -43,6 +43,7 @@ access to every site (see `docs/research/prior-art.md`).
 - Custom widgets (react-select, MUI selects, calendar pickers) — detected and reported "can't fill".
 - Multiple profiles per site; clicking buttons; scripting/macros; cloud sync; Firefox.
 - Hotkeys.
+- **Deferred to v1.1:** global drafts on all sites, import per-site diff preview, in-page Fix mode.
 - Protecting values *after* they are filled into a page from scripts running on that same origin
   (documented residual risk, §8.3).
 
@@ -68,7 +69,7 @@ access to every site (see `docs/research/prior-art.md`).
 │  origin, top frame only)   │    │ dashboard · settings · unlock window │
 │ scan → signature → fill    │    └──────────────────────────────────────┘
 │ recorder capture, drafts   │
-│ toast + fix mode (closed   │
+│ toast (closed shadow root, │
 │ shadow root, top layer)    │
 └────────────────────────────┘
 ```
@@ -94,7 +95,7 @@ access to every site (see `docs/research/prior-art.md`).
 | `scripting` | none | register content script only for granted origins; inject after grant |
 | `alarms` | none | TTL sweep, hard-max lock timer survive SW suspension |
 | `idle` | none | lock on system idle / screen lock |
-| `optional_host_permissions: ["https://*/*"]` | per-site prompt at use | requested per origin on Record / Protect drafts; whole pattern only for global drafts |
+| `optional_host_permissions: ["https://*/*"]` | per-site prompt at use | requested **per origin** on Record / Protect drafts. The broad pattern is declared only because Chrome requires the optional pattern to cover any origin the user may pick; v1 never requests it wholesale |
 
 - **Never requested:** `tabs`, `<all_urls>` at install, `nativeMessaging`, `webRequest`, `history`,
   `cookies`, remote code, any network access (no `fetch` anywhere; enforced by lint + CSP).
@@ -173,7 +174,7 @@ sites (plaintext index — needed while locked to run drafts and reconcile scrip
   { [origin]: { profileId|null, drafts:boolean, ttl, accessRevoked } }
 
 settings (plaintext; contains no secrets)
-  { globalDrafts, defaultTtl, toastSeconds, ... }
+  { defaultTtl, toastSeconds, ... }
 
 p:<random 128-bit id>       AES-GCM(DEK, iv, AAD="refill/v1|profile|<id>|<origin>")
   { v, id, name, origin, pathPrefix, fillMode:"auto"|"gesture", createdAt, lastUsedAt,
@@ -216,8 +217,9 @@ d:<random 128-bit id>
 ### 4.4 Export / import
 - Export: user re-enters passphrase (or a separate export passphrase); fresh salt + Argon2id;
   envelope `{format:"refill-export", v:1, kdf, iv, ct}` with header as AAD. Drafts excluded.
-- Import: treated as untrusted. Strict hand-written schema validation, size caps, diff preview,
-  per-site accept. Settings are never imported.
+- Import: treated as untrusted. Strict hand-written schema validation, size caps, then a
+  confirmation: "Merge N sites (existing sites keep their profile)" or "Replace all". Settings are
+  never imported. (Per-site diff preview deferred to v1.1.)
 
 ---
 
@@ -327,7 +329,7 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
    fill mode, path prefix. Suspicious fields pre-set to `skip`/`ask`. Save → encrypted profile.
 
 ### 6.3 Return visit
-- Unlocked + auto: fill (§5.5) → toast `✓ Water bill · filled 5 · 1 needs you  [Undo] [Fix]`;
+- Unlocked + auto: fill (§5.5) → toast `✓ Water bill · filled 5 · 1 needs you  [Undo]`;
   `ask` fields get a subtle outline and stay empty.
 - Unlocked + gesture: toast `Water bill · 5 fields ready — open Refill to fill`; popup **Fill now**.
 - Locked: the SW knows only the plaintext site index, so state is **origin-level**: badge 🔒;
@@ -336,8 +338,8 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
   if that's rejected, the text instruction remains. **No passphrase input ever appears inside a
   web page.** After unlock, the SW decrypts, re-runs matching on the active tab's latest
   `scan-report`, then fills (auto) or offers Fill now (gesture).
-- **Fix mode:** outlines filled fields; clicking one shows the saved field it matched with
-  **Unlink** / **Never fill here** (updates profile).
+- Wrong matches are fixed in the dashboard field table (set policy to Don't save, or edit).
+  In-page Fix mode is deferred to v1.1.
 
 ### 6.4 Drafts (opted-in sites)
 - A form becomes *dirty* only on a **trusted** (`isTrusted`) `input`/`change` event on an eligible,
@@ -358,8 +360,6 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
   TTL expiry, or removing the site.
 - TTL per site: 1 h / 1 day / **7 days (default)** / 30 days / no expiry. `alarms` sweep hourly and
   on startup deletes expired drafts (works while locked — `expiresAt` is plaintext).
-- Global drafts (Settings): requests `https://*/*` after a full-screen warning explaining that
-  Refill will then see and store what you type on every site. Off by default.
 
 ### 6.5 Toast & badge
 - Closed shadow root, rendered in the top layer (`popover="manual"`), top-right, auto-hide 6 s,
@@ -379,7 +379,7 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
 ### 6.7 Dashboard
 Sites list (search) → site detail: profile (steps, field table with policy, edit values,
 path prefix, fill mode) and drafts (preview, restore-in-tab, delete) → Settings (lock policy,
-Touch ID, default TTL, global drafts, change passphrase) → Export/Import → About/Security.
+Touch ID, default TTL, change passphrase) → Export/Import → About/Security.
 
 ---
 
@@ -396,8 +396,6 @@ Touch ID, default TTL, global drafts, change passphrase) → Export/Import → A
     - `record-capture`, `record-finish` (only with an active session for that tab + origin).
     - `draft-seal`, `draft-mark-submitted`, `draft-offer-query`, `draft-restore`, `draft-discard`
       (drafts for `sender.origin` only).
-    - `field-policy-downgrade` (Fix mode: `save → skip` for one field of `sender.origin`'s profile;
-      can never add data or upgrade a policy).
     - `toast-unlock-click`.
   - Extension-page messages: `sender.url` starts with `chrome-extension://<id>/` and no content
     script context; all other vault/admin operations (unlock, record start, profile edit,
@@ -507,8 +505,8 @@ and content script except the vendored Argon2 WASM.
 - **M1** Crypto & vault (KDF, wrap, records, lock policy, Touch ID if spike passes).
 - **M2** Sites & permissions reconciler; content script scan + fill engine.
 - **M3** Recorder + review page.
-- **M4** Return-visit fill, toast, badge, Fix mode, unlock flow.
-- **M5** Drafts (sealing, offer/restore, clear-on-success, TTL, global mode).
+- **M4** Return-visit fill, toast (Undo), badge, unlock flow.
+- **M5** Drafts (sealing, offer/restore, submitted-marking, TTL).
 - **M6** Design pass: popup, dashboard, onboarding.
 - **M7** Hardening + release audit.
 - **M8** Store listing & submission: privacy policy (required even though local-only), data
