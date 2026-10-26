@@ -1,3 +1,6 @@
+import { calibrate } from "../lib/crypto/kdf";
+import { createPageHandlers } from "../lib/messaging/page-handlers";
+import { createRouter, toRuntimeListener } from "../lib/messaging/router";
 import { enforceOnWake, installLockTriggers } from "../lib/vault/lock-triggers";
 
 export default defineBackground(() => {
@@ -18,4 +21,10 @@ export default defineBackground(() => {
       err instanceof Error ? err.name : "error",
     );
   });
+  // Internal messages only: no onMessageExternal (externally_connectable is empty).
+  browser.runtime.onMessage.addListener(
+    toRuntimeListener(
+      createRouter({ page: createPageHandlers(() => calibrate()) }),
+    ),
+  );
 });
