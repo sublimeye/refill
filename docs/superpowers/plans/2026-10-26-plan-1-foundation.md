@@ -36,7 +36,8 @@ export/import, Touch ID if spike passed (M6) · Plan 7 hardening, release audit,
 - Lock defaults: `idleMinutes: 15`, `maxHours: 12`, `passphraseEveryDays: 14`. Failed-unlock backoff 1 s doubling to 60 s.
 - Passphrases are normalized with `String.prototype.normalize("NFC")` before KDF; SW rejects < 12 chars.
 - Exact versions pinned in `package.json` (no `^`/`~`); lockfile committed.
-- From Task 3 on: one branch per task (`t<N>-<slug>`), PR to `main`, squash auto-merge when CI is green. Conventional commits. Every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- **Every task lands via a PR** (including Tasks 1–2): branch `t<N>-<slug>` → `gh pr create` (body: summary, test evidence, ADRs touched; ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`) → the task reviewer posts its review on the PR (`gh pr review --comment`) → fixes pushed to the same branch → squash-merge once CI is green (CI exists from Task 3; before that, merge after review). Conventional commits. Every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- **ADRs:** any task that makes or changes a meaningful decision (library, algorithm, parameter, permission, data format, deviation from the spec or this plan) adds `docs/adr/NNNN-<slug>.md` (Context / Decision / Consequences / Status) or updates an existing ADR's Status (`Superseded by NNNN`) in the same PR. `docs/adr/README.md` keeps the index.
 
 ## Review Focus
 
@@ -96,7 +97,7 @@ refill/
 
 ### Task 1: M0 spikes (throwaway) and recorded decisions
 
-Spikes run on branch `spike/m0`, never merged. Only `docs/` results land on `main` (direct commit; CI not yet present).
+Spike code lives on branch `spike/m0`, never merged. Results land via a separate docs PR.
 
 **Files:**
 - Create (branch `spike/m0` only): `spikes/m0/manifest.json`, `spikes/m0/probe.html`, `spikes/m0/probe.js`, `spikes/m0/popup.html`, `spikes/m0/popup.js`, `spikes/m0/insert.html`, `spikes/m0/hash-wasm.umd.min.js` (copied from the `hash-wasm` npm tarball `dist/`)
@@ -112,14 +113,7 @@ Spikes run on branch `spike/m0`, never merged. Only `docs/` results land on `mai
 - [ ] **Step 2: Run (a)–(d) in Brave on the user's Mac** (load unpacked; ask the user to perform the Touch ID prompts and permission dialog). Also run (a) in Chrome if installed, with both "iCloud Keychain" and "Chrome profile" choices if offered. Also run (b) in the Brave service-worker context via a `chrome.runtime.sendMessage` round-trip if feasible; otherwise note page-context timing only.
 - [ ] **Step 3: Write `docs/spikes/m0-results.md`** — a table per probe: browser + version, macOS version, outcome, raw numbers/log lines.
 - [ ] **Step 4: Write ADR 0001** (Argon2id via `hash-wasm` 4.12.0, exact pinned; params: floor `m=65536,t=3,p=1`; calibration target from measured timing — if median at `t=3` > 1500 ms, the ADR records the floor as accepted and calibration never goes below it). **Write ADR 0002** (Touch ID: GO if (a) returned `prf.results.first` of 32 bytes in Brave via a platform passkey; otherwise NO-GO for v1, v2 via native helper). Each ADR: Context / Decision / Consequences / Status.
-- [ ] **Step 5: Commit to main**
-
-```bash
-git checkout main
-git add docs/spikes/m0-results.md docs/adr/0001-argon2id-hash-wasm.md docs/adr/0002-touch-id-prf.md
-git commit -m "docs: record M0 spike results and ADRs 0001-0002"
-git push
-```
+- [ ] **Step 5: PR** — branch `t1-m0-results` from `main` with `docs/spikes/m0-results.md`, `docs/adr/0001-argon2id-hash-wasm.md`, `docs/adr/0002-touch-id-prf.md`, `docs/adr/README.md` (index); commit `docs: record M0 spike results and ADRs 0001-0002`; open PR; review; merge.
 
 ---
 
@@ -149,7 +143,7 @@ test("security-relevant manifest keys match the reviewed snapshot", () => {
 - [ ] **Step 5: Run** `pnpm test:manifest` → FAIL (snapshot file empty/missing).
 - [ ] **Step 6: Write `security/manifest.expected.json`** by hand from Global Constraints (permissions sorted: `activeTab, alarms, idle, scripting, storage`; `host_permissions: []`; `content_scripts: []`; `web_accessible_resources: []`; `has_key: true`). Do not generate it from the build output.
 - [ ] **Step 7: Run** `pnpm test:manifest` → PASS. Load `.output/chrome-mv3` unpacked in Brave: no errors, no permission warnings on the extension details page. If Chrome rejects `externally_connectable.matches: []`, switch to `{ ids: [] }` and note it in ADR 0003.
-- [ ] **Step 8: Commit** (direct to main; CI arrives next task): `chore: scaffold WXT + Svelte extension with manifest snapshot`.
+- [ ] **Step 8: PR** `chore: scaffold WXT + Svelte extension with manifest snapshot` (branch `t2-scaffold`; CI arrives next task, so merge after review).
 
 ---
 
@@ -172,7 +166,7 @@ test("security-relevant manifest keys match the reviewed snapshot", () => {
 - [ ] **Step 3: `scripts/hash-dir.mjs <dir>`** prints one line `sha256` over the sorted list of `relativePath\0sha256(file)\n` for every file. 
 - [ ] **Step 4: `ci.yml`** job `verify` (ubuntu-latest, Node 23, pnpm via `pnpm/action-setup`, `pnpm install --frozen-lockfile`): `lint` → `typecheck` → `test` → `test:manifest` → reproducible build (`pnpm build && node scripts/hash-dir.mjs .output/chrome-mv3 > a.txt && rm -rf .output && pnpm build && node scripts/hash-dir.mjs .output/chrome-mv3 > b.txt && diff a.txt b.txt`) → `semgrep --config .semgrep/refill.yml --error src` (via `returntocorp/semgrep` container step) → `osv-scanner --lockfile=pnpm-lock.yaml` (google/osv-scanner-action) → `pnpm audit --audit-level high` → `npx playwright install --with-deps chromium && pnpm build && pnpm test:e2e` (script is `playwright test --pass-with-no-tests` so it passes until Task 11 adds specs). `codeql.yml`: `javascript-typescript`, on push/PR/weekly.
 - [ ] **Step 5: Docs.** `SECURITY.md` (report privately via GitHub Security Advisories; scope; no bounty). `PRIVACY.md` (no data leaves the device; what is stored, encrypted vs plaintext site index per spec §4.2; no analytics). `docs/security/threat-model.md`: copy spec §8.1–§8.3 as the baseline, plus a STRIDE table with one row per component in spec §2 (columns: component, threat, control, test) — rows for components not yet built say "Plan N".
-- [ ] **Step 6: Push and protect.** Push to main; confirm both workflows pass on GitHub. Then:
+- [ ] **Step 6: Protect main** (after the Step 7 PR merges and both workflows pass on `main`):
 
 ```bash
 gh api -X PATCH repos/sublimeye/refill -f allow_auto_merge=true -f delete_branch_on_merge=true -f allow_merge_commit=false -f allow_rebase_merge=false
@@ -182,7 +176,7 @@ gh api -X PUT repos/sublimeye/refill/branches/main/protection --input - <<'JSON'
 JSON
 ```
 Enable secret scanning + push protection: `gh api -X PATCH repos/sublimeye/refill -F security_and_analysis[secret_scanning][status]=enabled -F security_and_analysis[secret_scanning_push_protection][status]=enabled`.
-- [ ] **Step 7: Commit/push** `ci: add CI, CodeQL, Semgrep rules, security docs`. From here on, every task uses a branch + PR + `gh pr merge --squash --auto`.
+- [ ] **Step 7: PR** `ci: add CI, CodeQL, Semgrep rules, security docs` (branch `t3-ci`); Step 6's protection is applied after this PR merges and CI is green on `main`.
 
 ---
 
