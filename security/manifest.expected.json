@@ -1,0 +1,13 @@
+{
+  "permissions": ["activeTab", "alarms", "idle", "scripting", "storage"],
+  "optional_host_permissions": ["https://*/*"],
+  "host_permissions": [],
+  "externally_connectable": { "ids": [], "matches": [] },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'none'"
+  },
+  "web_accessible_resources": [],
+  "content_scripts": [],
+  "minimum_chrome_version": "127",
+  "has_key": true
+}
