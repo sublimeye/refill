@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Refill M0 probe</title>
+<style>body{font:14px system-ui;margin:16px;max-width:900px}button{margin:4px 8px 4px 0}pre{background:#f4f4f4;padding:8px;white-space:pre-wrap}</style>
+<h1>Refill M0 probe</h1>
+<p>origin: <code id="origin"></code></p>
+<h2>(a) PRF create/get</h2>
+<button id="a-create">create + get</button>
+<h2>(b) Argon2id timing</h2>
+<button id="b-run">run (t = 3, 4, 6; 3 runs each)</button>
+<h2>(c) permission request survives popup close</h2>
+<p>Open the toolbar popup, click its button, accept or dismiss the dialog, then click below.</p>
+<button id="c-read">read chrome.storage.session</button>
+<h2>(d) insertText isTrusted</h2>
+<p><a href="insert.html" target="_blank">open insert.html</a></p>
+<h2>Log</h2>
+<pre id="log"></pre>
+<script src="hash-wasm.umd.min.js"></script>
+<script src="probe.js"></script>
