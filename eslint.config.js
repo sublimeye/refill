@@ -11,4 +11,10 @@ export default ts.config(
     files: ["**/*.svelte", "**/*.svelte.ts"],
     languageOptions: { parserOptions: { parser: ts.parser } },
   },
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: { console: "readonly", process: "readonly" },
+    },
+  },
 );
