@@ -17,3 +17,4 @@ Each ADR has Context / Decision / Consequences / Status. Add a new `NNNN-<slug>.
 | [0011](0011-store-queue-and-tx-lock.md) | Store write queue and transaction-handle `withStoreLock` | Accepted |
 | [0012](0012-vault-core-details.md) | Vault core details (strict header parsing, lock serialization, fail-closed integrity, backoff) | Accepted |
 | [0013](0013-lock-triggers-and-sw-wake.md) | Lock triggers and service-worker wake (`lockIfExpired`, re-arming, synchronous registration) | Accepted |
+| [0014](0014-messaging-router.md) | Messaging router (sendResponse listener, generic rejections, strict parsing, `sendToSw` errors) | Accepted |
