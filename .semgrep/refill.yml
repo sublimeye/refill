@@ -1,0 +1,88 @@
+# Refill custom Semgrep rules (spec §8.4, §8.5). Run from the repo root:
+#   semgrep --config .semgrep/refill.yml --error src
+rules:
+  - id: refill-no-network
+    severity: ERROR
+    languages: [typescript, javascript]
+    message: >-
+      Refill is local-only: no network APIs (fetch, XMLHttpRequest, WebSocket,
+      EventSource, sendBeacon) anywhere in src/.
+    paths:
+      include: ["/src/**"]
+    pattern-either:
+      - pattern: fetch(...)
+      - pattern: window.fetch(...)
+      - pattern: self.fetch(...)
+      - pattern: globalThis.fetch(...)
+      - pattern: new XMLHttpRequest(...)
+      - pattern: new WebSocket(...)
+      - pattern: new EventSource(...)
+      - pattern: navigator.sendBeacon(...)
+
+  - id: refill-no-html-sinks
+    severity: ERROR
+    languages: [typescript, javascript]
+    message: >-
+      HTML-string sinks are banned (innerHTML, outerHTML, insertAdjacentHTML,
+      document.write). Build DOM with createElement/textContent.
+    paths:
+      include: ["/src/**"]
+    pattern-either:
+      - pattern: $X.innerHTML = ...
+      - pattern: $X.innerHTML += ...
+      - pattern: $X.outerHTML = ...
+      - pattern: $X.outerHTML += ...
+      - pattern: $X.insertAdjacentHTML(...)
+      - pattern: document.write(...)
+
+  - id: refill-no-html-sinks-svelte
+    severity: ERROR
+    languages: [generic]
+    message: >-
+      {@html} is banned in Svelte templates (HTML-string sink). Render text, not markup.
+    paths:
+      include: ["/src/**/*.svelte"]
+    pattern-regex: '\{@html'
+
+  - id: refill-no-eval
+    severity: ERROR
+    languages: [typescript, javascript]
+    message: Dynamic code evaluation is banned (eval, new Function).
+    paths:
+      include: ["/src/**"]
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+
+  - id: refill-no-sync-storage
+    severity: ERROR
+    languages: [typescript, javascript]
+    message: >-
+      storage.sync is banned: data must never leave the device (it syncs to the
+      user's Google account).
+    paths:
+      include: ["/src/**"]
+    pattern: $B.storage.sync
+
+  - id: refill-subtle-only-in-crypto
+    severity: ERROR
+    languages: [typescript, javascript]
+    message: crypto.subtle may only be used inside src/lib/crypto/.
+    paths:
+      include: ["/src/**"]
+      exclude: ["/src/lib/crypto/**"]
+    pattern-either:
+      - pattern: crypto.subtle
+      - pattern: $X.crypto.subtle
+
+  - id: refill-storage-local-only-in-store
+    severity: ERROR
+    languages: [typescript, javascript]
+    message: >-
+      storage.local may only be used inside src/lib/store/ (single write queue).
+    paths:
+      include: ["/src/**"]
+      exclude: ["/src/lib/store/**"]
+    pattern-either:
+      - pattern: browser.storage.local
+      - pattern: chrome.storage.local
