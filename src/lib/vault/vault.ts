@@ -13,6 +13,7 @@ import {
   importDraftPrivateKey,
 } from "../crypto/draft-seal";
 import { deriveKek, isKdfParams, type KdfParams } from "../crypto/kdf";
+import { meetsMinLength } from "../passphrase/rules";
 import { KEYS, getItem, withStoreLock, type StoreTx } from "../store/local";
 import { checkBackoff, recordFailure, resetBackoff } from "./backoff";
 import {
@@ -32,7 +33,6 @@ import {
 } from "./types";
 
 const DEK_BYTES = 32;
-const MIN_PASSPHRASE_CHARS = 12;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 /** Bounds work on a tampered integrity record; the real payload is a few hundred bytes. */
@@ -66,7 +66,7 @@ function notify(unlocked: boolean): void {
 
 /** Throws `Error("weak")` for fewer than 12 characters (code points) after NFC. */
 function assertStrong(passphrase: string): void {
-  if ([...passphrase.normalize("NFC")].length < MIN_PASSPHRASE_CHARS) {
+  if (!meetsMinLength(passphrase)) {
     throw new Error("weak");
   }
 }

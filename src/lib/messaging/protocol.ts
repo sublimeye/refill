@@ -27,7 +27,7 @@ export type PageResponse<R extends PageRequest> = R extends {
 /** What the router resolves for a message it refuses or whose handler threw. Never carries detail. */
 export type RouterError = { ok: false; error: "rejected" | "internal" };
 
-export const MAX_MESSAGE_BYTES = 65_536;
+export const MAX_MESSAGE_CHARS = 65_536; // compared with the JSON string length, not UTF-8 bytes
 export const MAX_STRING_LENGTH = 1024;
 
 const KEYS_BY_TYPE: Readonly<Record<PageRequest["type"], readonly string[]>> = {
@@ -96,7 +96,13 @@ function isRouterError(x: unknown): x is RouterError {
 export async function sendToSw<R extends PageRequest>(
   req: R,
 ): Promise<PageResponse<R>> {
-  const res: unknown = await browser.runtime.sendMessage(req);
+  let res: unknown;
+  try {
+    res = await browser.runtime.sendMessage(req);
+  } catch {
+    // Transport failure (no receiver, invalidated context): never surface the raw error.
+    throw new MessagingError("internal");
+  }
   if (isRouterError(res)) throw new MessagingError(res.error);
   if (typeof res !== "object" || res === null) {
     throw new MessagingError("internal");
