@@ -34,23 +34,30 @@ export function newKdfParams(t?: number): KdfParams {
 }
 
 /**
- * Params come from the plaintext vault header, so every field is validated (RangeError for any
- * failure, including wrong types): floor and upper bounds on m and t so a tampered header can
- * neither weaken the KDF nor hang or crash unlock.
+ * Params come from the plaintext vault header, so every field is validated: floor and upper
+ * bounds on m and t so a tampered header can neither weaken the KDF nor hang or crash unlock.
+ * Accepts any value (wrong types, null, non-objects) and returns false for anything invalid.
  */
+export function isKdfParams(x: unknown): x is KdfParams {
+  if (x === null || typeof x !== "object") return false;
+  const p = x as Record<string, unknown>;
+  return (
+    p.alg === "argon2id" &&
+    p.v === 1 &&
+    p.p === 1 &&
+    Number.isSafeInteger(p.m) &&
+    (p.m as number) >= KDF_FLOOR.m &&
+    (p.m as number) <= KDF_MAX.m &&
+    Number.isSafeInteger(p.t) &&
+    (p.t as number) >= KDF_FLOOR.t &&
+    (p.t as number) <= KDF_MAX.t &&
+    saltLength(p.salt) === SALT_BYTES
+  );
+}
+
+/** RangeError for any failure of `isKdfParams`, including wrong types. */
 function assertParams(params: KdfParams): void {
-  const ok =
-    params.alg === "argon2id" &&
-    params.v === 1 &&
-    params.p === 1 &&
-    Number.isSafeInteger(params.m) &&
-    params.m >= KDF_FLOOR.m &&
-    params.m <= KDF_MAX.m &&
-    Number.isSafeInteger(params.t) &&
-    params.t >= KDF_FLOOR.t &&
-    params.t <= KDF_MAX.t &&
-    saltLength(params.salt) === SALT_BYTES;
-  if (!ok) throw new RangeError("invalid KDF parameters");
+  if (!isKdfParams(params)) throw new RangeError("invalid KDF parameters");
 }
 
 function saltLength(salt: unknown): number {

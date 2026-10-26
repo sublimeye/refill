@@ -7,6 +7,7 @@ import {
   argon2Raw,
   calibrate,
   deriveKek,
+  isKdfParams,
   newKdfParams,
   type KdfParams,
 } from "../../../src/lib/crypto/kdf";
@@ -113,7 +114,16 @@ describe("kdf", () => {
       await expect(argon2Raw("pw", params(over))).rejects.toBeInstanceOf(
         RangeError,
       );
+      expect(isKdfParams(params(over))).toBe(false);
     });
+  });
+
+  it("isKdfParams accepts valid params and rejects non-objects", () => {
+    expect(isKdfParams(newKdfParams())).toBe(true);
+    expect(isKdfParams(newKdfParams(20))).toBe(true);
+    for (const x of [null, undefined, "x", 5, [], {}]) {
+      expect(isKdfParams(x)).toBe(false);
+    }
   });
 
   it("newKdfParams uses a fresh 16-byte salt and clamps t to the floor", () => {
