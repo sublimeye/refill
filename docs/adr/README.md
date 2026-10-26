@@ -15,3 +15,4 @@ Each ADR has Context / Decision / Consequences / Status. Add a new `NNNN-<slug>.
 | [0009](0009-ci-playwright-no-with-deps.md) | CI installs Playwright Chromium without `--with-deps`, with step timeouts | Accepted |
 | [0010](0010-draft-sealing-details.md) | Draft sealing details (ECDH P-256 key schedule, PKCS#8 helpers, public JWK validation) | Accepted |
 | [0011](0011-store-queue-and-tx-lock.md) | Store write queue and transaction-handle `withStoreLock` | Accepted |
+| [0012](0012-vault-core-details.md) | Vault core details (strict header parsing, lock serialization, fail-closed integrity, backoff) | Accepted |
