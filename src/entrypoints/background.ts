@@ -21,6 +21,18 @@ export default defineBackground(() => {
       err instanceof Error ? err.name : "error",
     );
   });
+  // First run: send the user to onboarding. Updates and browser updates open nothing.
+  browser.runtime.onInstalled.addListener(({ reason }) => {
+    if (reason !== "install") return;
+    browser.tabs
+      .create({ url: browser.runtime.getURL("/onboarding.html") })
+      .catch((err: unknown) => {
+        console.error(
+          "[refill] opening onboarding failed:",
+          err instanceof Error ? err.name : "error",
+        );
+      });
+  });
   // Internal messages only: no onMessageExternal (externally_connectable is empty).
   browser.runtime.onMessage.addListener(
     toRuntimeListener(
