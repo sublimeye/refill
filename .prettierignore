@@ -6,3 +6,4 @@ docs/
 .superpowers/
 test-results/
 playwright-report/
+.semgrep/
