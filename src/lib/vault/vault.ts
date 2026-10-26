@@ -34,6 +34,7 @@ import {
 const DEK_BYTES = 32;
 const MIN_PASSPHRASE_CHARS = 12;
 const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
 /** Bounds work on a tampered integrity record; the real payload is a few hundred bytes. */
 const INTEGRITY_MAX_CT = 4096;
 
@@ -234,6 +235,27 @@ export async function status(now = Date.now()): Promise<VaultStatus> {
   // The read was stale (a lock or a fresh unlock happened meanwhile): report the current state.
   const current = await currentUnlockedAt();
   return current === undefined ? locked : unlocked(current);
+}
+
+/**
+ * Service-worker wake check (Task 9): locks only when a session exists and is genuinely past its
+ * hard max (`unlockedAt + lock.maxHours`) or its passphrase limit (`now - lastPassphraseAt >
+ * lock.passphraseEveryDays`). A locked vault, an unreadable header or a session within both
+ * limits is left alone. Goes through `lockIfStillExpired`, so a stale read never wipes a fresh
+ * unlock. Returns whether it locked.
+ */
+export async function lockIfExpired(now = Date.now()): Promise<boolean> {
+  const e = epoch;
+  const unlockedAt = await currentUnlockedAt();
+  if (unlockedAt === undefined) return false;
+  // After the session read: an unlock writes the header before its mirror, so a header at least as
+  // new as the `unlockedAt` just read is never older than the session it is judged against.
+  const header = parseHeader(await getItem(KEYS.header));
+  if (!header) return false;
+  const expired =
+    now >= unlockedAt + header.lock.maxHours * HOUR_MS ||
+    now - header.lastPassphraseAt > header.lock.passphraseEveryDays * DAY_MS;
+  return expired && (await lockIfStillExpired(e, unlockedAt));
 }
 
 async function currentUnlockedAt(): Promise<number | undefined> {
