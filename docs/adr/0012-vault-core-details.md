@@ -14,19 +14,27 @@ Task 8 implements the vault (spec §4.1–§4.3, §8.2): create, unlock, lock, c
 - **Lock always wins races (ruling R23)**: `lock()` bumps an epoch, clears memory and the session, then bumps the epoch and clears memory again after the session removal resolves. The second pass catches a rebuild that read the session before the removal landed.
   - `unlockWithPassphrase` and `createVault` capture the epoch on entry, before the store-queue wait and the KDF.
   - A session rebuild in `getDek` and a draft-key import in `getDraftPrivateKey` capture it when they start.
-  - If a `lock()` has run since that capture, nothing is installed. The epoch is checked before the session is written, so the DEK does not reach the mirror. It is checked again after the write, and any mirror written in the meantime is cleared.
+  - If a `lock()` has run since that capture, nothing is installed. `commitUnlock` checks the epoch at every await boundary. The check right before the session write runs after the key import, so a `lock()` during the KDF or the import is caught before the DEK reaches the mirror. This matters because storage operations apply in issue order: a `set` issued after a `lock()`'s `remove` would leave a mirror that a rebuild could read. The check after the write catches a `lock()` during the write itself and clears the mirror.
   - An unlock that loses returns `{ ok: false, reason: "locked-during-unlock" }`, never `ok: true` while locked. Its header writes (`lastPassphraseAt`, any integrity restore) and its backoff reset stand, because the passphrase was verified.
   - A `createVault` that loses still persists the vault and resolves normally, since creation succeeded, but leaves it locked.
   - Example: a screen lock (Task 9's `idle` → `locked`) during the user's unlock leaves the vault locked.
-- **Hard-max backstops**:
+- **Hard-max backstops** (they never act on a stale read):
   - `status(now)`: when the vault is unlocked and `now >= unlockedAt + lock.maxHours`, it calls `lock()` and reports `locked`.
   - `getDek(now)` (ruling R24): when it rebuilds from the session after a SW restart, it applies the same check against the header's lock policy. A header that does not parse is also treated as expired. In both cases it calls `lock()` and throws `LockedError`, so a resumed service worker cannot use an expired session before Task 9's wake check runs. The in-memory fast path is not re-checked.
+  - Both backstops read `unlockedAt` and only later call `lock()`, so they go through `lockIfStillExpired`, which re-reads the session first.
+    - It does not lock if a `lock()` already ran since the read, so an unlock started after that lock is not cancelled.
+    - It does not lock if the mirror now has a different `unlockedAt`. That means a newer unlock has committed or is committing. A commit writes the mirror before memory, so checking the mirror suffices.
+    - `getDek` additionally returns the fresh in-memory DEK if a commit landed during its header read. Otherwise the caller gets a transient `LockedError`.
+    - `status` reports the current state.
   - Alarms and `enforceOnWake` (Task 9) remain the primary mechanism. `enforceOnWake` must call `lock()` only when the session has actually expired; an unconditional call would cancel a concurrent first unlock.
 - **`now` parameters are test seams**: `now` sets backoff deadlines, `unlockedAt` and `lastPassphraseAt`. Production code omits it, and no message handler may ever forward a `now` received in a message, because a far-future value would defeat the backoff and push out the deadlines.
 - **Backoff state** in `storage.session` `vault:backoff`. Malformed state reads as no failures. A stored deadline more than 60 s in the future is clamped to `now + 60 s` and persisted, so a clock moved back cannot lock the user out for longer than 60 s. A correct passphrase (unlock or change) resets the state. An integrity-corrupt result neither records a failure nor resets the state.
 - **Session mirror** `vault:session` = `{ dek: base64, unlockedAt }`. A malformed mirror reads as locked. Raw DEK bytes (the unwrap output, the session read) are zeroed after import. The base64 string in session storage cannot be zeroed, which is accepted in spec §8.3.
 - **Records**: the value is serialized with `JSON.stringify` and sealed under the DEK with the caller's AAD. A value with no JSON form throws `TypeError`. A malformed stored record throws `DecryptError`. Both functions check the lock first, so a locked vault throws `LockedError` even for a missing key. `putEncrypted` takes an optional `StoreTx` for use inside a lock job (ADR 0011).
-- **`onLockChange`**: listeners get `true` after an unlock or create commits and `false` on every `lock()` call, even when the vault was already locked. Listener exceptions are swallowed. Notification happens outside the store lock.
+- **`onLockChange`**: listeners get `true` after an unlock or create commits and `false` on every `lock()` call, even when the vault was already locked. Listener exceptions are swallowed.
+  - Unlock and create notify outside the store lock.
+  - A hard-max `lock()` triggered from `getDek` can run inside a `withStoreLock` job (through `putEncrypted(..., tx)`), and then `notify(false)` fires inside that job.
+  - This is not a deadlock, because listeners are called synchronously and their promises are not awaited. Still, listeners must never block on a store write.
 - **Draft private key**: decrypted lazily on first `getDraftPrivateKey()`, imported non-extractable and cached until lock.
 - **Tests**: to assert that the KDF does not run during backoff, `vi.mock` replaces the kdf module with a pass-through `vi.fn` around the real `deriveKek` (ESM exports cannot be spied on after import). Vault tests use the Argon2 floor and create one vault per file, then restore a storage snapshot for later tests.
 
