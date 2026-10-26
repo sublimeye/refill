@@ -4,7 +4,8 @@ Refill is local-only. **No data leaves your device.**
 
 - The extension makes no network requests of any kind: its code uses no network APIs, and its
   Content Security Policy sets `connect-src 'none'` for extension pages. CI enforces the first
-  rule with Semgrep and the second with a manifest snapshot test.
+  rule with Semgrep rules covering TypeScript, JavaScript and Svelte files, and the second with a
+  manifest snapshot test.
 - There is no account, no server, no sync (`chrome.storage.sync` is never used), no analytics,
   no telemetry, no crash reporting, and no remote code or remote configuration.
 - Refill does not read pages you have not explicitly enabled it on. Host access is requested per
