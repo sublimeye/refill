@@ -16,3 +16,4 @@ Each ADR has Context / Decision / Consequences / Status. Add a new `NNNN-<slug>.
 | [0010](0010-draft-sealing-details.md) | Draft sealing details (ECDH P-256 key schedule, PKCS#8 helpers, public JWK validation) | Accepted |
 | [0011](0011-store-queue-and-tx-lock.md) | Store write queue and transaction-handle `withStoreLock` | Accepted |
 | [0012](0012-vault-core-details.md) | Vault core details (strict header parsing, lock serialization, fail-closed integrity, backoff) | Accepted |
+| [0013](0013-lock-triggers-and-sw-wake.md) | Lock triggers and service-worker wake (`lockIfExpired`, re-arming, synchronous registration) | Accepted |
