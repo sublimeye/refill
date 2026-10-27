@@ -50,6 +50,7 @@
     "check:no-frameworks": "node scripts/check-no-frameworks.mjs .output/chrome-mv3",
     "build:e2e": "wxt build --mode e2e",
     "test:e2e": "pnpm build:e2e && playwright test --pass-with-no-tests",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   }
 }

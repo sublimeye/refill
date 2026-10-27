@@ -87,6 +87,13 @@ const selectForm = get<HTMLFormElement | null>(
   HTMLSelectElement.prototype,
   "form",
 );
+const buttonForm = get<HTMLFormElement | null>(
+  HTMLButtonElement.prototype,
+  "form",
+);
+const buttonType = get<string>(HTMLButtonElement.prototype, "type");
+const inputType = get<string>(HTMLInputElement.prototype, "type");
+const nodeListLength = get<number>(NodeList.prototype, "length");
 const baseURI = get<string>(Node.prototype, "baseURI");
 const ownerDocument = get<Document | null>(Node.prototype, "ownerDocument");
 const isConnected = get<boolean>(Node.prototype, "isConnected");
@@ -100,6 +107,9 @@ const dispatchFn = EventTarget.prototype.dispatchEvent;
 const querySelectorFn = Element.prototype.querySelector;
 const execCommandFn = Document.prototype.execCommand;
 const getRootNodeFn = Node.prototype.getRootNode;
+const documentQueryAllFn = Document.prototype.querySelectorAll;
+const fragmentQueryAllFn = DocumentFragment.prototype.querySelectorAll;
+const nodeListItemFn = NodeList.prototype.item;
 const documentActive = get<Element | null>(Document.prototype, "activeElement");
 const shadowActive = get<Element | null>(ShadowRoot.prototype, "activeElement");
 const shadowHost = get<Element>(ShadowRoot.prototype, "host");
@@ -128,6 +138,9 @@ const execCommand = (doc: Document, command: string, value: string): boolean =>
   execCommandFn.call(doc, command, false, value);
 
 const MAX_FOCUS_DEPTH = 64;
+
+/** Elements with a `formaction` attribute the fill rules look at; more than this refuses (ADR 0024). */
+export const MAX_FORMACTION_ELEMENTS = 500;
 
 /**
  * True only if `el` is the deepest focused element: it is the `activeElement` of its own root and
@@ -209,29 +222,94 @@ function untouched(item: FillItem): boolean {
   return current === "" || current === item.pageDefault;
 }
 
-/**
- * True if the control's form (if any) submits to `origin`. The `action` attribute is read, never
- * `form.action` (an `<input name="action">` replaces it), and resolved against the document base;
- * no attribute means the form submits to the document itself. `formaction` on a submitter is out of
- * scope. Unparsable counts as cross-origin.
- */
-function sameOriginForm(el: FormControl, origin: string): boolean {
-  const form = formOf(el);
-  if (form === null) return true;
-  if (!hasAttr(form, "action")) return true;
+/** True if `url` resolved against `base` has origin `origin`. Unparsable counts as cross-origin. */
+function resolvesTo(url: string, base: string, origin: string): boolean {
   try {
-    return (
-      new URL(getAttr(form, "action") ?? "", baseURI(el)).origin === origin
-    );
+    return new URL(url, base).origin === origin;
   } catch {
     return false;
   }
 }
 
 /**
+ * The form a submit button submits, or null if `el` is not a submit button. A `<button>` with no or
+ * an invalid `type` is a submit button (the prototype `type` getter normalises that); so are
+ * `<input type=submit>` and `<input type=image>`.
+ */
+function submitterForm(el: Element): HTMLFormElement | null {
+  switch (localName(el)) {
+    case "button":
+      return buttonType(el) === "submit" ? buttonForm(el) : null;
+    case "input": {
+      const type = inputType(el);
+      return type === "submit" || type === "image" ? inputForm(el) : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * True if no submit button of `form` overrides its target with a `formaction` that resolves to
+ * another origin. A submitter can sit anywhere in the form's tree (`form=` attaches one from
+ * outside the form element), so the whole tree root (document or shadow root) is searched for
+ * `[formaction]` and each hit is kept only if its prototype `form` getter returns `form`. More than
+ * MAX_FORMACTION_ELEMENTS hits, or a form not in a document or shadow root, refuses.
+ */
+function submittersSameOrigin(
+  form: HTMLFormElement,
+  base: string,
+  origin: string,
+): boolean {
+  const root = getRootNodeFn.call(form);
+  let hits: NodeListOf<Element>;
+  switch (nodeType(root)) {
+    case Node.DOCUMENT_NODE:
+      hits = documentQueryAllFn.call(root, "[formaction]");
+      break;
+    case Node.DOCUMENT_FRAGMENT_NODE:
+      hits = fragmentQueryAllFn.call(root, "[formaction]");
+      break;
+    default:
+      return false;
+  }
+  const count = nodeListLength(hits);
+  if (count > MAX_FORMACTION_ELEMENTS) return false;
+  for (let i = 0; i < count; i++) {
+    const el = nodeListItemFn.call(hits, i) as Element | null;
+    if (el === null || submitterForm(el) !== form) continue;
+    if (!resolvesTo(getAttr(el, "formaction") ?? "", base, origin)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * True if the control's form (if any) submits to `origin`, whichever of its submit buttons is used.
+ * The `action` attribute is read, never `form.action` (an `<input name="action">` replaces it), and
+ * resolved against the document base; no attribute means the form submits to the document itself.
+ * Then every submitter's `formaction` must resolve to `origin` too (`submittersSameOrigin`): markup
+ * alone can add `<button formaction="https://evil.example">` to a same-origin form.
+ */
+function sameOriginForm(el: FormControl, origin: string): boolean {
+  const form = formOf(el);
+  if (form === null) return true;
+  const base = baseURI(el);
+  if (
+    hasAttr(form, "action") &&
+    !resolvesTo(getAttr(form, "action") ?? "", base, origin)
+  ) {
+    return false;
+  }
+  return submittersSameOrigin(form, base, origin);
+}
+
+/**
  * The spec 5.5 rules that depend on the control and the page, in cheapest-first order: kind,
- * eligible, not sensitive, form posts to `origin`, current value empty or equal to `pageDefault`
- * (checkbox/radio: `String(checked)`). Shared by `canFill` and the re-check in `fillControl`.
+ * eligible, not sensitive, form (and every submitter's `formaction`) posts to `origin`, current
+ * value empty or equal to `pageDefault` (checkbox/radio: `String(checked)`). Shared by `canFill`
+ * and the re-check in `fillControl`.
  */
 function vet(
   item: FillItem,
@@ -255,8 +333,8 @@ function vet(
 
 /**
  * The spec 5.5 fill rules that depend on the control and the page: eligible, not sensitive, current
- * value empty or equal to `pageDefault` (checkbox/radio: `String(checked)`), form posts to `origin`.
- * (Vault state, `fillMode` and field policy are the caller's.) Never throws; any failure is false.
+ * value empty or equal to `pageDefault` (checkbox/radio: `String(checked)`), form and every
+ * submitter's `formaction` post to `origin`. (Vault state, `fillMode` and field policy are the caller's.) Never throws; any failure is false.
  * `isTopWindow` is for tests only (see `isEligible`).
  */
 export function canFill(

@@ -3,6 +3,7 @@
 // file is part of the worker bundle, and the DOM modules must never load there. Decisions: ADR 0025.
 import type { ControlKind } from "../fields/eligibility";
 import type { Sig } from "../fields/signature";
+import { MAX_CONTROLS } from "../limits";
 import { isPlainObject } from "./protocol";
 
 export interface ScanControl {
@@ -44,7 +45,7 @@ export type ContentResponse<R extends ContentRequest> = R extends {
     : never;
 
 /** Controls per report; `i` is in 0..MAX_CONTROLS-1. Fill-result counts are at most this. */
-export const MAX_CONTROLS = 300;
+export { MAX_CONTROLS };
 /** Every string in a signature (the scanner truncates to the same length). */
 export const MAX_SIG_STRING = 256;
 export const MAX_ORDINAL = 10_000;

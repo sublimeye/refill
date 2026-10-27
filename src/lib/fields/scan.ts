@@ -15,9 +15,10 @@ import { controlKind, isEligible, type ControlKind } from "./eligibility";
 import { isSensitive, type PasswordHistory } from "./sensitive";
 import { buildSignature, type FormControl, type Sig } from "./signature";
 import { sigKey } from "../match/match";
+import { MAX_CONTROLS } from "../limits";
 
-/** Content message cap on controls (Plan 2 global constraints). */
-export const MAX_CONTROLS = 300;
+/** Content message cap on controls (Plan 2 global constraints); defined in `limits.ts`. */
+export { MAX_CONTROLS };
 /** Upper bound on nodes (elements, text, comments) the walk will look at. */
 export const MAX_NODE_VISITS = 50_000;
 
