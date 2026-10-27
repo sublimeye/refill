@@ -23,8 +23,11 @@ export type PageRequest =
   | { type: "site-remove"; origin: string }
   | { type: "site-intent"; tabId: number; origin: string };
 
-/** Placeholder: Plan 2 adds the content-script messages. Until then no content message is valid. */
-export type ContentRequest = never;
+export type {
+  ContentRequest,
+  ContentResponse,
+  FillPlan,
+} from "./content-protocol";
 
 export type PageResponse<R extends PageRequest> = R extends {
   type: "vault-status";
@@ -75,7 +78,7 @@ function parseTabId(v: unknown): number | null {
   return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
 }
 
-function isPlainObject(x: unknown): x is Record<string, unknown> {
+export function isPlainObject(x: unknown): x is Record<string, unknown> {
   if (typeof x !== "object" || x === null || Array.isArray(x)) return false;
   const proto: unknown = Object.getPrototypeOf(x);
   return proto === Object.prototype || proto === null;
