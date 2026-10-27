@@ -254,4 +254,49 @@ describe("installSiteListeners", () => {
     );
     expect(await readSites()).toEqual({});
   });
+
+  it("still reconciles when consuming the intent fails", async () => {
+    await upsertSite(B, {});
+    shims.grant(PB);
+    installSiteListeners();
+    await writeIntent({ tabId: 5, origin: A, kind: "enable", ts: Date.now() });
+    vi.spyOn(fakeBrowser.storage.session, "get").mockRejectedValueOnce(
+      new Error("boom"),
+    );
+    shims.accept(PA);
+    await vi.waitFor(() => expect(shims.scripts.size).toBe(1));
+    expect(shims.scripts.get(CONTENT_SCRIPT_ID)!.matches).toEqual([PB]);
+  });
+
+  it("still reconciles when the site upsert fails after the intent was consumed", async () => {
+    await upsertSite(B, {});
+    shims.grant(PB);
+    installSiteListeners();
+    await writeIntent({ tabId: 5, origin: A, kind: "enable", ts: Date.now() });
+    vi.spyOn(fakeBrowser.storage.local, "set").mockRejectedValueOnce(
+      new Error("quota"),
+    );
+    shims.accept(PA);
+    await vi.waitFor(() => expect(shims.scripts.size).toBe(1));
+    expect(shims.scripting.executeScript).not.toHaveBeenCalled();
+  });
+
+  it("ignores wildcard patterns in onAdded even with a matching intent", async () => {
+    installSiteListeners();
+    await writeIntent({
+      tabId: 5,
+      origin: "https://*",
+      kind: "enable",
+      ts: Date.now(),
+    });
+    shims.permissions.onAdded.fire({
+      origins: ["https://*/*", "https://*.example.com/*"],
+    });
+    await vi.waitFor(() =>
+      expect(shims.scripting.getRegisteredContentScripts).toHaveBeenCalled(),
+    );
+    expect(await readSites()).toEqual({});
+    expect(shims.scripts.size).toBe(0);
+    expect(shims.scripting.executeScript).not.toHaveBeenCalled();
+  });
 });

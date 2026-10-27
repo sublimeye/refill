@@ -128,20 +128,23 @@ function httpsOrigins(origins: string[] | undefined): string[] {
 }
 
 async function onAdded(permissions: { origins?: string[] }): Promise<void> {
-  let handled = false;
-  for (const origin of httpsOrigins(permissions.origins)) {
-    try {
-      const intent = await takeIntent(origin);
-      if (intent === null) continue;
-      handled = true;
-      await upsertSite(origin, { accessRevoked: false });
-      await reconcile();
-      await injectContentScript(intent.tabId);
-    } catch (err) {
-      logFailure("permission grant handling", err);
+  try {
+    for (const origin of httpsOrigins(permissions.origins)) {
+      try {
+        const intent = await takeIntent(origin);
+        if (intent === null) continue;
+        await upsertSite(origin, { accessRevoked: false });
+        await reconcile();
+        await injectContentScript(intent.tabId);
+      } catch (err) {
+        logFailure("permission grant handling", err);
+      }
     }
+  } finally {
+    // Always: a failure above must not leave other origins in this event unreconciled.
+    // Concurrent runs coalesce, so the extra call is cheap.
+    await reconcile();
   }
-  if (!handled) await reconcile();
 }
 
 /** Registers every listener synchronously; call it in the first turn of the service worker. */

@@ -6,7 +6,12 @@ export function normalizeOrigin(url: string): string | null {
   } catch {
     return null;
   }
-  return u.protocol === "https:" ? u.origin : null;
+  if (u.protocol !== "https:") return null;
+  // A match-pattern wildcard must never ride in on an origin: "https://*" + "/*" would match every
+  // site. WHATWG parsers keep "*" in a host, Chromium escapes it to "%2A"; reject both so the
+  // result does not depend on the parser.
+  if (/[*%]/.test(u.hostname)) return null;
+  return u.origin;
 }
 
 /** Match pattern covering a whole origin, as used for content-script registration. */

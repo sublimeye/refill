@@ -129,6 +129,27 @@ describe("site-enable", () => {
   });
 });
 
+describe("wildcard origins", () => {
+  const W = ["https://*", "https://*.example.com", "https://%2A.example.com"];
+
+  it("never reach a grant, a record, an intent or a registration", async () => {
+    shims.grant("https://*/*");
+    for (const origin of W) {
+      expect(await h()["site-status"]({ type: "site-status", origin })).toEqual(
+        { origin: null },
+      );
+      expect(
+        await h()["site-enable"]({ type: "site-enable", tabId: 1, origin }),
+      ).toEqual({ ok: false, error: "invalid-origin" });
+      expect(
+        await h()["site-intent"]({ type: "site-intent", tabId: 1, origin }),
+      ).toEqual({ ok: false, error: "invalid-origin" });
+    }
+    expect(await readSites()).toEqual({});
+    expect(shims.scripts.size).toBe(0);
+  });
+});
+
 describe("site-remove", () => {
   async function seed() {
     await upsertSite(A, { profileId: "p1" });
@@ -228,57 +249,122 @@ describe("site-intent", () => {
 
 describe("requestSiteEnable", () => {
   // The popup helper talks to the service worker through runtime.sendMessage; route it to handlers.
+  let sent: string[];
   beforeEach(() => {
+    sent = [];
     const handlers = h();
     vi.spyOn(fakeBrowser.runtime, "sendMessage").mockImplementation(
-      (async (msg: { type: "site-enable" | "site-intent" }) =>
-        handlers[msg.type](msg as never)) as never,
+      (async (msg: { type: "site-enable" | "site-intent" }) => {
+        sent.push(msg.type);
+        return handlers[msg.type](msg as never);
+      }) as never,
     );
   });
 
-  it("writes the intent BEFORE permissions.request and returns granted-pending", async () => {
+  it("starts the intent write and calls permissions.request in the caller's synchronous turn", async () => {
+    let settled = false;
+    shims.permissions.request.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      return true;
+    });
+    // No await between the call and these assertions: the click handler's turn.
+    const p = requestSiteEnable(3, A);
+    void p.then(() => (settled = true));
+    expect(shims.permissions.request).toHaveBeenCalledOnce();
+    expect(shims.permissions.request).toHaveBeenCalledWith({ origins: [PA] });
+    expect(sent).toEqual(["site-intent"]); // the write was started, not awaited
+    expect(settled).toBe(false);
+    await p;
+  });
+
+  it("the intent is stored while the permission dialog is open", async () => {
     let intentAtRequest: unknown = "unset";
     shims.permissions.request.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5));
       intentAtRequest = (await fakeBrowser.storage.session.get("sites:intent"))[
         "sites:intent"
       ];
       return true;
     });
-    expect(await requestSiteEnable(3, A)).toBe("granted-pending");
-    expect(shims.permissions.request).toHaveBeenCalledOnce();
+    await requestSiteEnable(3, A);
     expect(intentAtRequest).toMatchObject({
       tabId: 3,
       origin: A,
       kind: "enable",
     });
-    expect(shims.permissions.request).toHaveBeenCalledWith({ origins: [PA] });
-    // The popup did not enable anything itself.
-    expect(await readSites()).toEqual({});
   });
 
-  it("returns denied when the user declines", async () => {
-    shims.permissions.request.mockResolvedValue(false);
-    expect(await requestSiteEnable(3, A)).toBe("denied");
-  });
-
-  it("returns denied when the request throws", async () => {
-    shims.permissions.request.mockRejectedValue(new Error("no gesture"));
-    expect(await requestSiteEnable(3, A)).toBe("denied");
-  });
-
-  it("when already granted: sends site-enable, requests nothing, writes no intent", async () => {
-    shims.grant(PA);
+  it("request true with the popup alive: sends site-enable and returns enabled", async () => {
+    shims.permissions.request.mockImplementation(async (p) => {
+      for (const o of p.origins ?? []) shims.grants.add(o);
+      return true;
+    });
     expect(await requestSiteEnable(3, A)).toBe("enabled");
-    expect(shims.permissions.request).not.toHaveBeenCalled();
-    expect(
-      (await fakeBrowser.storage.session.get("sites:intent"))["sites:intent"],
-    ).toBeUndefined();
+    expect(sent).toEqual(["site-intent", "site-enable"]);
     expect(Object.keys(await readSites())).toEqual([A]);
     expect(shims.scripting.executeScript).toHaveBeenCalledOnce();
   });
 
-  it("does not request when the intent could not be written", async () => {
+  it("already granted: request resolves true at once and site-enable completes", async () => {
+    shims.grant(PA);
+    expect(await requestSiteEnable(3, A)).toBe("enabled");
+    expect(shims.permissions.request).toHaveBeenCalledOnce();
+    expect(shims.scripting.executeScript).toHaveBeenCalledOnce();
+  });
+
+  it("returns granted-pending when granted but the service worker declines site-enable", async () => {
+    // request says true but the permission is not actually held: site-enable answers not-granted.
+    expect(await requestSiteEnable(3, A)).toBe("granted-pending");
+  });
+
+  it("returns denied when the user declines, and does not send site-enable", async () => {
+    shims.permissions.request.mockResolvedValue(false);
+    expect(await requestSiteEnable(3, A)).toBe("denied");
+    expect(sent).toEqual(["site-intent"]);
+  });
+
+  it("never throws: a rejecting request is denied", async () => {
+    shims.permissions.request.mockRejectedValue(new Error("no gesture"));
+    expect(await requestSiteEnable(3, A)).toBe("denied");
+  });
+
+  it("never throws: a synchronously throwing request is denied", async () => {
+    shims.permissions.request.mockImplementation(() => {
+      throw new Error("bad pattern");
+    });
+    expect(await requestSiteEnable(3, A)).toBe("denied");
+  });
+
+  it("never throws: a messaging failure on site-enable is denied", async () => {
+    shims.permissions.request.mockResolvedValue(true);
+    vi.spyOn(fakeBrowser.runtime, "sendMessage").mockRejectedValue(
+      new Error("no receiver"),
+    );
+    expect(await requestSiteEnable(3, A)).toBe("denied");
+  });
+
+  it("never throws: a router error on site-enable is denied", async () => {
+    shims.permissions.request.mockResolvedValue(true);
+    vi.spyOn(fakeBrowser.runtime, "sendMessage").mockResolvedValue({
+      ok: false,
+      error: "internal",
+    } as never);
+    expect(await requestSiteEnable(3, A)).toBe("denied");
+  });
+
+  it("a failed intent write does not block the request or leave an unhandled rejection", async () => {
+    vi.spyOn(fakeBrowser.runtime, "sendMessage").mockRejectedValue(
+      new Error("no receiver"),
+    );
+    shims.permissions.request.mockResolvedValue(false);
+    expect(await requestSiteEnable(3, A)).toBe("denied");
+    expect(shims.permissions.request).toHaveBeenCalledOnce();
+  });
+
+  it("an invalid origin is denied without requesting anything", async () => {
     expect(await requestSiteEnable(3, "https://a.example/path")).toBe("denied");
+    expect(await requestSiteEnable(3, "https://*")).toBe("denied");
     expect(shims.permissions.request).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
   });
 });
