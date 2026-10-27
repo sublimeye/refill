@@ -307,8 +307,9 @@ Not run while `document.prerendering`; waits for `prerenderingchange`. A bfcache
 - **Matching runs in the SW**: the content script sends a `scan-report` (signatures only, no
   values); the SW returns values **only for controls it matched on this page**, never the whole
   profile or other steps' values.
-- SPA wizards: a debounced (250 ms) MutationObserver re-scans; each saved field is filled **at most
-  once per document**.
+- SPA wizards: a debounced (250 ms, at most 1 s after the first change) MutationObserver re-scans,
+  also on `scrollend` (eligibility depends on scroll position); a scan is reported only when the
+  page fingerprint changed; each saved field is filled **at most once per document** (ADR 0026).
 
 ### 5.5 Fill rules (security mitigations, §8)
 Fill a control only if: vault unlocked; profile `fillMode` allows (auto, or user pressed Fill now);
