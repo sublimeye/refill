@@ -9,7 +9,7 @@
 // script's own (isolated world), which the page cannot modify. Controls themselves (input, select,
 // textarea) have no named-property getter, so reading them directly is safe.
 
-function getter<T>(proto: object, prop: string): (node: object) => T {
+export function getter<T>(proto: object, prop: string): (node: object) => T {
   const get = Object.getOwnPropertyDescriptor(proto, prop)?.get;
   if (get === undefined) throw new Error(`missing accessor ${prop}`);
   return (node) => get.call(node) as T;

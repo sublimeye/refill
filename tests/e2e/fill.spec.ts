@@ -20,7 +20,6 @@ import {
 
 test.setTimeout(90_000); // vault creation runs real Argon2id calibration
 
-const TWINS = `${FIXTURE_A}/billpay/twins`;
 const TWIN_VALUES = {
   "address 1": "1 Analytical Way",
   "address 2": "Flat 2",
@@ -107,18 +106,16 @@ test("SPA wizard: each step fills on the same URL once it appears", async ({
   // Back and Next re-render both steps with empty fields in the same document. The page is
   // re-scanned and reported, but every field was filled once already: nothing is filled again.
   const before = (await contentLog(context)).length;
+  const reportsSince = async () =>
+    (await contentLog(context))
+      .slice(before)
+      .filter((e) => e.type === "scan-report").length;
   await page.getByRole("button", { name: "Back" }).click();
+  await expect.poll(reportsSince).toBe(1);
   await expect(page.getByLabel("Full name")).toHaveValue("");
   await page.getByRole("button", { name: "Next" }).click();
   await expect(page.getByText("Step 2 of 2")).toBeVisible();
-  await expect
-    .poll(
-      async () =>
-        (await contentLog(context))
-          .slice(before)
-          .filter((e) => e.type === "scan-report").length,
-    )
-    .toBe(2);
+  await expect.poll(reportsSince).toBe(2);
   await page.waitForTimeout(500);
   await expect(page.getByLabel("City")).toHaveValue("");
   await expect(page.getByLabel("Paperless billing")).not.toBeChecked();
@@ -424,21 +421,6 @@ test("after the site is removed a reload runs no content script and fills nothin
   expect((await contentLog(context)).slice(since)).toEqual([]);
 });
 
-test("a prerendered page is filled only after it is activated", async ({
-  context,
-  extensionId,
-  sites,
-}) => {
-  void sites;
-  const { page } = await setUp(context, extensionId, [FIXTURE_A]);
-  await seedTwins(context, page);
-
-  await page.goto(`${FIXTURE_A}/billpay/prerender-host`);
-  await page.waitForTimeout(2_000); // let the prerender load and the content script land in it
-  await page.getByRole("link", { name: "Pay your bill" }).click();
-  await expect(page).toHaveURL(TWINS);
-  const root = page.locator("html");
-  await expect(root).toHaveAttribute("data-prerendered", "true");
-  await expectTwinsFilled(page);
-  await expect(root).toHaveAttribute("data-input-while-prerendering", "false");
-});
+// No prerender spec: Chromium refuses to prerender while DevTools is attached
+// (`PrerenderingDisabledByDevTools`), and Playwright drives every page through DevTools. The wait for
+// `prerenderingchange` is covered in tests/browser/content/runner.test.ts (ADR 0026).

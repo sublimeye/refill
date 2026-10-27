@@ -156,7 +156,7 @@ export interface StepValues {
 
 /**
  * A profile whose step `n` holds a field for every control of `steps[n].scan` named in `values`
- * (policy `save`, page default empty). Every label in `values` must be present in the scan.
+ * (policy `save`, page default empty or unchecked). Every label in `values` must be present in the scan.
  */
 export function profileFrom(
   origin: string,
@@ -176,7 +176,8 @@ export function profileFrom(
         step,
         kind: c.kind,
         value: values[label]!,
-        pageDefault: "",
+        // What the recorder stores for an untouched control: unchecked toggles are "false".
+        pageDefault: c.kind === "checkbox" || c.kind === "radio" ? "false" : "",
         policy: "save",
       });
     }
