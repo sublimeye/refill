@@ -180,8 +180,14 @@ settings (plaintext; contains no secrets)
 p:<random 128-bit id>       AES-GCM(DEK, iv, AAD="refill/v1|profile|<id>|<origin>")
   { v, id, name, origin, pathPrefix, fillMode:"auto"|"gesture", createdAt, lastUsedAt,
     steps:[{ index, pathHint, fingerprint:[sig…] }],
-    fields:[{ sig, step, value, pageDefault, policy:"save"|"ask"|"skip",
+    fields:[{ id, sig, step, value, pageDefault, policy:"save"|"ask"|"skip",
               kind:"text"|"select"|"checkbox"|"radio" }] }
+  field.id: unique within the profile, /^[A-Za-z0-9_-]{1,64}$/ (lets the UI and fill engine refer
+  to a field without positional indexes); field.step: the `index` of an entry in `steps`
+  (indices unique, 0..9; every reference must resolve). Parsed strictly on read: exact keys,
+  name 1..120, value/pageDefault ≤ 4096, ≤ 200 fields, ≤ 10 steps, fingerprint ≤ 300 × ≤ 1024,
+  pathPrefix starts with "/" (≤ 256), sig strings ≤ 256. A profile whose decrypted origin or id
+  differs from the record it was loaded for is rejected.
 
 vault:integrity             AES-GCM(DEK, AAD="refill/v1|integrity")
   { draftPub (copy), lock (copy), kdf (copy) }   // verified at every unlock, see §8.2
