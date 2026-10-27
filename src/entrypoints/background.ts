@@ -1,4 +1,5 @@
 import { calibrate } from "../lib/crypto/kdf";
+import { createContentHandlers } from "../lib/messaging/content-handlers";
 import { createPageHandlers } from "../lib/messaging/page-handlers";
 import { createRouter, toRuntimeListener } from "../lib/messaging/router";
 import { saveProfile } from "../lib/profiles/store";
@@ -44,7 +45,10 @@ export default defineBackground(() => {
   // Internal messages only: no onMessageExternal (externally_connectable is empty).
   browser.runtime.onMessage.addListener(
     toRuntimeListener(
-      createRouter({ page: createPageHandlers(() => calibrate()) }),
+      createRouter({
+        page: createPageHandlers(() => calibrate()),
+        content: createContentHandlers(),
+      }),
     ),
   );
 });
