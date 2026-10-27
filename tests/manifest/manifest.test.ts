@@ -34,3 +34,14 @@ test("security-relevant manifest keys match the reviewed snapshot", () => {
     JSON.parse(readFileSync("security/manifest.expected.json", "utf8")),
   );
 });
+
+// ADR 0026: page markup can answer a `globalThis.browser` lookup in the content script's isolated
+// world (`<form id="browser">`), so the content bundle reads only the `chrome` it checks itself
+// and must not carry WXT's `browser` fallback (it arrives with any runtime import of `wxt/browser`).
+test("the content script never looks up globalThis.browser", () => {
+  const js = readFileSync(".output/chrome-mv3/refill-content.js", "utf8");
+  expect(js).not.toMatch(
+    /globalThis\s*\.\s*browser|globalThis\s*\[\s*["'`]browser/,
+  );
+  expect(js).toContain("globalThis.chrome");
+});

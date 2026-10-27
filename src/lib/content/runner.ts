@@ -7,6 +7,7 @@
 import { getter, shadowRoot as ownShadowRoot } from "../fields/dom";
 import type { ControlKind } from "../fields/eligibility";
 import {
+  MAX_CONTROLS,
   pageFingerprint,
   scanDocument,
   type ScannedControl,
@@ -23,11 +24,9 @@ import {
   withFillingGuard,
   type FillItem as ControlItem,
 } from "../fill/fill";
-import {
-  MAX_CONTROLS,
-  type ContentRequest,
-  type FillItem,
-} from "../messaging/content-protocol";
+// Types only: the protocol module's runtime imports reach `wxt/browser`, whose `globalThis.browser`
+// lookup page markup can answer (ADR 0026). Nothing of it may load in the content script.
+import type { ContentRequest, FillItem } from "../messaging/content-protocol";
 
 /** Quiet period after the last DOM change or scroll before a re-scan (spec 5.4). */
 export const RESCAN_DEBOUNCE_MS = 250;
