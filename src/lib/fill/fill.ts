@@ -388,15 +388,21 @@ function writeToggle(el: HTMLInputElement, checked: boolean): boolean {
 }
 
 /**
- * Puts a control the page refused back to the value it had before the fill (setter + `input` +
- * `change`, no focus), so no page-mangled copy of the secret stays in the field.
+ * Best-effort undo of a refused fill: writes the pre-fill value back with the fill technique
+ * (setter + `input` + `change`; for text also the `select()` + `insertText` fallback, only while
+ * the control is still the deepest focused element), so a mask that reverts programmatic writes
+ * does not keep the secret either. Not guaranteed: if the page refuses the pre-fill value too, the
+ * field is left as the page has it.
  */
 function putBack(el: FormControl, kind: ControlKind, before: string): void {
   try {
-    if (kind === "select") selectSetValue(el, before);
-    else writeNative(el, before);
-    fire(el, "input");
-    fire(el, "change");
+    if (kind === "select") {
+      selectSetValue(el, before);
+      fire(el, "input");
+      fire(el, "change");
+    } else {
+      writeText(el, before);
+    }
   } catch {
     // the page's own handler threw: nothing more to do
   }
@@ -407,7 +413,7 @@ function putBack(el: FormControl, kind: ControlKind, before: string): void {
  * form origin, empty or page default: an earlier field's handlers can change `name`, `autocomplete`,
  * `action` or the value between a batched `canFill` and this write) and returns the matching
  * `skipped-*` outcome without writing; then writes under the filling guard. A text or select value
- * the page refuses is put back to its pre-fill value (`rejected-by-page`). Vault state, `fillMode`
+ * the page refuses is put back to its pre-fill value, best effort (`rejected-by-page`). Vault state, `fillMode`
  * and field policy stay the caller's. Never throws. `isTopWindow` is for tests only (see
  * `isEligible`).
  *

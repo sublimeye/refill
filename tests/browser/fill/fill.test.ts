@@ -765,6 +765,25 @@ describe("insertText fallback only writes into the vetted, focused control", () 
     expect(a.value).toBe("");
   });
 
+  it("focus redirected to a sibling input in the same closed shadow root: the sibling stays empty", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const shadow = host.attachShadow({ mode: "closed" });
+    const a = document.createElement("input");
+    a.name = "a";
+    const sibling = document.createElement("input");
+    sibling.name = "sibling";
+    shadow.append(a, sibling);
+    revertUntrusted(a);
+    a.addEventListener("focus", () => {
+      sibling.focus();
+      sibling.select();
+    });
+    expect(fill(item(a, "SECRET"))).toBe("rejected-by-page");
+    expect(sibling.value).toBe("");
+    expect(a.value).toBe("");
+  });
+
   it("still fills an input inside a shadow root through the fallback", () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -826,6 +845,23 @@ describe("rejected-by-page puts the pre-fill value back", () => {
     });
     expect(fill(item(a, "SECRET", "100"))).toBe("rejected-by-page");
     expect(a.value).toBe("100");
+    expect(isFilling()).toBe(false);
+  });
+});
+
+describe("putBack through the fill technique", () => {
+  it("clears the secret even when a mask reverts programmatic writes and reformats typing", () => {
+    mount(`<input name="a">`);
+    const a = q<HTMLInputElement>("[name=a]");
+    let accepted = "";
+    a.addEventListener("input", (e) => {
+      if (e.isTrusted) {
+        accepted = a.value === "" ? "" : `${a.value}!`; // reformatted: never equals the vault value
+        a.value = accepted;
+      } else a.value = accepted;
+    });
+    expect(fill(item(a, "SECRET"))).toBe("rejected-by-page");
+    expect(a.value).toBe("");
     expect(isFilling()).toBe(false);
   });
 });
