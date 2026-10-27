@@ -23,3 +23,4 @@ Each ADR has Context / Decision / Consequences / Status. Add a new `NNNN-<slug>.
 | [0017](0017-e2e-https-fixture-origins-and-e2e-build-mode.md) | E2E HTTPS fixture origins and e2e build mode (self-signed https, pre-granted fixture hosts only in e2e, seam guard) | Accepted |
 | [0018](0018-content-script-registration-and-reconciler.md) | Content-script registration and permission reconciler (unlisted script, one registration id, coalesced reconcile, executeScript after grant) | Accepted |
 | [0019](0019-vitest-browser-mode-and-field-signatures.md) | Vitest browser mode (Playwright provider) for DOM tests; field signature rules (`idStable`, bounded `labelText`) | Accepted |
+| [0020](0020-eligibility-and-sensitive-field-rules.md) | Eligibility and sensitive-field rules (word semantics, bounded ancestor walk, fail closed, password type-flip history) | Accepted |
