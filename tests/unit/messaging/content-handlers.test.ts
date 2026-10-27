@@ -24,8 +24,13 @@ import {
   saveProfile,
 } from "../../../src/lib/profiles/store";
 import type { Profile, ProfileField } from "../../../src/lib/profiles/types";
-import { upsertSite } from "../../../src/lib/sites";
-import { withStoreLock } from "../../../src/lib/store/local";
+import { readSites, upsertSite } from "../../../src/lib/sites";
+import { createSiteHandlers } from "../../../src/lib/sites/handlers";
+import {
+  getItem,
+  profileKey,
+  withStoreLock,
+} from "../../../src/lib/store/local";
 import { originPattern } from "../../../src/lib/sites/origin";
 import {
   __resetForTests,
@@ -149,6 +154,24 @@ function expectNoSecrets(reply: unknown, allowed: string[] = []): void {
   }
 }
 
+/** Pauses the next read of `key` until `release()`; `started` resolves when it begins. */
+function pauseRead(key: string) {
+  const local = fakeBrowser.storage.local;
+  const original = local.get.bind(local);
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const started = new Promise<void>((r) => (entered = r));
+  vi.spyOn(local, "get").mockImplementation((async (k: unknown) => {
+    if (k === key) {
+      entered();
+      await gate;
+    }
+    return original(k as string);
+  }) as never);
+  return { started, release };
+}
+
 let snapshot: Record<string, unknown>;
 let clock: number;
 const now = () => clock;
@@ -215,34 +238,27 @@ describe("scan-report", () => {
     expect(reply).toEqual({ state: "locked" });
   });
 
-  it("a LockedError from loading the profile is reported as locked", async () => {
-    vi.resetModules();
-    const { LockedError } = await import("../../../src/lib/vault/types");
-    vi.doMock("../../../src/lib/vault/vault", () => ({
-      status: async () => ({ state: "unlocked", unlockedAt: 0, lock: {} }),
-    }));
-    vi.doMock("../../../src/lib/profiles/store", () => ({
-      loadProfileForOrigin: async () => {
-        throw new LockedError();
-      },
-      saveProfile: async () => {},
-    }));
-    const mod = await import("../../../src/lib/messaging/content-handlers");
-    const handlers = mod.createContentHandlers(now);
-    const reply = await handlers["scan-report"](scan(), ctx());
-    expect(reply).toEqual({ state: "locked" });
+  it("a lock landing before the profile decrypt (LockedError) is reported as locked", async () => {
+    await saveProfile(profile());
+    const read = pauseRead("sites");
+    const pending = createContentHandlers(now)["scan-report"](scan(), ctx());
+    await read.started; // status() said unlocked; the DEK is not taken yet
+    await lock();
+    read.release();
+    expect(await pending).toEqual({ state: "locked" });
   });
 
   it("any other load failure propagates (the router answers internal)", async () => {
     vi.resetModules();
     vi.doMock("../../../src/lib/vault/vault", () => ({
+      lockEpoch: () => 0,
       status: async () => ({ state: "unlocked", unlockedAt: 0, lock: {} }),
     }));
     vi.doMock("../../../src/lib/profiles/store", () => ({
       loadProfileForOrigin: async () => {
         throw new RangeError("boom");
       },
-      saveProfile: async () => {},
+      touchLastUsed: async () => {},
     }));
     const mod = await import("../../../src/lib/messaging/content-handlers");
     await expect(
@@ -336,6 +352,30 @@ describe("scan-report", () => {
   });
 });
 
+describe("lock racing the profile read", () => {
+  it("a lock landing during the profile read: locked, no values", async () => {
+    await saveProfile(profile());
+    const read = pauseRead(profileKey("prof1"));
+    const pending = createContentHandlers(now)["scan-report"](scan(), ctx());
+    await read.started; // the DEK is already in hand here
+    await lock();
+    read.release();
+    const reply = await pending;
+    expect(reply).toEqual({ state: "locked" });
+    expectNoSecrets(reply);
+  });
+
+  it("gesture: a lock during the read reports locked, not a count", async () => {
+    await saveProfile(profile({ fillMode: "gesture" }));
+    const read = pauseRead(profileKey("prof1"));
+    const pending = createContentHandlers(now)["scan-report"](scan(), ctx());
+    await read.started;
+    await lock();
+    read.release();
+    expect(await pending).toEqual({ state: "locked" });
+  });
+});
+
 describe("lastUsedAt", () => {
   const stored = async () => (await loadProfileForOrigin(A))?.lastUsedAt;
 
@@ -395,6 +435,71 @@ describe("lastUsedAt", () => {
     await vi.waitFor(() => expect(err).toHaveBeenCalled());
     // The log holds the error name, never its message.
     expect(JSON.stringify(err.mock.calls)).not.toContain("quota");
+  });
+
+  it("a site removal that lands before the touch is never undone", async () => {
+    installShims();
+    await saveProfile(profile());
+    let release!: () => void;
+    const held = withStoreLock(() => new Promise<void>((r) => (release = r)));
+    // Queued behind the held lock, ahead of the touch the scan below will queue.
+    const removal = createSiteHandlers(now)["site-remove"]({
+      type: "site-remove",
+      origin: A,
+    });
+    const reply = await createContentHandlers(now)["scan-report"](
+      scan(),
+      ctx(),
+    );
+    expect(reply).toMatchObject({ state: "fill" }); // read before the removal ran
+    release();
+    await held;
+    await removal;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await readSites()).toEqual({});
+    expect(await getItem(profileKey("prof1"))).toBeUndefined();
+  });
+
+  it("an edit that lands before the touch survives (policy change kept)", async () => {
+    await saveProfile(profile());
+    let release!: () => void;
+    const held = withStoreLock(() => new Promise<void>((r) => (release = r)));
+    const edited = profile({ name: "Edited" });
+    edited.fields[0] = { ...edited.fields[0]!, policy: "skip" };
+    const edit = saveProfile(edited);
+    const reply = await createContentHandlers(now)["scan-report"](
+      scan(),
+      ctx(),
+    );
+    expect(reply).toMatchObject({ state: "fill" }); // computed from the pre-edit record
+    release();
+    await held;
+    await edit;
+    await vi.waitFor(async () =>
+      expect(await loadProfileForOrigin(A)).toEqual({
+        ...edited,
+        lastUsedAt: T0,
+      }),
+    );
+  });
+
+  it("a lock that lands before the touch writes nothing and logs nothing", async () => {
+    await saveProfile(profile());
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    let release!: () => void;
+    const held = withStoreLock(() => new Promise<void>((r) => (release = r)));
+    const reply = await createContentHandlers(now)["scan-report"](
+      scan(),
+      ctx(),
+    );
+    expect(reply).toMatchObject({ state: "fill" });
+    await lock();
+    release();
+    await held;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(err).not.toHaveBeenCalled();
+    expect(await unlockWithPassphrase(P)).toMatchObject({ ok: true });
+    expect(await stored()).toBeNull();
   });
 
   it("a busy store lock does not delay the reply", async () => {

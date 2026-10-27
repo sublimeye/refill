@@ -3,10 +3,10 @@
 // field policy is `save`. The origin and path come from the router's sender context, never from
 // the message, and the clock is the worker's own. Decisions: ADR 0025.
 import { matchControls, profileApplies } from "../match/match";
-import { loadProfileForOrigin, saveProfile } from "../profiles/store";
+import { loadProfileForOrigin, touchLastUsed } from "../profiles/store";
 import type { Profile } from "../profiles/types";
 import { LockedError } from "../vault/types";
-import { status } from "../vault/vault";
+import { lockEpoch, status } from "../vault/vault";
 import type { FillItem, FillPlan, ScanControl } from "./content-protocol";
 import type { ContentContext, ContentHandlers } from "./router";
 
@@ -36,20 +36,16 @@ export function createContentHandlers(
 
   /**
    * Records use of the profile, off the reply path: a failure or a slow store never changes or
-   * delays the answer. Re-reads the profile first so the write carries the newest record (a
-   * dashboard edit made since the scan is kept), and calls `saveProfile` outside any store lock
-   * because it takes its own (ADR 0011).
+   * delays the answer. `touchLastUsed` is one compare-and-set under the store lock, so a removal or
+   * edit that lands first is kept (ruling P22). A lock in the meantime just skips the write.
    */
   function touch(id: string, origin: string): void {
     const t = now();
     const prev = lastTouched.get(id);
     if (prev !== undefined && t - prev < LAST_USED_THROTTLE_MS) return;
     lastTouched.set(id, t);
-    void (async () => {
-      const current = await loadProfileForOrigin(origin);
-      if (current === null || current.id !== id) return;
-      await saveProfile({ ...current, lastUsedAt: t });
-    })().catch((err: unknown) => {
+    touchLastUsed(origin, id, t).catch((err: unknown) => {
+      if (err instanceof LockedError) return;
       console.error(
         "[refill] lastUsedAt update failed:",
         err instanceof Error ? err.name : "error",
@@ -61,6 +57,9 @@ export function createContentHandlers(
     controls: ScanControl[],
     ctx: ContentContext,
   ): Promise<FillPlan> {
+    // Read before status(): the DEK used by the load below may be captured before a lock() that
+    // lands during the storage read or decrypt, and would still open the record (ADR 0025).
+    const epoch = lockEpoch();
     if ((await status()).state !== "unlocked") return LOCKED;
     const profile = await loadOrLocked(ctx.origin);
     if (profile === "locked") return LOCKED;
@@ -73,6 +72,8 @@ export function createContentHandlers(
     // Every field takes part in matching, whatever its policy: an `ask` or `skip` field that is the
     // better claimant for a control must keep a `save` field from taking it.
     const matched = matchControls(profile.fields, profile.steps, controls);
+    // Synchronous from here to the return: no lock can land between this check and the reply.
+    if (lockEpoch() !== epoch) return LOCKED;
     const items: FillItem[] = [];
     for (const field of profile.fields) {
       const i = matched.get(field.id);
