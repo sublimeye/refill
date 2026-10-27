@@ -56,6 +56,10 @@ jobs:
           cat a.txt b.txt
           diff a.txt b.txt
 
+      # Bundle-level twin of the Semgrep network ban (ADR 0016): no network API token in the shipped JS.
+      - name: Built output has no network APIs
+        run: pnpm check:built-network
+
       # scripts/semgrep.sh runs the digest-pinned image (ADR 0005). selftest proves the rules
       # still bite (rule tests + path include/exclude); scan is the gate (ADR 0006).
       - name: Semgrep rule self-test
