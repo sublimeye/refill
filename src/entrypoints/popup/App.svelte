@@ -3,6 +3,15 @@
   import { browser } from "wxt/browser";
   import { sendToSw } from "../../lib/messaging/protocol";
   import type { VaultStatus } from "../../lib/vault/types";
+  import {
+    enableSite,
+    loadSiteView,
+    removeSiteFor,
+    resolveTarget,
+    type SiteView,
+  } from "../../lib/sites/popup-site";
+
+  type Active = Extract<SiteView, { kind: "off" | "on" | "revoked" }>;
 
   type View = "loading" | "none" | "corrupt" | "locked" | "unlocked" | "failed";
 
@@ -12,6 +21,16 @@
   let error = $state("");
   let restored = $state(false);
   let message: HTMLElement | undefined = $state();
+
+  // "This site" section (shown once a vault exists; no secrets are involved, so locked is fine).
+  let site = $state<SiteView | null>(null);
+  let siteBusy = $state(false);
+  let siteError = $state("");
+  let confirming = $state(false);
+  let siteStatus: HTMLElement | undefined = $state();
+  let siteMessage: HTMLElement | undefined = $state();
+  let confirmText: HTMLElement | undefined = $state();
+  let removeButton: HTMLElement | undefined = $state();
 
   const DAMAGED = "Refill's vault data is damaged";
   const GENERIC = "Something went wrong — try again";
@@ -44,7 +63,80 @@
     await refresh();
   }
 
-  onMount(refresh);
+  async function loadSite() {
+    const target = await resolveTarget();
+    site = target ? await loadSiteView(target) : { kind: "unsupported" };
+  }
+
+  onMount(async () => {
+    await refresh();
+    if (view === "locked" || view === "unlocked") await loadSite();
+  });
+
+  // Click handler for "Enable Refill on this site" / "Enable again".
+  // permissions.request needs the click's user activation (ADR 0018): enableSite() must be the
+  // FIRST statement and nothing may be awaited before it. Everything after runs later.
+  function enable(s: Active) {
+    const flow = enableSite(s);
+    siteBusy = true;
+    siteError = "";
+    void settleEnable(flow);
+  }
+
+  async function settleEnable(flow: ReturnType<typeof enableSite>) {
+    try {
+      const res = await flow;
+      site = res.view;
+      if (res.outcome === "denied") {
+        await announceSite("Access to this site wasn't granted");
+      } else if (res.view.kind !== "on") {
+        await announceSite(GENERIC);
+      } else {
+        await tick();
+        siteStatus?.focus();
+      }
+    } finally {
+      siteBusy = false;
+    }
+  }
+
+  async function announceSite(text: string) {
+    siteError = text;
+    await tick();
+    siteMessage?.focus();
+  }
+
+  async function askRemove() {
+    confirming = true;
+    siteError = "";
+    await tick();
+    confirmText?.focus();
+  }
+
+  async function cancelRemove() {
+    confirming = false;
+    await tick();
+    removeButton?.focus();
+  }
+
+  async function confirmRemove(s: Active) {
+    if (siteBusy) return;
+    siteBusy = true;
+    siteError = "";
+    try {
+      const res = await removeSiteFor(s);
+      confirming = false;
+      site = res.view;
+      if (res.ok) {
+        await tick();
+        siteStatus?.focus();
+      } else {
+        await announceSite(GENERIC);
+      }
+    } finally {
+      siteBusy = false;
+    }
+  }
 
   async function setUp() {
     try {
@@ -115,6 +207,71 @@
   }
 </script>
 
+{#snippet siteSection()}
+  {#if site && site.kind !== "error"}
+    <section aria-labelledby="site-title">
+      <h2 id="site-title">This site</h2>
+      {#if site.kind === "unsupported"}
+        <p bind:this={siteStatus} tabindex="-1">
+          Refill works on secure (https) sites only.
+        </p>
+      {:else}
+        {@const s = site}
+        {#if s.kind === "off"}
+          <p bind:this={siteStatus} tabindex="-1">
+            Refill will ask Chrome for access to this site only.
+          </p>
+          <button type="button" onclick={() => enable(s)} disabled={siteBusy}>
+            Enable Refill on this site
+          </button>
+        {:else if s.kind === "revoked"}
+          <p bind:this={siteStatus} tabindex="-1">
+            Access to {s.host} was turned off in Chrome. Enable again to use Refill
+            here.
+          </p>
+          <button type="button" onclick={() => enable(s)} disabled={siteBusy}>
+            Enable again
+          </button>
+        {:else if confirming}
+          <p bind:this={confirmText} tabindex="-1">
+            Remove {s.host} and its saved form?
+          </p>
+          <button
+            type="button"
+            onclick={() => confirmRemove(s)}
+            disabled={siteBusy}
+          >
+            Remove
+          </button>
+          <button type="button" onclick={cancelRemove} disabled={siteBusy}>
+            Cancel
+          </button>
+        {:else}
+          <p bind:this={siteStatus} tabindex="-1">Enabled on {s.host}</p>
+          <button
+            type="button"
+            bind:this={removeButton}
+            onclick={askRemove}
+            disabled={siteBusy}
+          >
+            Remove site
+          </button>
+        {/if}
+      {/if}
+      <div aria-live="polite">
+        {#if siteError}
+          <p bind:this={siteMessage} tabindex="-1">{siteError}</p>
+        {/if}
+      </div>
+    </section>
+  {:else if site}
+    <section aria-labelledby="site-title">
+      <h2 id="site-title">This site</h2>
+      <p>{GENERIC}</p>
+    </section>
+  {/if}
+{/snippet}
+
 <main>
   {#if view === "loading"}
     <p>Loading…</p>
@@ -147,6 +304,7 @@
         <p bind:this={message} tabindex="-1">{error}</p>
       {/if}
     </div>
+    {@render siteSection()}
   {:else}
     {#if restored}
       <p role="status">
@@ -160,6 +318,7 @@
         <p bind:this={message} tabindex="-1">{error}</p>
       {/if}
     </div>
+    {@render siteSection()}
   {/if}
 </main>
 

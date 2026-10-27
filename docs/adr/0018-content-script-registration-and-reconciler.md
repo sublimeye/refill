@@ -13,6 +13,8 @@ Refill must run a content script only on origins the user enabled, with no insta
 - `normalizeOrigin` rejects any host containing `*` or `%`, so a wildcard can never become a registration match (`https://*` + `/*` would match every site). WHATWG parsers keep `*` in a host while Chromium escapes it to `%2A`; rejecting both makes the result independent of the parser.
 - The `permissions.onAdded` handler always ends with a `reconcile()` (try/finally), even if consuming the intent, the upsert or the injection failed.
 - The content-script stub marks `document.documentElement` (`data-refill-loaded="1"`) only when `import.meta.env.MODE === "e2e"`; the marker `__refillE2E` is in that block so `scripts/check-no-seams.mjs` proves it is absent from the production build.
+- `site-enable` (once the grant is confirmed) and `site-remove` (always, before touching anything) call `takeIntent(origin)` and discard the result. An unconsumed intent could otherwise re-enable a deliberately removed site if access were granted again within its 120 s TTL.
+- The popup's "This site" section (Task 4) acts on `tabs.query({ active: true, currentWindow: true })`, whose URL `activeTab` makes readable. In the e2e build only, query params `__refillE2E_tabId` and `__refillE2E_url` replace that lookup, because Playwright opens the popup as a tab; the block sits under `import.meta.env.MODE === "e2e"` and is absent from the production bundle. The "Enable" click handler calls `requestSiteEnable` as its first statement (a unit test pins this); removal is confirmed in the popup, not with `confirm()`.
 
 ## Consequences
 - Production manifest is unchanged; granting and revoking both converge through the one reconciler.

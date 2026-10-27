@@ -129,6 +129,55 @@ describe("site-enable", () => {
   });
 });
 
+describe("pending intents are consumed (P8)", () => {
+  const intent = (origin: string) => ({
+    tabId: 4,
+    origin,
+    kind: "enable" as const,
+    ts: NOW,
+  });
+  const put = (origin: string) =>
+    fakeBrowser.storage.session.set({ "sites:intent": intent(origin) });
+
+  it("site-enable consumes the pending intent for its origin", async () => {
+    shims.grant(PA);
+    await put(A);
+    await h()["site-enable"]({ type: "site-enable", tabId: 4, origin: A });
+    expect(await takeIntent(A, NOW)).toBeNull();
+  });
+
+  it("site-enable keeps an intent for another origin, and one when not granted", async () => {
+    shims.grant(PA);
+    await put(B);
+    await h()["site-enable"]({ type: "site-enable", tabId: 4, origin: A });
+    expect(await takeIntent(B, NOW)).toEqual(intent(B));
+
+    await put(B);
+    await h()["site-enable"]({ type: "site-enable", tabId: 4, origin: B });
+    expect(await takeIntent(B, NOW)).toEqual(intent(B)); // not granted: nothing was handled
+  });
+
+  it("site-remove consumes the pending intent, so a later grant cannot resurrect the site", async () => {
+    await upsertSite(A, {});
+    shims.grant(PA);
+    await put(A);
+    await h()["site-remove"]({ type: "site-remove", origin: A });
+    expect(await takeIntent(A, NOW)).toBeNull();
+  });
+
+  it("site-remove consumes the intent even when no site record exists", async () => {
+    await put(A);
+    await h()["site-remove"]({ type: "site-remove", origin: A });
+    expect(await takeIntent(A, NOW)).toBeNull();
+  });
+
+  it("site-remove keeps an intent for another origin", async () => {
+    await put(B);
+    await h()["site-remove"]({ type: "site-remove", origin: A });
+    expect(await takeIntent(B, NOW)).toEqual(intent(B));
+  });
+});
+
 describe("wildcard origins", () => {
   const W = ["https://*", "https://*.example.com", "https://%2A.example.com"];
 

@@ -1,29 +1,9 @@
-import type { BrowserContext, Page } from "@playwright/test";
 import { EXTENSION_ID } from "../../src/manifest-key";
 import { expect, test } from "./fixtures";
+import { PASSPHRASE, createVault, openOnboarding } from "./vault-helpers";
 
 // Real Argon2id calibration runs on create, so these tests are slower than the smoke tests.
 test.setTimeout(90_000);
-
-const PASSPHRASE = "correct horse battery staple";
-
-async function openOnboarding(context: BrowserContext, id: string) {
-  const page = await context.newPage();
-  await page.goto(`chrome-extension://${id}/onboarding.html`);
-  return page;
-}
-
-async function createVault(page: Page) {
-  await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
-  await page.getByLabel("Confirm passphrase").fill(PASSPHRASE);
-  await page.getByLabel("I understand there is no recovery").check();
-  await page.getByRole("button", { name: "Create vault" }).click();
-  await expect(
-    page.getByText(
-      "Refill is ready. Pin it to your toolbar, then open a form you fill often.",
-    ),
-  ).toBeVisible({ timeout: 60_000 });
-}
 
 test("install opens onboarding", async ({ context }) => {
   const opened =
