@@ -2,6 +2,21 @@
 // this runs in the content script. Page content is hostile: the ancestor walk is bounded and every
 // failure (including a throwing page getter) reads as ineligible.
 
+import {
+  boundingRect,
+  clientHeight,
+  clientLeft,
+  clientTop,
+  clientWidth,
+  getAttr,
+  hasAttr,
+  localName,
+  nodeType,
+  parentNode,
+  scrollHeight,
+  scrollTop,
+  scrollWidth,
+} from "./dom";
 import type { FormControl } from "./signature";
 
 export type ControlKind = "text" | "select" | "checkbox" | "radio";
@@ -26,7 +41,7 @@ const MAX_ANCESTORS = 512;
 
 // localName and nodeType rather than `instanceof`: those fail for nodes from another realm (a frame).
 export function controlKind(el: Element): ControlKind | null {
-  switch (el.localName) {
+  switch (localName(el)) {
     case "textarea":
       return "text";
     case "select":
@@ -44,10 +59,12 @@ export function controlKind(el: Element): ControlKind | null {
 
 /** Parent in the flat walk: crosses shadow roots to their host; null at the document (or a detached root). */
 function parentOf(node: Node): Node | null {
-  const parent = node.parentNode;
+  // Accessors, not properties: an ancestor can be a <form> whose named controls shadow them (dom.ts).
+  const parent = parentNode(node);
   if (parent === null) return null;
-  if (parent.nodeType === Node.ELEMENT_NODE) return parent;
-  if (parent.nodeType === Node.DOCUMENT_FRAGMENT_NODE && "host" in parent) {
+  const type = nodeType(parent);
+  if (type === Node.ELEMENT_NODE) return parent;
+  if (type === Node.DOCUMENT_FRAGMENT_NODE && "host" in parent) {
     return (parent as ShadowRoot).host;
   }
   return null;
@@ -64,8 +81,8 @@ function reachable(el: Element): boolean {
     if (depth > MAX_ANCESTORS) return false;
     const e = node as Element;
     if (
-      e.hasAttribute("inert") ||
-      (e.getAttribute("aria-hidden") ?? "").trim().toLowerCase() === "true"
+      hasAttr(e, "inert") ||
+      (getAttr(e, "aria-hidden") ?? "").trim().toLowerCase() === "true"
     ) {
       return false;
     }
@@ -173,9 +190,10 @@ function inspectAncestors(
       // or `html,body{overflow:auto}` app shells, standards or quirks mode).
       const y =
         SCROLLABLE_OVERFLOW.has(cs.overflowY) &&
-        e.scrollHeight > e.clientHeight;
+        scrollHeight(e) > clientHeight(e);
       const x =
-        SCROLLABLE_OVERFLOW.has(cs.overflowX) && e.scrollWidth > e.clientWidth;
+        SCROLLABLE_OVERFLOW.has(cs.overflowX) &&
+        scrollWidth(e) > clientWidth(e);
       if (x || y) info.containers.push(e);
     }
     node = parentOf(node);
@@ -223,30 +241,29 @@ function paintedRegion(
     bottom: Math.max(box.bottom, box.top + 1),
   };
   for (const c of containers) {
-    if (
-      c.clientWidth < MIN_CONTAINER_SIDE ||
-      c.clientHeight < MIN_CONTAINER_SIDE
-    ) {
+    const cw = clientWidth(c);
+    const ch = clientHeight(c);
+    if (cw < MIN_CONTAINER_SIDE || ch < MIN_CONTAINER_SIDE) {
       return null;
     }
-    const cr = c.getBoundingClientRect();
-    const originX = cr.left + c.clientLeft;
-    const originY = cr.top + c.clientTop;
+    const cr = boundingRect(c);
+    const originX = cr.left + clientLeft(c);
+    const originY = cr.top + clientTop(c);
     const x = cur.left - originX;
-    const y = cur.top - originY + c.scrollTop;
+    const y = cur.top - originY + scrollTop(c);
     if (
       x + (cur.right - cur.left) <= 0 ||
-      x >= c.clientWidth ||
+      x >= cw ||
       y + (cur.bottom - cur.top) <= 0 ||
-      y >= c.scrollHeight
+      y >= scrollHeight(c)
     ) {
       return null;
     }
     for (const r of [view, clip]) {
       r.left = Math.max(r.left, originX);
       r.top = Math.max(r.top, originY);
-      r.right = Math.min(r.right, originX + c.clientWidth);
-      r.bottom = Math.min(r.bottom, originY + c.clientHeight);
+      r.right = Math.min(r.right, originX + cw);
+      r.bottom = Math.min(r.bottom, originY + ch);
     }
     cur = cr;
   }

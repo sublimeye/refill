@@ -1,5 +1,14 @@
 // Field signatures (spec 5.1). DOM-only, zero runtime dependencies: this runs in the content script.
 
+import {
+  firstChild,
+  hasAttr,
+  localName,
+  nextSibling,
+  nodeType,
+  parentNode,
+} from "./dom";
+
 export type FormControl =
   HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
@@ -50,31 +59,36 @@ const SKIPPED_TAGS = new Set([
  */
 function textOf(root: Node, b: Budget): string {
   let out = "";
-  let node: Node | null = root.firstChild;
+  // Accessors, not properties: the label's content can be a <form> whose named controls shadow
+  // `firstChild` / `nextSibling` / `parentNode` (dom.ts). Every step, including each climb, spends
+  // budget, so no markup can keep this loop running.
+  let node: Node | null = firstChild(root);
   while (node !== null && b.nodes > 0 && b.chars > 0) {
     b.nodes--;
     let descend = false;
-    if (node.nodeType === Node.TEXT_NODE) {
+    const type = nodeType(node);
+    if (type === Node.TEXT_NODE) {
       const take = (node.nodeValue ?? "").slice(0, b.chars);
       out += take;
       b.chars -= take.length;
-    } else if (node.nodeType === Node.ELEMENT_NODE) {
+    } else if (type === Node.ELEMENT_NODE) {
       const el = node as Element;
-      if (!SKIPPED_TAGS.has(el.localName) && !el.hasAttribute("hidden")) {
+      if (!SKIPPED_TAGS.has(localName(el)) && !hasAttr(el, "hidden")) {
         out += " ";
-        descend = el.firstChild !== null;
+        descend = firstChild(el) !== null;
       }
     }
     if (descend) {
-      node = (node as Element).firstChild;
+      node = firstChild(node);
       continue;
     }
-    while (node !== null && node.nextSibling === null) {
-      node = node.parentNode;
+    while (node !== null && nextSibling(node) === null) {
+      if (--b.nodes <= 0) return out;
+      node = parentNode(node);
       if (node === root) node = null;
       else out += " ";
     }
-    if (node !== null) node = node.nextSibling;
+    if (node !== null) node = nextSibling(node);
   }
   return out;
 }
@@ -96,18 +110,27 @@ function rootOf(el: Element): Document | ShadowRoot {
   return root instanceof ShadowRoot ? root : el.ownerDocument;
 }
 
+function isHiddenInput(el: FormControl): boolean {
+  return el.localName === "input" && (el as HTMLInputElement).type === "hidden";
+}
+
 export function labelText(el: FormControl): string | null {
   const root = rootOf(el);
   // `labels` follows the browser's own association (duplicate ids resolve to the first element);
-  // it is null for non-labelable controls (e.g. hidden), which fall back to a label[for] lookup.
-  const nodeList = el.labels;
+  // it is null for non-labelable controls (hidden), which fall back to a label[for] lookup.
+  // Reading it walks the whole tree scope, which makes a scan quadratic on a page of many controls,
+  // so skip it when no label can point at this control: no id for a `for` to name and no wrapping label.
+  const nodeList =
+    el.id === "" && el.closest("label") === null ? undefined : el.labels;
   const labels =
-    nodeList === null
+    nodeList === null || (nodeList === undefined && isHiddenInput(el))
       ? null
-      : Array.from(
-          { length: Math.min(nodeList.length, MAX_LABEL_SOURCES * 4) },
-          (_, i) => nodeList[i],
-        ).filter((l): l is HTMLLabelElement => l !== undefined);
+      : nodeList === undefined
+        ? []
+        : Array.from(
+            { length: Math.min(nodeList.length, MAX_LABEL_SOURCES * 4) },
+            (_, i) => nodeList[i],
+          ).filter((l): l is HTMLLabelElement => l !== undefined);
   const candidates: Array<() => string | null> = [
     // 1. label[for=id]
     () => {

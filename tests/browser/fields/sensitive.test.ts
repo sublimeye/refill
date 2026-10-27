@@ -373,6 +373,55 @@ describe("isSensitive: fail closed", () => {
   });
 });
 
+describe("PasswordHistory.observeShadow", () => {
+  function shadowWith(html: string): ShadowRoot {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = html; // test-only fixture markup
+    return shadow;
+  }
+
+  it("adds a shadow root without dropping the document observation", async () => {
+    const r = mount(`<input id="d" type="password">`);
+    const shadow = shadowWith(`<input id="s" type="password">`);
+    const h = history();
+    h.observe(document);
+    h.observeShadow(shadow);
+    (r.querySelector("#d") as HTMLInputElement).type = "text";
+    (shadow.querySelector("#s") as HTMLInputElement).type = "text";
+    await tick();
+    expect(h.wasPassword(control(r, "#d"))).toBe(true);
+    expect(h.wasPassword(shadow.querySelector("#s") as HTMLInputElement)).toBe(
+      true,
+    );
+  });
+
+  it("works without a prior observe and is idempotent per root", async () => {
+    const shadow = shadowWith(`<input id="s" type="password">`);
+    const h = history();
+    h.observeShadow(shadow);
+    h.observeShadow(shadow);
+    const el = shadow.querySelector("#s") as HTMLInputElement;
+    el.type = "text";
+    await tick();
+    expect(h.wasPassword(el)).toBe(true);
+  });
+
+  it("disconnect forgets watched roots so they can be observed again", async () => {
+    const shadow = shadowWith(`<input id="s" type="text">`);
+    const h = history();
+    h.observeShadow(shadow);
+    h.disconnect();
+    h.observeShadow(shadow);
+    const el = shadow.querySelector("#s") as HTMLInputElement;
+    el.type = "password";
+    el.type = "text";
+    await tick();
+    expect(h.wasPassword(el)).toBe(true);
+  });
+});
+
 describe("PasswordHistory", () => {
   it("a field that is password at observe time stays sensitive after a toggle to text", async () => {
     const r = mount(`<input type="password" name="user_field">`);

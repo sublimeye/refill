@@ -2,10 +2,18 @@
 // dependencies: this runs in the content script. Page content is hostile, so every check is bounded
 // and fails closed: anything that throws is treated as sensitive.
 
+import { getAttr, nodeType } from "./dom";
 import type { FormControl, Sig } from "./signature";
 
 const FIELD_MAX = 256;
 const CARD_VALUE_MAX = 64;
+
+const OBSERVE_OPTIONS: MutationObserverInit = {
+  subtree: true,
+  attributes: true,
+  attributeFilter: ["type"],
+  attributeOldValue: true,
+};
 
 /**
  * Remembers every control that has ever been `type=password` in this document, so a show-password
@@ -16,6 +24,7 @@ const CARD_VALUE_MAX = 64;
 export class PasswordHistory {
   private readonly seen = new WeakSet<Element>();
   private observer: MutationObserver | null = null;
+  private shadows = new WeakSet<ShadowRoot>();
 
   observe(root: Document | ShadowRoot): void {
     this.disconnect();
@@ -25,12 +34,26 @@ export class PasswordHistory {
     this.observer = new MutationObserver((records) => {
       this.record(records);
     });
-    this.observer.observe(root, {
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["type"],
-      attributeOldValue: true,
+    this.observer.observe(root, OBSERVE_OPTIONS);
+  }
+
+  /**
+   * Also watch a shadow root (a document observer does not see inside shadow trees), without
+   * dropping what `observe` already watches; the document scanner calls this for every shadow root
+   * it enters. A no-op for a root already watched. Without a prior `observe` it starts its own
+   * observer, so the shadow root alone is covered. Only toggles from this point on are recorded: a
+   * control that was a password and is text by now is judged by its current type alone.
+   */
+  observeShadow(root: ShadowRoot): void {
+    if (this.shadows.has(root)) return;
+    this.shadows.add(root);
+    for (const el of root.querySelectorAll('input[type="password" i]')) {
+      this.seen.add(el);
+    }
+    this.observer ??= new MutationObserver((records) => {
+      this.record(records);
     });
+    this.observer.observe(root, OBSERVE_OPTIONS);
   }
 
   /** True if `el` is, or at any point since `observe` was, `type=password`. */
@@ -38,7 +61,7 @@ export class PasswordHistory {
     // Flush records the observer has not delivered yet, so a toggle in the same task is not missed.
     if (this.observer !== null) this.record(this.observer.takeRecords());
     if (this.seen.has(el)) return true;
-    if (isPasswordType(el.getAttribute("type"))) {
+    if (isPasswordType(getAttr(el, "type"))) {
       this.seen.add(el);
       return true;
     }
@@ -48,14 +71,15 @@ export class PasswordHistory {
   disconnect(): void {
     this.observer?.disconnect();
     this.observer = null;
+    this.shadows = new WeakSet();
   }
 
   private record(records: MutationRecord[]): void {
     for (const r of records) {
       if (
         isPasswordType(r.oldValue) ||
-        (r.target.nodeType === Node.ELEMENT_NODE &&
-          isPasswordType((r.target as Element).getAttribute("type")))
+        (nodeType(r.target) === Node.ELEMENT_NODE &&
+          isPasswordType(getAttr(r.target as Element, "type")))
       ) {
         this.seen.add(r.target as Element);
       }
