@@ -36,6 +36,10 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Format (Prettier)
+        timeout-minutes: 2
+        run: pnpm format:check
+
       - name: Typecheck
         run: pnpm typecheck
 
