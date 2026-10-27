@@ -9,6 +9,7 @@ import {
   canFill,
   fillControl,
   isFilling,
+  MAX_FORMACTION_ELEMENTS,
   restore,
   snapshot,
   withFillingGuard,
@@ -383,6 +384,178 @@ describe("fill rules (canFill)", () => {
   });
 });
 
+describe("fill rules (canFill): submitter formaction", () => {
+  const EVIL = `formaction="https://evil.example/x"`;
+
+  it.each([
+    ["button without type", `<button ${EVIL}>Pay</button>`, false],
+    ["button type=submit", `<button type="submit" ${EVIL}>Pay</button>`, false],
+    [
+      "button with an invalid type",
+      `<button type="nope" ${EVIL}>Pay</button>`,
+      false,
+    ],
+    ["input type=submit", `<input type="submit" ${EVIL}>`, false],
+    ["input type=image", `<input type="image" alt="Pay" ${EVIL}>`, false],
+    [
+      "protocol-relative",
+      `<button formaction="//evil.example/x">Pay</button>`,
+      false,
+    ],
+    [
+      "javascript: formaction",
+      `<button formaction="javascript:void(0)">Pay</button>`,
+      false,
+    ],
+    [
+      "same-origin absolute",
+      `<button formaction="${origin}/pay">Pay</button>`,
+      true,
+    ],
+    ["relative", `<button formaction="/pay">Pay</button>`, true],
+    ["empty", `<button formaction="">Pay</button>`, true],
+    [
+      "button type=button (not a submitter)",
+      `<button type="button" ${EVIL}>x</button>`,
+      true,
+    ],
+    [
+      "button type=reset (not a submitter)",
+      `<button type="reset" ${EVIL}>x</button>`,
+      true,
+    ],
+    [
+      "input type=button (not a submitter)",
+      `<input type="button" ${EVIL}>`,
+      true,
+    ],
+  ])("in-form %s", (_name, submitter, expected) => {
+    mount(`<form action="/ok"><input name="a">${submitter}</form>`);
+    expect(can(item(q("[name=a]"), "x"))).toBe(expected);
+    if (!expected)
+      expect(fill(item(q("[name=a]"), "x"))).toBe("skipped-ineligible");
+  });
+
+  it("refuses a cross-origin submitter outside the form, attached with form=", () => {
+    mount(
+      `<form id="f" action="/ok"><input name="a"></form>` +
+        `<div><button form="f" ${EVIL}>Pay</button></div>`,
+    );
+    expect(can(item(q("[name=a]"), "x"))).toBe(false);
+  });
+
+  it("refuses an outside input type=image attached with form=", () => {
+    mount(
+      `<form id="f"><input name="a"></form><input type="image" alt="Pay" form="f" ${EVIL}>`,
+    );
+    expect(can(item(q("[name=a]"), "x"))).toBe(false);
+  });
+
+  it("refuses for a control that is itself attached with form=", () => {
+    mount(
+      `<form id="f"><button ${EVIL}>Pay</button></form><input name="a" form="f">`,
+    );
+    expect(can(item(q("[name=a]"), "x"))).toBe(false);
+  });
+
+  it("ignores a cross-origin submitter that belongs to another form", () => {
+    mount(
+      `<form id="f" action="/ok"><input name="a"></form>` +
+        `<form id="g"><button ${EVIL}>Pay</button></form>` +
+        `<button form="g" ${EVIL}>Pay</button>`,
+    );
+    expect(can(item(q("[name=a]"), "x"))).toBe(true);
+  });
+
+  it("ignores a cross-origin formaction for a control without a form", () => {
+    mount(`<input name="a"><button ${EVIL}>Pay</button>`);
+    expect(can(item(q("[name=a]"), "x"))).toBe(true);
+  });
+
+  it("resolves formaction against the document base", () => {
+    const base = document.createElement("base");
+    base.href = "https://evil.example/";
+    document.head.append(base);
+    cleanups.push(() => {
+      base.remove();
+    });
+    mount(
+      `<form action="${origin}/ok"><input name="a"><button formaction="/pay">Pay</button></form>`,
+    );
+    expect(can(item(q("[name=a]"), "x"))).toBe(false);
+  });
+
+  it("refuses once a cross-origin formaction appears between scan and fill", () => {
+    mount(`<form action="/ok"><input name="a"><button>Pay</button></form>`);
+    const i = item(q("[name=a]"), "x");
+    expect(can(i)).toBe(true);
+    q("button").setAttribute("formaction", "https://evil.example/x");
+    expect(fill(i)).toBe("skipped-ineligible");
+    expect(q<HTMLInputElement>("[name=a]").value).toBe("");
+  });
+
+  it("checks submitters inside the control's shadow root", () => {
+    const host = mount(`<div id="h"></div>`).firstElementChild as HTMLElement;
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `<form action="/ok"><input name="a"><button ${EVIL}>Pay</button></form>`; // test-only fixture markup
+    const el = shadow.querySelector<HTMLInputElement>("[name=a]");
+    if (el === null) throw new Error("missing input");
+    expect(can(item(el, "x"))).toBe(false);
+  });
+
+  it("fails closed past MAX_FORMACTION_ELEMENTS elements with formaction", () => {
+    mount(
+      `<form action="/ok"><input name="a"></form>` +
+        `<div>${'<button type="button" formaction="/x">x</button>'.repeat(MAX_FORMACTION_ELEMENTS)}</div>`,
+    );
+    expect(can(item(q("[name=a]"), "x"))).toBe(true);
+    mount(`<button type="button" formaction="/x">x</button>`);
+    expect(can(item(q("[name=a]"), "x"))).toBe(false);
+  });
+
+  it("is not bypassed by form controls named like the members it reads", () => {
+    const names = [
+      "formAction",
+      "formaction",
+      "querySelectorAll",
+      "getRootNode",
+      "elements",
+      "action",
+      "form",
+      "type",
+      "length",
+      "item",
+    ];
+    const clobbers = names
+      .map((n) => `<input name="${n}" type="text">`)
+      .join("");
+    mount(
+      `<form id="f" action="/ok">${clobbers}<input name="a"></form>` +
+        `<button form="f" ${EVIL}>Pay</button>`,
+    );
+    expect(can(item(q("[name=a]"), "x"))).toBe(false);
+    q("button").removeAttribute("formaction");
+    expect(can(item(q("[name=a]"), "x"))).toBe(true);
+  });
+
+  it("is not bypassed by named elements that shadow document members", () => {
+    // History first: PasswordHistory.observe reads `document.querySelectorAll` directly, and the
+    // runner fails closed if that throws (runner.ts `begin`).
+    const hist = history();
+    mount(
+      `<img name="querySelectorAll" alt=""><form name="getRootNode"></form>` +
+        `<form action="/ok"><input name="a"><button ${EVIL}>Pay</button></form>`,
+    );
+    expect(document.querySelectorAll).not.toBe(
+      Document.prototype.querySelectorAll,
+    );
+    const i = item(q("[name=a]"), "x");
+    expect(canFill(i, hist, origin, top)).toBe(false);
+    q("button").setAttribute("formaction", "/pay");
+    expect(canFill(i, hist, origin, top)).toBe(true);
+  });
+});
+
 describe("custom widgets", () => {
   it("react-select-like combobox (input inside role=combobox with a listbox) is unsupported", () => {
     mount(
@@ -616,6 +789,11 @@ describe("DOM clobbering", () => {
     "localName",
     "querySelector",
     "children",
+    "formAction",
+    "querySelectorAll",
+    "getRootNode",
+    "elements",
+    "type",
   ];
   const clobbers = NAMES.map((n) => `<input name="${n}" type="text">`).join("");
 
