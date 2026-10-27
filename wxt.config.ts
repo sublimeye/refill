@@ -1,13 +1,16 @@
 import { defineConfig } from "wxt";
 import { MANIFEST_KEY } from "./src/manifest-key";
 
+// ADR 0016: default-src 'none' so no resource class is open by omission.
 const PROD_CSP =
-  "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'none'";
-// Dev server needs to reach localhost for HMR, so connect-src 'none' is omitted.
+  "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; object-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'";
+// Dev server needs to reach localhost for HMR, so the production lockdown is not applied.
 const DEV_CSP = "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'";
 
 export default defineConfig({
   srcDir: "src",
+  // ADR 0016: Vite's modulepreload polyfill carries a dead `fetch(` call; Chromium 127+ never needs it.
+  vite: () => ({ build: { modulePreload: { polyfill: false } } }),
   modules: ["@wxt-dev/module-svelte"],
   manifest: ({ mode }) => ({
     name: "Refill",

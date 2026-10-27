@@ -26,7 +26,7 @@ export/import, Touch ID if spike passed (M6) · Plan 7 hardening, release audit,
 
 - Permissions exactly: `storage`, `activeTab`, `scripting`, `alarms`, `idle`; `optional_host_permissions: ["https://*/*"]`. Never `tabs`, `<all_urls>`, `nativeMessaging`, `webRequest`, `history`, `cookies`.
 - `externally_connectable: { "ids": [], "matches": [] }`; no `onMessageExternal` listener; no `web_accessible_resources`.
-- Production CSP `extension_pages`: `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'none'` (dev builds may omit `connect-src 'none'` for WXT reload).
+- Production CSP `extension_pages`: `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; object-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'` (amended by ADR 0016) (dev builds may omit `connect-src 'none'` for WXT reload).
 - `minimum_chrome_version: "127"`; manifest `key` set (stable extension ID).
 - No network: no `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `navigator.sendBeacon` in `src/`.
 - No `innerHTML`/`outerHTML`/`insertAdjacentHTML`/`document.write`/`{@html}`/`eval`/`new Function`; no `storage.sync`.

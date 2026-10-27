@@ -40,6 +40,7 @@
     "typecheck": "svelte-check && tsc --noEmit",
     "test": "vitest run",
     "test:manifest": "pnpm build && vitest run --config vitest.manifest.config.ts",
+    "check:built-network": "node scripts/check-built-network.mjs .output/chrome-mv3",
     "test:e2e": "playwright test --pass-with-no-tests",
     "format": "prettier --write ."
   }

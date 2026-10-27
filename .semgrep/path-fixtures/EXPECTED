@@ -1,5 +1,7 @@
+src/foo/tests/x.ts refill-no-network
 src/in.ts refill-no-network
 src/lib/crypto/bad-net.ts refill-no-network
 src/lib/crypto/store-local.ts refill-storage-local-only-in-store
 src/lib/store/subtle.ts refill-subtle-only-in-crypto
 src/ui/bad.svelte refill-svelte-no-network
+src/vendor.min.js refill-no-network
