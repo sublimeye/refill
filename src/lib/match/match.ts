@@ -26,6 +26,88 @@ const TEXT_LIKE = new Set([
   "date",
 ]);
 
+// WHATWG autofill field names. Autocomplete evidence only counts when the value names one of
+// these: sites set junk ("nope", "chrome-off", "disabled") on every control to defeat autofill, and
+// such a value is shared by all controls so it identifies nothing.
+const AUTOFILL_FIELD_NAMES = new Set([
+  "name",
+  "honorific-prefix",
+  "given-name",
+  "additional-name",
+  "family-name",
+  "honorific-suffix",
+  "nickname",
+  "username",
+  "new-password",
+  "current-password",
+  "one-time-code",
+  "organization-title",
+  "organization",
+  "street-address",
+  "address-line1",
+  "address-line2",
+  "address-line3",
+  "address-level4",
+  "address-level3",
+  "address-level2",
+  "address-level1",
+  "country",
+  "country-name",
+  "postal-code",
+  "cc-name",
+  "cc-given-name",
+  "cc-additional-name",
+  "cc-family-name",
+  "cc-number",
+  "cc-exp",
+  "cc-exp-month",
+  "cc-exp-year",
+  "cc-csc",
+  "cc-type",
+  "transaction-currency",
+  "transaction-amount",
+  "language",
+  "bday",
+  "bday-day",
+  "bday-month",
+  "bday-year",
+  "sex",
+  "url",
+  "photo",
+  "email",
+  "impp",
+  "tel",
+  "tel-country-code",
+  "tel-national",
+  "tel-area-code",
+  "tel-local",
+  "tel-local-prefix",
+  "tel-local-suffix",
+  "tel-extension",
+]);
+
+// Scope/contact modifiers that precede the field name; ignored when looking for the token.
+const AUTOFILL_MODIFIERS = new Set([
+  "shipping",
+  "billing",
+  "home",
+  "work",
+  "mobile",
+  "fax",
+  "pager",
+  "webauthn",
+]);
+
+function hasAutofillFieldName(autocomplete: string): boolean {
+  for (const t of autocomplete.toLowerCase().split(/\s+/)) {
+    if (t === "" || t.startsWith("section-") || AUTOFILL_MODIFIERS.has(t)) {
+      continue;
+    }
+    if (AUTOFILL_FIELD_NAMES.has(t)) return true;
+  }
+  return false;
+}
+
 export interface MatchInput {
   i: number;
   sig: Sig;
@@ -44,10 +126,13 @@ export function profileApplies(
   origin: string,
   pathname: string,
 ): boolean {
+  const prefix = profile.pathPrefix;
+  if (!prefix.startsWith("/") || profile.origin !== origin) return false;
+  // Segment boundaries: "/billpay" must not apply to "/billpayment".
   return (
-    profile.pathPrefix.startsWith("/") &&
-    profile.origin === origin &&
-    pathname.startsWith(profile.pathPrefix)
+    pathname === prefix ||
+    (prefix.endsWith("/") && pathname.startsWith(prefix)) ||
+    pathname.startsWith(`${prefix}/`)
   );
 }
 
@@ -67,22 +152,19 @@ function typesCompatible(
 const eq = (a: string | null, b: string | null): boolean =>
   a !== null && a !== "" && a === b;
 
-/**
- * Evidence score of `page` against `saved`, or -Infinity when the kind/type gate fails.
- * Kinds default to "text" (the only kind where distinct types can be compatible).
- */
+/** Evidence score of `page` against `saved`, or -Infinity when the kind/type gate fails. */
 export function scoreSig(
   saved: Sig,
   page: Sig,
-  savedKind: ControlKind = "text",
-  pageKind: ControlKind = savedKind,
+  savedKind: ControlKind,
+  pageKind: ControlKind,
 ): number {
   if (!typesCompatible(saved, page, savedKind, pageKind)) return -Infinity;
   let s = 0;
   if (
+    saved.autocomplete !== null &&
     eq(saved.autocomplete, page.autocomplete) &&
-    saved.autocomplete !== "on" &&
-    saved.autocomplete !== "off"
+    hasAutofillFieldName(saved.autocomplete)
   ) {
     s += WEIGHT_AUTOCOMPLETE;
   }
@@ -132,16 +214,38 @@ function claim(saved: SavedField, page: MatchInput[]): number | null {
 
 /**
  * Maps saved field id -> page control index. A field matches at most one control and a control at
- * most one field; when several fields claim one control the step whose fingerprint best resembles
- * the page wins, provided the similarity is >= MIN_JACCARD and strictly ahead of the others.
+ * most one field.
+ *
+ * Cross-step gate: with more than one recorded step, a field may match only if its step is among
+ * the steps whose fingerprint has the maximal Jaccard similarity with this page, and that maximum
+ * is > 0 (a step-1 field never fills a step-2 page). When several fields still claim one control,
+ * the step with the highest similarity wins, provided it is >= MIN_JACCARD and strictly ahead of
+ * the others; otherwise every claimant is dropped.
  */
 export function matchControls(
   saved: SavedField[],
   steps: { index: number; fingerprint: string[] }[],
   page: MatchInput[],
 ): Map<string, number> {
+  const pageKeys = page.map((c) => sigKey(c.sig, c.kind));
+  const stepJ = new Map<number, number>();
+  for (const st of steps)
+    stepJ.set(st.index, jaccard(st.fingerprint, pageKeys));
+  const simOf = (step: number): number => stepJ.get(step) ?? 0;
+
+  let gate: Set<number> | null = null;
+  if (steps.length > 1) {
+    let max = 0;
+    for (const j of stepJ.values()) if (j > max) max = j;
+    gate = new Set();
+    if (max > 0) {
+      for (const [index, j] of stepJ) if (j === max) gate.add(index);
+    }
+  }
+
   const claims = new Map<number, SavedField[]>();
   for (const f of saved) {
+    if (gate !== null && !gate.has(f.step)) continue;
     const i = claim(f, page);
     if (i === null) continue;
     const list = claims.get(i);
@@ -150,21 +254,13 @@ export function matchControls(
   }
 
   const winners = new Map<string, number>();
-  let pageKeys: string[] | null = null;
   for (const [i, fields] of claims) {
     const only = fields[0];
     if (fields.length === 1 && only !== undefined) {
       winners.set(only.id, i);
       continue;
     }
-    pageKeys ??= page.map((c) => sigKey(c.sig, c.kind));
-    const sims = fields.map((f) => {
-      const step = steps.find((s) => s.index === f.step);
-      return {
-        f,
-        j: step === undefined ? 0 : jaccard(step.fingerprint, pageKeys!),
-      };
-    });
+    const sims = fields.map((f) => ({ f, j: simOf(f.step) }));
     sims.sort((x, y) => y.j - x.j);
     const top = sims[0];
     const next = sims[1];

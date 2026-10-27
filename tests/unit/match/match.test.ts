@@ -11,6 +11,13 @@ import {
   type SavedField,
 } from "../../../src/lib/match/match";
 
+const score = (
+  a: Sig,
+  b: Sig,
+  ka: ControlKind = "text",
+  kb: ControlKind = ka,
+): number => scoreSig(a, b, ka, kb);
+
 const sig = (over: Partial<Sig> = {}): Sig => ({
   name: null,
   idStable: null,
@@ -79,6 +86,21 @@ describe("profileApplies", () => {
     );
   });
 
+  it("matches on path-segment boundaries", () => {
+    const o = p.origin;
+    const bp = { origin: o, pathPrefix: "/billpay" };
+    expect(profileApplies(bp, o, "/billpay")).toBe(true);
+    expect(profileApplies(bp, o, "/billpay/")).toBe(true);
+    expect(profileApplies(bp, o, "/billpay/step2")).toBe(true);
+    expect(profileApplies(bp, o, "/billpayment")).toBe(false);
+    expect(profileApplies(bp, o, "/billpay-admin")).toBe(false);
+    expect(profileApplies(bp, o, "/billing")).toBe(false);
+    const slash = { origin: o, pathPrefix: "/billpay/" };
+    expect(profileApplies(slash, o, "/billpay/step2")).toBe(true);
+    expect(profileApplies(slash, o, "/billpay")).toBe(false);
+    expect(profileApplies(slash, o, "/billpayment")).toBe(false);
+  });
+
   it("accepts the root prefix for any path", () => {
     expect(
       profileApplies({ origin: p.origin, pathPrefix: "/" }, p.origin, "/a/b"),
@@ -89,7 +111,7 @@ describe("profileApplies", () => {
 describe("scoreSig weights in isolation", () => {
   it("autocomplete 4", () => {
     expect(
-      scoreSig(
+      score(
         A({ autocomplete: "given-name" }),
         B({ autocomplete: "given-name" }),
       ),
@@ -97,48 +119,83 @@ describe("scoreSig weights in isolation", () => {
   });
 
   it("autocomplete on/off/null carries no weight", () => {
-    expect(scoreSig(A({ autocomplete: "on" }), B({ autocomplete: "on" }))).toBe(
+    expect(score(A({ autocomplete: "on" }), B({ autocomplete: "on" }))).toBe(0);
+    expect(score(A({ autocomplete: "off" }), B({ autocomplete: "off" }))).toBe(
       0,
     );
+    expect(score(A(), B())).toBe(0);
+  });
+
+  it("autocomplete counts only when it names a WHATWG autofill field", () => {
+    for (const junk of [
+      "nope",
+      "chrome-off",
+      "disabled",
+      "none",
+      "false",
+      "x",
+    ]) {
+      expect(score(A({ autocomplete: junk }), B({ autocomplete: junk }))).toBe(
+        0,
+      );
+    }
+    for (const ok of [
+      "email",
+      "cc-number",
+      "address-line1",
+      "tel-national",
+      "section-a shipping email",
+      "billing postal-code",
+      "work tel",
+    ]) {
+      expect(score(A({ autocomplete: ok }), B({ autocomplete: ok }))).toBe(4);
+    }
+  });
+
+  it("autocomplete equality uses the full normalized string, modifiers included", () => {
     expect(
-      scoreSig(A({ autocomplete: "off" }), B({ autocomplete: "off" })),
+      score(
+        A({ autocomplete: "shipping email" }),
+        B({ autocomplete: "billing email" }),
+      ),
     ).toBe(0);
-    expect(scoreSig(A(), B())).toBe(0);
+    // modifiers alone are not a field name
+    expect(
+      score(A({ autocomplete: "shipping" }), B({ autocomplete: "shipping" })),
+    ).toBe(0);
   });
 
   it("name 3", () => {
-    expect(scoreSig(A({ name: "amt" }), B({ name: "amt" }))).toBe(3);
+    expect(score(A({ name: "amt" }), B({ name: "amt" }))).toBe(3);
   });
 
   it("label 3", () => {
-    expect(
-      scoreSig(A({ labelText: "amount" }), B({ labelText: "amount" })),
-    ).toBe(3);
-  });
-
-  it("idStable 2", () => {
-    expect(scoreSig(A({ idStable: "amt" }), B({ idStable: "amt" }))).toBe(2);
-  });
-
-  it("formAction 1", () => {
-    expect(scoreSig(A({ formAction: "/pay" }), B({ formAction: "/pay" }))).toBe(
-      1,
+    expect(score(A({ labelText: "amount" }), B({ labelText: "amount" }))).toBe(
+      3,
     );
   });
 
+  it("idStable 2", () => {
+    expect(score(A({ idStable: "amt" }), B({ idStable: "amt" }))).toBe(2);
+  });
+
+  it("formAction 1", () => {
+    expect(score(A({ formAction: "/pay" }), B({ formAction: "/pay" }))).toBe(1);
+  });
+
   it("ordinal 1", () => {
-    expect(scoreSig(sig({ ordinal: 3 }), sig({ ordinal: 3 }))).toBe(1);
+    expect(score(sig({ ordinal: 3 }), sig({ ordinal: 3 }))).toBe(1);
   });
 
   it("different or missing evidence scores nothing", () => {
     expect(
-      scoreSig(
+      score(
         A({ name: "a", idStable: "a", labelText: "a", formAction: "/a" }),
         B({ name: "b", idStable: "b", labelText: "b", formAction: "/b" }),
       ),
     ).toBe(0);
-    expect(scoreSig(A({ name: "a" }), B({ name: null }))).toBe(0);
-    expect(scoreSig(A({ name: null }), B({ name: null }))).toBe(0);
+    expect(score(A({ name: "a" }), B({ name: null }))).toBe(0);
+    expect(score(A({ name: null }), B({ name: null }))).toBe(0);
   });
 
   it("sums all evidence", () => {
@@ -150,7 +207,7 @@ describe("scoreSig weights in isolation", () => {
       formAction: "/f",
       ordinal: 4,
     });
-    expect(scoreSig(s, { ...s })).toBe(4 + 3 + 3 + 2 + 1 + 1);
+    expect(score(s, { ...s })).toBe(4 + 3 + 3 + 2 + 1 + 1);
   });
 });
 
@@ -171,7 +228,7 @@ describe("scoreSig kind and type gate", () => {
     for (const a of types) {
       for (const b of types) {
         expect(
-          scoreSig(
+          score(
             sig({ ...strong, type: a, ordinal: 1 }),
             sig({ ...strong, type: b, ordinal: 2 }),
           ),
@@ -185,14 +242,14 @@ describe("scoreSig kind and type gate", () => {
     for (const ka of kinds) {
       for (const kb of kinds) {
         if (ka === kb) continue;
-        expect(scoreSig(sig(strong), sig(strong), ka, kb)).toBe(-Infinity);
+        expect(score(sig(strong), sig(strong), ka, kb)).toBe(-Infinity);
       }
     }
   });
 
   it("non-text kinds need an equal type", () => {
     expect(
-      scoreSig(
+      score(
         sig({ ...strong, type: "select-one" }),
         sig({ ...strong, type: "select-multiple" }),
         "select",
@@ -200,7 +257,7 @@ describe("scoreSig kind and type gate", () => {
       ),
     ).toBe(-Infinity);
     expect(
-      scoreSig(
+      score(
         sig({ ...strong, type: "select-one" }),
         sig({ ...strong, type: "select-one" }),
         "select",
@@ -211,13 +268,13 @@ describe("scoreSig kind and type gate", () => {
 
   it("a text control of a non-listed type needs an equal type", () => {
     expect(
-      scoreSig(
+      score(
         sig({ ...strong, type: "month" }),
         sig({ ...strong, type: "text" }),
       ),
     ).toBe(-Infinity);
     expect(
-      scoreSig(
+      score(
         sig({ ...strong, type: "month" }),
         sig({ ...strong, type: "month" }),
       ),
@@ -226,7 +283,7 @@ describe("scoreSig kind and type gate", () => {
 
   it("non-text kinds do not use the text-like set", () => {
     expect(
-      scoreSig(
+      score(
         sig({ ...strong, type: "text" }),
         sig({ ...strong, type: "email" }),
         "checkbox",
@@ -241,7 +298,7 @@ describe("scoreSig name/id derived pair", () => {
     const s = (over: Partial<Sig>) =>
       sig({ name: "ctl00$Main$Amt", idStable: "ctl00_Main_Amt", ...over });
     expect(
-      scoreSig(
+      score(
         s({ nameIdDerived: true, ordinal: 1 }),
         s({ nameIdDerived: true, ordinal: 2 }),
       ),
@@ -261,14 +318,14 @@ describe("scoreSig name/id derived pair", () => {
       nameIdDerived: false,
       ordinal: 2,
     });
-    expect(scoreSig(a, b)).toBe(3);
-    expect(scoreSig(b, a)).toBe(3);
+    expect(score(a, b)).toBe(3);
+    expect(score(b, a)).toBe(3);
   });
 
   it("non-derived pairs still count both", () => {
     const a = sig({ name: "n", idStable: "same", ordinal: 1 });
     const b = sig({ name: "n", idStable: "same", ordinal: 2 });
-    expect(scoreSig(a, b)).toBe(5);
+    expect(score(a, b)).toBe(5);
   });
 
   it("derived flag with different names gives no id weight either", () => {
@@ -279,7 +336,7 @@ describe("scoreSig name/id derived pair", () => {
       ordinal: 1,
     });
     const b = sig({ name: "n2", idStable: "same", ordinal: 2 });
-    expect(scoreSig(a, b)).toBe(0);
+    expect(score(a, b)).toBe(0);
   });
 });
 
@@ -411,17 +468,43 @@ describe("matchControls realistic cases", () => {
     );
   });
 
-  it("randomized name+id with only a placeholder label scores 3 and stays unmatched", () => {
-    const f = [
-      field("f", { labelText: "first name", name: "r1", idStable: "r1" }),
-    ];
-    const c = control(0, {
+  describe("randomized name+id with only a placeholder label (score 3)", () => {
+    const rnd = (id: string, over: Partial<Sig> = {}) => ({
       labelText: "first name",
-      name: "x9",
-      idStable: "x9",
+      name: id,
+      idStable: id,
+      ...over,
     });
-    expect(scoreSig(f[0]!.sig, c.sig)).toBe(3);
-    expect(matchControls(f, steps, [c]).size).toBe(0);
+
+    it("stays unmatched when ordinal or formAction differ", () => {
+      const f = field("f", rnd("r1", { formAction: "/f" }));
+      const base = rnd("x9", { formAction: "/f" });
+      // label 3 + formAction 1 only (ordinals differ)
+      const noOrdinal = { ...f, sig: { ...f.sig, ordinal: 1 } };
+      const c = control(0, base);
+      expect(score(noOrdinal.sig, c.sig)).toBe(4);
+      expect(matchControls([noOrdinal], steps, [c]).size).toBe(0);
+      // label 3 + ordinal 1 only (formAction differs)
+      const sameOrdinal = {
+        ...f,
+        sig: { ...f.sig, ordinal: 100, formAction: "/other" },
+      };
+      expect(score(sameOrdinal.sig, c.sig)).toBe(4);
+      expect(matchControls([sameOrdinal], steps, [c]).size).toBe(0);
+      // label alone
+      expect(
+        matchControls([field("f", rnd("r1"))], steps, [control(0, rnd("x9"))])
+          .size,
+      ).toBe(0);
+    });
+
+    it("matches when label, formAction and ordinal all agree (3+1+1 = 5)", () => {
+      const f = field("f", rnd("r1", { formAction: "/f" }));
+      const saved = { ...f, sig: { ...f.sig, ordinal: 100 } };
+      const c = control(0, rnd("x9", { formAction: "/f" }));
+      expect(score(saved.sig, c.sig)).toBe(5);
+      expect(matchControls([saved], steps, [c])).toEqual(new Map([["f", 0]]));
+    });
   });
 
   it("ASP.NET derived pair is not double-counted", () => {
@@ -479,14 +562,14 @@ describe("matchControls conflict resolution", () => {
     expect(m).toEqual(new Map([["amt3", 0]]));
   });
 
-  it("drops both when the best Jaccard is below 0.5", () => {
+  it("drops both claimants when the best Jaccard is below 0.5", () => {
+    // One recorded step (no cross-step gate): step 3 is known but dissimilar, step 9 is unknown.
     const steps = [
-      { index: 1, fingerprint: ["text|x|x|", "text|y|y|", "text|z|z|"] },
       { index: 3, fingerprint: [pageKeys[0]!, "a", "b", "c", "d", "e"] },
     ];
-    expect(jaccard(steps[1]!.fingerprint, pageKeys)).toBeLessThan(0.5);
+    expect(jaccard(steps[0]!.fingerprint, pageKeys)).toBeLessThan(0.5);
     expect(
-      matchControls([mk("amt1", 1), mk("amt3", 3)], steps, page).size,
+      matchControls([mk("amt3", 3), mk("amt9", 9)], steps, page).size,
     ).toBe(0);
   });
 
@@ -502,8 +585,8 @@ describe("matchControls conflict resolution", () => {
 
   it("keeps non-conflicting matches while dropping conflicting ones", () => {
     const steps = [
-      { index: 1, fingerprint: ["q"] },
-      { index: 3, fingerprint: ["r"] },
+      { index: 1, fingerprint: pageKeys },
+      { index: 3, fingerprint: [...pageKeys] },
     ];
     const holder = field(
       "holder",
@@ -537,6 +620,109 @@ describe("matchControls conflict resolution", () => {
     expect(matchControls([mk("amt9", 9), mk("amt3", 3)], steps, page)).toEqual(
       new Map([["amt3", 0]]),
     );
+  });
+});
+
+describe("matchControls cross-step gate", () => {
+  const f1 = field("acct", { name: "acct", labelText: "account number" }, 1);
+  const f2 = field("amt", { name: "amount", labelText: "amount" }, 2);
+  const c1 = control(0, { name: "acct", labelText: "account number" });
+  const c2 = control(1, { name: "amount", labelText: "amount" });
+  const k = (c: MatchInput) => sigKey(c.sig, c.kind);
+  const steps = [
+    { index: 1, fingerprint: [k(c1), "text|a|a|"] },
+    { index: 2, fingerprint: [k(c2), "text|b|b|"] },
+  ];
+
+  it("a step-1 field never fills a step-2 page", () => {
+    // Page has step 2's signature plus a control that would match step 1's field.
+    const lookalike = control(0, { name: "acct", labelText: "account number" });
+    const page = [lookalike, c2];
+    const pageSteps = [
+      { index: 1, fingerprint: ["text|a|a|", "text|q|q|"] },
+      { index: 2, fingerprint: [k(c2), k(lookalike)] },
+    ];
+    // step 2 has Jaccard 1, step 1 has 0: only step 2's fields are allowed
+    expect(matchControls([f1, f2], pageSteps, page)).toEqual(
+      new Map([["amt", 1]]),
+    );
+  });
+
+  it("nothing matches when no step resembles the page (max Jaccard 0)", () => {
+    expect(
+      matchControls(
+        [f1, f2],
+        [
+          { index: 1, fingerprint: ["z"] },
+          { index: 2, fingerprint: ["y"] },
+        ],
+        [c1, c2],
+      ).size,
+    ).toBe(0);
+  });
+
+  it("an SPA page holding both steps fills both only when Jaccards tie at the max", () => {
+    const page = [c1, c2];
+    // each fingerprint is 2 keys with 1 in common with the page: 1/3 each, tie
+    expect(matchControls([f1, f2], steps, page)).toEqual(
+      new Map([
+        ["acct", 0],
+        ["amt", 1],
+      ]),
+    );
+    // step 2 resembles the page more: only its field may fill
+    const skewed = [
+      { index: 1, fingerprint: [k(c1)] }, // Jaccard 1/2, positive but not max
+      { index: 2, fingerprint: [k(c2), k(c1)] }, // Jaccard 1
+    ];
+    expect(matchControls([f1, f2], skewed, page)).toEqual(
+      new Map([["amt", 1]]),
+    );
+  });
+
+  it("a single-step profile has no gate", () => {
+    expect(
+      matchControls([f1], [{ index: 1, fingerprint: ["unrelated"] }], [c1]),
+    ).toEqual(new Map([["acct", 0]]));
+  });
+});
+
+describe("junk autocomplete cannot match a lone control", () => {
+  it("step-1 account number does not fill a lone amount control", () => {
+    const shared = {
+      autocomplete: "nope",
+      formAction: "/Pay.aspx",
+    };
+    const acct = field(
+      "acct",
+      {
+        ...shared,
+        labelText: "account number",
+        name: "ctl00$Main$Acct",
+        idStable: "ctl00_Main_Acct",
+        nameIdDerived: true,
+      },
+      1,
+    );
+    const saved = { ...acct, sig: { ...acct.sig, ordinal: 0 } };
+    const amount: MatchInput = {
+      i: 0,
+      kind: "text",
+      sig: sig({ ...shared, labelText: "amount", name: "amt", ordinal: 0 }),
+    };
+    expect(score(saved.sig, amount.sig)).toBe(2); // formAction + ordinal only
+    expect(
+      matchControls(
+        [saved],
+        [
+          {
+            index: 1,
+            fingerprint: ["text|ctl00$Main$Acct|account number|nope"],
+          },
+        ],
+        [amount],
+      ).size,
+    ).toBe(0);
   });
 });
 

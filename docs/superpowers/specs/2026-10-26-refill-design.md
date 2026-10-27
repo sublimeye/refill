@@ -278,22 +278,26 @@ Not run while `document.prerendering`; waits for `prerenderingchange`. A bfcache
 
 ### 5.4 Matching (fill)
 - A profile applies to a page iff `page.origin === profile.origin` (exact: scheme, punycode host,
-  port) and `page.pathname.startsWith(profile.pathPrefix)`. `pathPrefix` defaults to the longest
-  common path prefix of recorded steps; editable in dashboard.
+  port) and the page pathname is at or under `profile.pathPrefix` on a path-segment boundary (`pathname ===
+  prefix`, or `pathname` starts with `prefix + "/"`, or the prefix ends with `/` and `pathname`
+  starts with it; `/billpay` does not apply to `/billpayment`). `pathPrefix` defaults to the longest
+  common path-segment prefix of recorded steps; editable in dashboard.
 - Per-field match is a **weighted score**; `type`/`kind` must be compatible (hard gate):
   | evidence | weight |
   |---|---|
-  | `autocomplete` equal (non-`on`/`off`) | 4 |
+  | `autocomplete` equal and naming a WHATWG autofill field (junk values such as `nope` score 0) | 4 |
   | `name` equal (or name/id derived pair, counted once) | 3 |
   | `labelText` equal | 3 |
   | `idStable` equal (if not derived from name) | 2 |
   | same `formAction` | 1 |
   | same `ordinal` | 1 |
   A control matches when score ≥ 5 and it is the **unique best** candidate with a margin ≥ 2 over
-  the runner-up. Ties across steps are broken by step fingerprint similarity (Jaccard over the
-  page's signature set vs each step's fingerprint, threshold 0.5). Weights/threshold are tuned
+  the runner-up. With more than one recorded step, a field may match only if its step is among those
+  with the maximal fingerprint similarity (Jaccard over the page's signature set vs each step's
+  fingerprint) and that maximum is > 0; ties across steps for one control are broken by the same
+  similarity (threshold 0.5, ties drop all claimants). Weights/threshold are tuned
   against the fixture corpus; a field that can't reach the threshold (e.g. randomized name+id with
-  only a placeholder) is reported as "couldn't match" rather than guessed.
+  only a placeholder, without matching formAction and ordinal) is reported as "couldn't match" rather than guessed.
 - **Matching runs in the SW**: the content script sends a `scan-report` (signatures only, no
   values); the SW returns values **only for controls it matched on this page**, never the whole
   profile or other steps' values.
