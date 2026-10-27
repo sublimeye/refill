@@ -96,6 +96,14 @@ jobs:
         timeout-minutes: 5
         run: pnpm build:e2e
 
+      # ADR 0022 positive control: the e2e build must trip the seam check (exit 1, not a usage
+      # error), proving the marker survives minification and the production pass above means something.
+      - name: E2E build has the seam marker (positive control)
+        run: |
+          code=0
+          node scripts/check-no-seams.mjs .output/chrome-mv3-e2e || code=$?
+          test "$code" -eq 1
+
       - name: Playwright e2e
         timeout-minutes: 8
         run: pnpm test:e2e

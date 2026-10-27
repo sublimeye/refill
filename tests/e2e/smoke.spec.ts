@@ -8,6 +8,29 @@ test("built extension loads and its service worker has the pinned ID", ({
   expect(extensionId).toBe(EXTENSION_ID);
 });
 
+// ADR 0022: the e2e build exposes the profile seeding seam in the service worker (and only it does;
+// CI proves the production build has no such marker).
+test("e2e service worker exposes the profile seam", async ({ context }) => {
+  const worker =
+    context.serviceWorkers()[0] ??
+    (await context.waitForEvent("serviceworker"));
+  const result = await worker.evaluate(async () => {
+    const seam = (
+      globalThis as unknown as {
+        __refillE2E?: { saveProfile?: (p: unknown) => Promise<void> };
+      }
+    ).__refillE2E;
+    if (typeof seam?.saveProfile !== "function") return "missing";
+    try {
+      await seam.saveProfile({});
+      return "resolved";
+    } catch (err) {
+      return err instanceof Error ? err.name : "threw";
+    }
+  });
+  expect(result).toBe("TypeError"); // reached the real validation, not just a stub
+});
+
 // Messaging in real Chromium: the callback-style onMessage answers through sendResponse (a
 // returned Promise would not be delivered), and rejected messages get an answer rather than a
 // hanging channel.
