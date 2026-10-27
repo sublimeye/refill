@@ -101,8 +101,9 @@ access to every site (see `docs/research/prior-art.md`).
   `cookies`, remote code, any network access (no `fetch` anywhere; enforced by lint + CSP).
 - `externally_connectable: { "ids": [], "matches": [] }` — no other extension or web page may message
   Refill. No `onMessageExternal` listener.
-- CSP (extension pages): `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'none'`
-  (`wasm-unsafe-eval` only for the bundled Argon2id WASM).
+- CSP (extension pages): `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; font-src 'self'; object-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'`
+  (`wasm-unsafe-eval` only for the bundled Argon2id WASM; `default-src 'none'` so no resource class
+  is open by omission, ADR 0016). CI also greps the built JS for network APIs.
 - No `web_accessible_resources`.
 - A **manifest snapshot test** fails CI if permissions, host permissions, CSP or
   `externally_connectable` change without updating the snapshot deliberately.

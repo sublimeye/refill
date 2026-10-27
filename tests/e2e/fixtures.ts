@@ -50,7 +50,36 @@ async function settleIdle(worker: Worker): Promise<void> {
 export const test = base.extend<{
   context: BrowserContext;
   extensionId: string;
+  cspViolations: string[];
 }>({
+  // ADR 0016: every test also asserts that no page logged a CSP violation. Violations arrive as
+  // console errors ("Refused to ...") and as `securitypolicyviolation` events, which the init
+  // script re-logs under a marker. A test that provokes one on purpose must splice it out.
+  cspViolations: [
+    async ({ context }, use) => {
+      const violations: string[] = [];
+      await context.addInitScript(() => {
+        addEventListener("securitypolicyviolation", (e) =>
+          console.error(
+            `REFILL_CSP_VIOLATION ${e.violatedDirective} ${e.blockedURI}`,
+          ),
+        );
+      });
+      context.on("console", (m) => {
+        const t = m.text();
+        if (
+          t.includes("REFILL_CSP_VIOLATION") ||
+          t.includes("Content Security Policy")
+        )
+          violations.push(t);
+      });
+      await use(violations);
+      expect(violations, "CSP violations logged by extension pages").toEqual(
+        [],
+      );
+    },
+    { auto: true },
+  ],
   // eslint-disable-next-line no-empty-pattern -- Playwright requires a destructuring pattern here.
   context: async ({}, use) => {
     const userDataDir = await mkdtemp(join(tmpdir(), "refill-e2e-"));

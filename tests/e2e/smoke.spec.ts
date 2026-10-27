@@ -39,3 +39,32 @@ test("service worker answers page messages and rejects invalid ones", async ({
     error: "weak",
   });
 });
+
+// ADR 0016: extension pages run under `default-src 'none'`. Both pages must render and run
+// (onboarding loads zxcvbn, the popup talks to the worker) with no CSP violation, and the policy
+// must actually block what it claims to: an image from another origin is refused.
+test("onboarding and popup load without CSP violations, and the CSP blocks foreign images", async ({
+  context,
+  extensionId,
+  cspViolations,
+}) => {
+  const onboarding = await context.newPage();
+  await onboarding.goto(`chrome-extension://${extensionId}/onboarding.html`);
+  await expect(
+    onboarding.getByRole("button", { name: "Create vault" }),
+  ).toBeVisible();
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await expect(
+    popup.getByRole("button", { name: "Set up Refill" }),
+  ).toBeVisible();
+  expect(cspViolations).toEqual([]);
+
+  // Positive control: the watcher sees a real violation.
+  await popup.evaluate(() => {
+    new Image().src = "https://example.invalid/pixel.png";
+  });
+  await expect.poll(() => cspViolations.length).toBeGreaterThan(0);
+  expect(cspViolations.join("\n")).toMatch(/img-src|default-src/);
+  cspViolations.length = 0;
+});
