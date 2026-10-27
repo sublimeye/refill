@@ -275,36 +275,58 @@ describe("scanDocument limits", () => {
     expect(r.truncated).toBe(false);
   });
 
+  /**
+   * Counts signature work instead of wall-clock time: `buildSignature` reads `el.id`, so an own `id`
+   * getter on each input records which inputs got a signature (by document index). Deterministic,
+   * unlike a time budget on a shared CI runner.
+   */
+  function signedIndexes(root: HTMLElement): () => number[] {
+    const signed = new Set<number>();
+    root.querySelectorAll("input").forEach((el, n) => {
+      const id = el.id;
+      Object.defineProperty(el, "id", {
+        configurable: true,
+        get() {
+          signed.add(n);
+          return id;
+        },
+      });
+    });
+    return () => [...signed].sort((a, b) => a - b);
+  }
+  const range = (n: number) => Array.from({ length: n }, (_, i) => i);
+
   it("builds at most MAX_SIGNATURES signatures, then reports truncation", () => {
     expect(MAX_SIGNATURES).toBe(1200);
-    mount(`<form>${'<input name="otp_code">'.repeat(10_000)}</form>`);
-    const t0 = performance.now();
+    const signed = signedIndexes(
+      mount(`<form>${'<input name="otp_code">'.repeat(10_000)}</form>`),
+    );
     const r = scan();
-    const ms = performance.now() - t0;
     expect(r.controls).toHaveLength(0);
     expect(r.truncated).toBe(true);
-    expect(ms).toBeLessThan(200);
+    // The first MAX_SIGNATURES inputs, each once; the other 8 800 are never signed.
+    expect(signed()).toEqual(range(MAX_SIGNATURES));
   });
 
   it("the signature bound also holds when every control has an id (label lookup costs O(page))", () => {
-    mount(`<form>${'<input name="otp_code" id="x">'.repeat(10_000)}</form>`);
-    const t0 = performance.now();
+    const signed = signedIndexes(
+      mount(`<form>${'<input name="otp_code" id="x">'.repeat(10_000)}</form>`),
+    );
     const r = scan();
-    const ms = performance.now() - t0;
     expect(r.truncated).toBe(true);
-    expect(ms).toBeLessThan(500); // about 180 ms locally; unbounded this is seconds
+    expect(signed()).toEqual(range(MAX_SIGNATURES));
   });
 
-  it("a thousand sensitive controls before a real field still find it quickly", () => {
-    mount(
-      `<form>${'<input name="otp_code">'.repeat(1000)}<input name="real"></form>`,
+  it("a thousand sensitive controls before a real field still find it, one signature each", () => {
+    const signed = signedIndexes(
+      mount(
+        `<form>${'<input name="otp_code">'.repeat(1000)}<input name="real"></form>`,
+      ),
     );
-    const t0 = performance.now();
     const r = scan();
-    const ms = performance.now() - t0;
     expect(names(r)).toEqual(["real"]);
     expect(r.truncated).toBe(false);
-    expect(ms).toBeLessThan(200);
+    expect(signed()).toEqual(range(1001));
   });
 
   it("2 000 inputs scan in under 50 ms (median of 5)", () => {
