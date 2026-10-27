@@ -351,6 +351,15 @@ export async function unlockWithPassphrase(
   return out.result;
 }
 
+/**
+ * The lock generation: changes on every `lock()` and never otherwise. A caller that read it before
+ * checking `status()` and finds it unchanged after later awaits knows no lock happened in between,
+ * so plaintext decrypted with a DEK captured earlier may still be released (ADR 0025).
+ */
+export function lockEpoch(): number {
+  return epoch;
+}
+
 export async function lock(): Promise<void> {
   epoch++;
   mem = null;

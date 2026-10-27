@@ -35,14 +35,16 @@ export async function putEncrypted(
 
 /**
  * `undefined` when absent. Throws `LockedError` when locked and `DecryptError` for a malformed,
- * tampered or mismatched-AAD record.
+ * tampered or mismatched-AAD record. Pass `tx` to read inside a `withStoreLock` job, so a
+ * read-modify-write sees no interleaved write.
  */
 export async function getEncrypted<T>(
   key: string,
   aadBytes: Uint8Array,
+  tx?: StoreTx,
 ): Promise<T | undefined> {
   const dek = await getDek();
-  const raw = await getItem(key);
+  const raw = await (tx ? tx.getItem(key) : getItem(key));
   if (raw === undefined) return undefined;
   const sealed = parseSealed(raw, TAG_BYTES, Number.MAX_SAFE_INTEGER);
   if (!sealed) throw new DecryptError();
