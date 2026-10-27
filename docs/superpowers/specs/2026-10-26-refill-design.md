@@ -242,11 +242,23 @@ For each candidate control: `{ name, idStable, autocomplete, type, labelText, or
 Eligible only if: in top frame; `input` (text-like, email, tel, number, date, search, url),
 `textarea`, `select`, `checkbox`, `radio`; enabled; not readonly; visible:
 `el.checkVisibility({opacityProperty:true, visibilityProperty:true, contentVisibilityAuto:true})`,
-bounding box ≥ 4×4 px, box overlaps the horizontal band `[0, viewport width]` (document coordinates) and
-lies within the document's scroll height (not parked off-canvas; right-side parking is rejected),
-effective opacity ≥ 0.1 (ancestor `opacity` and `filter: opacity()` product) and not fully transparent
-text on a fully transparent background (text-entry controls), no `inert`/`aria-hidden` ancestor, and — if currently in the viewport — `elementFromPoint` at its
-center hits the element or a descendant (not covered by another element).
+bounding box ≥ 4×4 px, effective opacity ≥ 0.1 (ancestor `opacity` and `filter: opacity()` product),
+not fully transparent text on a fully transparent background (text-entry controls; date inputs
+exempt), no `inert`/`aria-hidden` ancestor, not parked off-canvas, and — if currently in the
+viewport — `elementFromPoint` at the center of its visible part hits the element or a descendant
+(not covered by another element).
+- *Off-canvas.* Without a scrolling ancestor: the box overlaps the horizontal band
+  `[0, viewport width]` (document coordinates) and lies within the document's scroll height
+  (right-side parking is rejected). Every scrolling ancestor that overflows (`overflow` auto, scroll
+  or overlay; `body` counts only when `html` stops its overflow propagating) applies the same rule
+  to the box: vertically anywhere in its scroll height, horizontally within its currently visible
+  slice `[0, clientWidth]`; the outermost container's box then passes the document rule (app-shell
+  SPAs whose `#app` scrolls). A container smaller than 8 px on a side, or one that clips the box to
+  less than 4×4 px, rejects it.
+- *Custom-styled checkbox/radio.* A native checkbox or radio that fails only the opacity, size or
+  hit-test checks is still eligible if one of its labels (`el.labels`) passes the same checks
+  (visibility, size, opacity, text, position, clipping, hit test where in the viewport). Fill then
+  uses `.click()` on the control (label proxy). Selects and text controls stay strict.
 Not run while `document.prerendering`; waits for `prerenderingchange`. A bfcache restore
 (`pageshow.persisted`) is treated as the same document.
 
@@ -426,7 +438,8 @@ are treated as hints while locked.
 ### 8.3 Out of scope / accepted residual risk
 - Malware with OS-level access (keyloggers, memory readers).
 - Same-origin honeypots that §5.2 does not catch: `mask-image` hiding, opaque `pointer-events:none`
-  overlays, covered fields below the fold, font-based masking. They need a hostile same-origin page,
+  overlays, covered fields (and covered labels of custom checkbox/radio controls) below the fold,
+  font-based masking. They need a hostile same-origin page,
   which can already read filled values (next bullet); step matching limits what they can harvest.
 - Scripts on the *same* origin reading values after Refill fills them. With Auto mode this happens
   without a user action; mitigated (visible, eligible, current-step, once-per-document,

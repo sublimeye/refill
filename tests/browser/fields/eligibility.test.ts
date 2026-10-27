@@ -683,3 +683,190 @@ describe("custom-styled checkbox and radio (label proxy)", () => {
     expect(isEligible(q(r, "#u"))).toBe(false);
   });
 });
+
+async function frameDoc(html: string): Promise<Document> {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "width:400px;height:300px;border:0";
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+  frame.src = url;
+  document.body.append(frame);
+  await new Promise((resolve) => frame.addEventListener("load", resolve));
+  URL.revokeObjectURL(url);
+  return frame.contentDocument as Document;
+}
+
+describe("body as the scroller (app shells where html does not propagate overflow)", () => {
+  const FIELDS =
+    `<input id="cov" style="position:absolute;left:10px;top:10px;width:100px;height:30px">` +
+    `<div style="position:absolute;left:0;top:0;width:300px;height:100px"></div>` +
+    `<input id="right" style="position:absolute;left:9999px;top:120px">` +
+    `<input id="up" style="position:absolute;left:10px;top:-9999px">` +
+    `<div style="height:3000px"></div><input id="below" style="width:100px"><div style="height:200px"></div>`;
+  const forms: Array<[string, string]> = [
+    [
+      "standards, html overflow hidden",
+      `<!doctype html><style>html{height:100%;overflow:hidden}body{height:100%;margin:0;overflow:auto;position:relative}</style>${FIELDS}`,
+    ],
+    [
+      "standards, html and body overflow auto",
+      `<!doctype html><style>html,body{height:100%;margin:0;overflow:auto}body{position:relative}</style>${FIELDS}`,
+    ],
+    [
+      "quirks, html overflow hidden",
+      `<style>html{overflow:hidden}body{margin:0;overflow:auto;position:relative}</style>${FIELDS}`,
+    ],
+  ];
+  it.each(forms)("%s", async (_name, html) => {
+    const doc = await frameDoc(html);
+    const el = (id: string) => isEligibleIn(q(doc, `#${id}`), doc, () => true);
+    expect(el("below")).toBe(true);
+    expect(el("cov")).toBe(false);
+    expect(el("right")).toBe(false);
+    expect(el("up")).toBe(false);
+  });
+
+  it("a body whose overflow propagates to the viewport is not a container (covered overflow is hit-tested)", async () => {
+    const doc = await frameDoc(
+      `<!doctype html><style>body{margin:0;height:100px;overflow:auto;position:relative}</style>` +
+        `<input id="a" style="position:absolute;left:10px;top:150px;width:100px;height:30px">` +
+        `<div style="position:absolute;left:0;top:120px;width:300px;height:100px"></div>`,
+    );
+    expect(isEligibleIn(q(doc, "#a"), doc, () => true)).toBe(false);
+  });
+
+  it("a plain page whose body overflow propagates to the viewport is unchanged", async () => {
+    const doc = await frameDoc(
+      `<!doctype html><style>body{margin:0;overflow:auto}</style><div style="height:3000px"></div><input id="a">`,
+    );
+    expect(isEligibleIn(q(doc, "#a"), doc, () => true)).toBe(true);
+  });
+});
+
+describe("tiny scroll containers cannot host a decoy", () => {
+  const INPUT = `<input style="width:100px;height:30px">`;
+  it.each([
+    ["1x1 overflow:scroll", `width:1px;height:1px;overflow:scroll`],
+    ["4x4 overflow:auto", `width:4px;height:4px;overflow:auto`],
+    ["4x4 overflow:scroll", `width:4px;height:4px;overflow:scroll`],
+    ["3x40 overflow:auto", `width:3px;height:40px;overflow:auto`],
+    ["0x0 overflow:auto", `width:0;height:0;overflow:auto`],
+  ])("%s", (_name, style) => {
+    const r = mount(`<div style="${style}">${INPUT}</div>`);
+    expect(isEligible(q(r))).toBe(false);
+  });
+
+  it("a container painting only a 3px-wide sliver of the field rejects it", () => {
+    const r = mount(
+      `<div style="width:3px;height:40px;overflow:hidden auto">${INPUT}</div>`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+  });
+
+  it("a field peeking 3px into a normal container is rejected, 20px is fine", () => {
+    const r = mount(
+      `<div style="position:relative;width:100px;height:100px;overflow:auto">` +
+        `<input id="a" style="position:absolute;left:97px;top:10px;width:100px;height:30px">` +
+        `<input id="b" style="position:absolute;left:80px;top:50px;width:100px;height:30px">` +
+        `<div style="height:300px"></div></div>`,
+    );
+    expect(isEligible(q(r, "#a"))).toBe(false);
+    expect(isEligible(q(r, "#b"))).toBe(true);
+  });
+
+  it("a normal small scroller is fine", () => {
+    const r = mount(
+      `<div style="width:150px;height:60px;overflow:auto">${INPUT}<div style="height:300px"></div></div>`,
+    );
+    expect(isEligible(q(r))).toBe(true);
+  });
+});
+
+describe("label proxy runs the control's checks", () => {
+  const CHECKBOX = `<input type="checkbox" id="c" style="opacity:0;position:absolute;left:300px;top:0;width:16px;height:16px">`;
+  it("the plain label is eligible (control)", () => {
+    const r = mount(`${CHECKBOX}<label for="c">Agree</label>`);
+    expect(isEligible(q(r))).toBe(true);
+  });
+
+  it("transparent text on a transparent background", () => {
+    const r = mount(
+      `${CHECKBOX}<label for="c" style="display:block;width:20px;height:20px;color:transparent"></label>`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+  });
+
+  it("a label fully covered by an overlay", () => {
+    const r = mount(
+      `${CHECKBOX}<label for="c" style="position:absolute;left:20px;top:20px">Agree</label>` +
+        `<div style="position:absolute;left:0;top:0;width:200px;height:100px;background:#fff"></div>`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+  });
+
+  it("a label clipped away by an overflow:hidden parent", () => {
+    const r = mount(
+      `${CHECKBOX}<div style="height:0;overflow:hidden"><label for="c" style="display:block;width:50px;height:20px">Agree</label></div>`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+  });
+
+  it("a label clipped to a sliver by a scroll container", () => {
+    const r = mount(
+      `${CHECKBOX}<div style="width:3px;height:40px;overflow:hidden auto"><label for="c" style="display:block;width:50px;height:20px">Agree</label></div>`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+  });
+
+  it("a label peeking 3px into a container is rejected", () => {
+    const r = mount(
+      `${CHECKBOX}<div style="position:relative;width:100px;height:100px;overflow:auto">` +
+        `<label for="c" style="position:absolute;left:97px;top:10px;width:60px;height:20px">Agree</label>` +
+        `<div style="height:300px"></div></div>`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+  });
+
+  it("the invisible control lying over its own label is fine", () => {
+    const r = mount(
+      `<input type="checkbox" id="c" style="opacity:0;position:absolute;left:8px;top:8px;width:80px;height:30px">` +
+        `<label for="c" style="display:inline-block;width:80px;height:30px">Agree</label>`,
+    );
+    expect(isEligible(q(r))).toBe(true);
+  });
+
+  it("residual: a label below the fold cannot be hit-tested and passes", () => {
+    const r = mount(
+      `${CHECKBOX}<div style="height:4000px"></div><label for="c">Agree</label>`,
+    );
+    expect(isEligible(q(r))).toBe(true);
+  });
+});
+
+describe("horizontal slice inside a scroll container", () => {
+  function carousel(scrollLeft: number): HTMLElement {
+    const r = mount(
+      `<div id="car" style="width:200px;height:60px;overflow-x:auto;overflow-y:hidden;position:relative">` +
+        `<div style="width:600px;height:40px">` +
+        `<input id="s1" style="position:absolute;left:10px;top:5px;width:100px">` +
+        `<input id="s2" style="position:absolute;left:310px;top:5px;width:100px">` +
+        `<input id="s3" style="position:absolute;left:510px;top:5px;width:80px"></div></div>`,
+    );
+    q<HTMLElement>(r, "#car").scrollLeft = scrollLeft;
+    return r;
+  }
+
+  it("unscrolled: only the first slide", () => {
+    const r = carousel(0);
+    expect(isEligible(q(r, "#s1"))).toBe(true);
+    expect(isEligible(q(r, "#s2"))).toBe(false);
+    expect(isEligible(q(r, "#s3"))).toBe(false);
+  });
+
+  it("scrolled to the second slide: that slide is eligible, the others are not", () => {
+    const r = carousel(300);
+    expect(q<HTMLElement>(r, "#car").scrollLeft).toBe(300);
+    expect(isEligible(q(r, "#s2"))).toBe(true);
+    expect(isEligible(q(r, "#s1"))).toBe(false);
+    expect(isEligible(q(r, "#s3"))).toBe(false);
+  });
+});
