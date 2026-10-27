@@ -5,7 +5,7 @@ what you type into the sites you choose and fill it back on return visits, with 
 encrypted under a passphrase-derived key (Argon2id, AES-256-GCM). It is local-only: no network
 access, no sync, no accounts, no telemetry.
 
-**Status: pre-release. Plan 1 of 7 (foundation: vault, lock policy, CI) is implemented and merged; its final audit is in progress.** Today the
+**Status: pre-release. Plan 1 of 7 (foundation) complete — see issue #16 for carried-over follow-ups.** Today the
 extension can create, lock and unlock an encrypted vault from an onboarding page and a popup;
 sites, recording, filling and drafts arrive in later plans. Not on the Chrome Web Store yet.
 
