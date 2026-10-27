@@ -177,5 +177,7 @@ test("no permission warnings: no granted host origins at runtime", async ({
       }
     ).chrome.permissions.getAll(),
   );
-  expect(perms.origins).toEqual([]);
+  // The e2e build pre-grants only the fixture host (ADR 0017); the production manifest's empty
+  // host_permissions is asserted by `pnpm test:manifest`.
+  expect(perms.origins).toEqual(["https://localhost/*"]);
 });
