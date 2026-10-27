@@ -75,6 +75,10 @@ jobs:
       - name: Production build has no e2e seams
         run: node scripts/check-no-seams.mjs .output/chrome-mv3
 
+      # react, react-dom and vue are devDependencies for browser-mode fill tests only (ADR 0024): none of them may ship.
+      - name: Production build has no React/Vue
+        run: pnpm check:no-frameworks
+
       # scripts/semgrep.sh runs the digest-pinned image (ADR 0005). selftest proves the rules
       # still bite (rule tests + path include/exclude); scan is the gate (ADR 0006).
       - name: Semgrep rule self-test
