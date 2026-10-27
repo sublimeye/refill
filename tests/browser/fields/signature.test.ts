@@ -137,7 +137,36 @@ describe("idStable", () => {
     ["input-123456", null],
     ["x1234", null],
     ["ctl00_Main_Acct", "ctl00_Main_Acct"],
+    [":R2a6:", null],
+    ["_r_1_", null],
+    ["_R_1ab_", null],
+    [":r1:-form-item", null],
+    [":r1:-form-item-description", null],
+    ["radix-:r1:", null],
+    ["radix-_r_3_", null],
+    ["headlessui-input-:r5:", null],
+    ["ember123", null],
+    ["j_idt45", null],
+    ["react-select-2-input", null],
+    ["user-a8f3-c9e2-1b7d-44e0", null],
+    ["f81d4fae-7dec-11d0-a765-00a0c91e6bf6", null],
+    ["f81d4fae7dec11d0a76500a0c91e6bf6", null],
+    ["mat-mdc-input-0", null],
+    ["mui-12345", null],
     ["email", "email"],
+    [
+      "ctl00_ContentPlaceHolder1_txtAmount",
+      "ctl00_ContentPlaceHolder1_txtAmount",
+    ],
+    [
+      "ctl00_ContentPlaceHolder1_GridView1_ctl02_txtQty",
+      "ctl00_ContentPlaceHolder1_GridView1_ctl02_txtQty",
+    ],
+    ["user_address_attributes_0_line1", "user_address_attributes_0_line1"],
+    ["loginForm:username", "loginForm:username"],
+    ["ember-field", "ember-field"],
+    ["radix", "radix"],
+    ["a-b-c", "a-b-c"],
     ["account-number", "account-number"],
     ["billing_address_line1", "billing_address_line1"],
     ["billingAddressLine1", "billingAddressLine1"],
@@ -155,6 +184,11 @@ describe("idStable", () => {
     expect(idStable("emergency_contact_phone_1")).toBeNull();
   });
 
+  it("ids longer than 256 chars are dropped", () => {
+    expect(idStable("a".repeat(256))).toBe("a".repeat(256));
+    expect(idStable("a".repeat(257))).toBeNull();
+  });
+
   it("a mixed letter+digit run of >= 12 chars anywhere is generated", () => {
     expect(idStable("user-a8f3c9e21b7d-name")).toBeNull();
     expect(idStable("QmFzZTY0Zm9vYmFy9x")).toBeNull();
@@ -168,6 +202,20 @@ describe("nameIdDerived", () => {
   });
   it("case-insensitive equality", () => {
     expect(nameIdDerived("Email", "email")).toBe(true);
+  });
+  it("Rails/PHP bracket names map to underscore ids", () => {
+    expect(
+      nameIdDerived(
+        "user[address_attributes][0][line1]",
+        "user_address_attributes_0_line1",
+      ),
+    ).toBe(true);
+    expect(
+      nameIdDerived(
+        "user[address_attributes][0][line1]",
+        "user_address_attributes_0_line2",
+      ),
+    ).toBe(false);
   });
   it("different values are not derived", () => {
     expect(nameIdDerived("email", "contact-email")).toBe(false);
@@ -214,11 +262,11 @@ describe("buildSignature", () => {
     expect(sig.name).toBe("ctl00$Main$Acct");
   });
 
-  it("generated id becomes null and is not counted as derived", () => {
-    const r = mount(`<input name="r1" id=":r1:">`);
+  it("generated id: idStable is null; derived is still reported from the raw values", () => {
+    const r = mount(`<input name=":r1:" id=":r1:">`);
     const sig = buildSignature(control(r, "input"), 0, null);
     expect(sig.idStable).toBeNull();
-    expect(sig.nameIdDerived).toBe(false);
+    expect(sig.nameIdDerived).toBe(true);
   });
 
   it("missing name -> null; textarea and select get their type", () => {
@@ -238,5 +286,139 @@ describe("buildSignature", () => {
     const sig = buildSignature(control(r, "input"), 7, "/a/b");
     expect(sig.ordinal).toBe(7);
     expect(sig.formAction).toBe("/a/b");
+  });
+});
+
+describe("labelText association", () => {
+  it("duplicate ids: only the control the browser associates gets the label", () => {
+    const r = mount(
+      `<label for="d">First</label><input id="d" class="one"><input id="d" class="two">`,
+    );
+    expect(labelText(control(r, ".one"))).toBe("first");
+    expect(labelText(control(r, ".two"))).toBeNull();
+  });
+
+  it("a label[for] that points elsewhere does not label a control nested in it", () => {
+    const r = mount(
+      `<label for="other">Other thing<input id="x"></label><input id="other">`,
+    );
+    expect(labelText(control(r, "#x"))).toBeNull();
+    expect(labelText(control(r, "#other"))).toBe("other thing");
+  });
+
+  it("non-labelable controls fall back to label[for] with an escaped id", () => {
+    const r = mount(
+      `<label for='a"]b'>Weird</label><input type="hidden" id='a"]b'>`,
+    );
+    const el = control(r, "input");
+    expect(el.labels).toBeNull();
+    expect(labelText(el)).toBe("weird");
+  });
+
+  it("works inside a shadow root", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `<span id="s">Shadow Label</span><input aria-labelledby="s">`;
+    const el = shadow.querySelector("input");
+    if (!el) throw new Error("no input");
+    expect(labelText(el)).toBe("shadow label");
+  });
+
+  it("skips hidden subtrees, script and template inside a label", () => {
+    const r = mount(
+      `<label for="a">Name<span hidden>secret</span><script>x</script><template>t</template></label><input id="a">`,
+    );
+    expect(labelText(control(r, "input"))).toBe("name");
+  });
+});
+
+describe("hostile DOM", () => {
+  it("5000-deep nesting inside a label completes without throwing", () => {
+    const r = mount(`<label for="a"></label><input id="a">`);
+    let node: Element = control(r, "label");
+    for (let i = 0; i < 5000; i++) {
+      const child = document.createElement("div");
+      node.append(child);
+      node = child;
+    }
+    node.append("deep text");
+    const t0 = performance.now();
+    const sig = buildSignature(control(r, "input"), 0, null);
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(sig.labelText).toBeNull();
+  });
+
+  it("5000 aria-labelledby refs to a 100 KB element stay bounded", () => {
+    const r = mount(`<input id="a">`);
+    const big = document.createElement("div");
+    big.id = "big";
+    big.textContent = "word ".repeat(20_000);
+    r.append(big);
+    control(r, "input").setAttribute(
+      "aria-labelledby",
+      Array(5000).fill("big").join(" "),
+    );
+    const t0 = performance.now();
+    const t = labelText(control(r, "input"));
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(t?.length).toBeLessThanOrEqual(256);
+    expect(t?.startsWith("word word")).toBe(true);
+  });
+
+  it("text beyond the raw character budget is ignored", () => {
+    const r = mount(`<input id="a" aria-label="Fallback">`);
+    const label = document.createElement("label");
+    label.htmlFor = "a";
+    label.append(" ".repeat(1100) + "Late text");
+    r.prepend(label);
+    expect(labelText(control(r, "input"))).toBe("fallback");
+  });
+
+  it("a huge wide label is bounded", () => {
+    const r = mount(`<label for="a"></label><input id="a">`);
+    const label = control(r, "label");
+    for (let i = 0; i < 20_000; i++) label.append(document.createElement("b"));
+    const t0 = performance.now();
+    labelText(control(r, "input"));
+    expect(performance.now() - t0).toBeLessThan(1000);
+  });
+
+  it("buildSignature returns labelText null if label collection throws", () => {
+    const r = mount(`<input id="a" name="n" placeholder="Fallback">`);
+    const el = control(r, "input");
+    Object.defineProperty(el, "labels", {
+      get() {
+        throw new Error("hostile");
+      },
+    });
+    const sig = buildSignature(el, 3, "/x");
+    expect(sig.labelText).toBeNull();
+    expect(sig).toMatchObject({
+      name: "n",
+      idStable: "a",
+      ordinal: 3,
+      formAction: "/x",
+    });
+  });
+});
+
+describe("string caps", () => {
+  it("every Sig string is <= 256; derived is computed from the full values", () => {
+    const long = "n".repeat(5000);
+    const r = mount(`<input>`);
+    const el = control(r, "input");
+    el.setAttribute("name", long);
+    el.id = long;
+    el.setAttribute("autocomplete", `section-${"x".repeat(4000)}`);
+    const sig = buildSignature(el, 0, "/p".repeat(3000));
+    expect(sig.name).toBe("n".repeat(256));
+    expect(sig.idStable).toBeNull();
+    expect(sig.autocomplete?.length).toBe(256);
+    expect(sig.formAction?.length).toBe(256);
+    expect(sig.nameIdDerived).toBe(true);
+    for (const v of Object.values(sig)) {
+      if (typeof v === "string") expect(v.length).toBeLessThanOrEqual(256);
+    }
   });
 });
