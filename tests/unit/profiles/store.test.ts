@@ -14,10 +14,15 @@ import {
   loadProfileForOrigin,
   newId,
   saveProfile,
+  touchLastUsed,
 } from "../../../src/lib/profiles/store";
 import type { Profile } from "../../../src/lib/profiles/types";
-import { readSites, upsertSite } from "../../../src/lib/sites";
-import { getItem, profileKey } from "../../../src/lib/store/local";
+import { readSites, removeSite, upsertSite } from "../../../src/lib/sites";
+import {
+  getItem,
+  profileKey,
+  withStoreLock,
+} from "../../../src/lib/store/local";
 import { putEncrypted } from "../../../src/lib/vault/records";
 import { LockedError } from "../../../src/lib/vault/types";
 import {
@@ -233,5 +238,100 @@ describe("profiles", { timeout: 30_000 }, () => {
   it("locked with no profile attached still returns null (site index is plaintext)", async () => {
     await lock();
     expect(await loadProfileForOrigin(A)).toBeNull();
+  });
+});
+
+describe("touchLastUsed", { timeout: 30_000 }, () => {
+  const T = 1_800_000_000_000;
+
+  /** Holds the store lock until `release()`; jobs queued meanwhile run after it, in order. */
+  function holdStoreLock() {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const done = withStoreLock(() => held);
+    return { release: () => (release(), done) };
+  }
+
+  it("sets lastUsedAt and keeps everything else", async () => {
+    await saveProfile(profile("p1"));
+    await touchLastUsed(A, "p1", T);
+    expect(await loadProfileForOrigin(A)).toEqual({
+      ...profile("p1"),
+      lastUsedAt: T,
+    });
+  });
+
+  it("writes nothing and creates no site when the site is gone", async () => {
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    await touchLastUsed(A, "p1", T);
+    expect(set).not.toHaveBeenCalled();
+    expect(await readSites()).toEqual({});
+  });
+
+  it("writes nothing for a revoked site or one pointing at another profile", async () => {
+    await saveProfile(profile("p1"));
+    await upsertSite(A, { accessRevoked: true });
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    await touchLastUsed(A, "p1", T);
+    await upsertSite(A, { accessRevoked: false });
+    set.mockClear();
+    await touchLastUsed(A, "other", T);
+    expect(set).not.toHaveBeenCalled();
+    expect((await loadProfileForOrigin(A))?.lastUsedAt).toBeNull();
+  });
+
+  it("writes nothing when the site points at a missing or unreadable record", async () => {
+    await upsertSite(A, { profileId: "p1" });
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    await touchLastUsed(A, "p1", T);
+    await fakeBrowser.storage.local.set({ [profileKey("p1")]: { junk: 1 } });
+    set.mockClear();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await touchLastUsed(A, "p1", T);
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it("a removal queued before the touch is never undone", async () => {
+    await saveProfile(profile("p1"));
+    const held = holdStoreLock();
+    const removal = withStoreLock(async (tx) => {
+      await removeSite(A, tx);
+      await tx.removeItems([profileKey("p1")]);
+    });
+    const touch = touchLastUsed(A, "p1", T);
+    await held.release();
+    await removal;
+    await touch;
+    expect(await readSites()).toEqual({});
+    expect(await getItem(profileKey("p1"))).toBeUndefined();
+  });
+
+  it("an edit queued before the touch survives: the touch reads inside the lock", async () => {
+    await saveProfile(profile("p1"));
+    const held = holdStoreLock();
+    const edited = profile("p1", A, "Renamed");
+    edited.fields[0]!.policy = "skip";
+    const edit = saveProfile(edited);
+    const touch = touchLastUsed(A, "p1", T);
+    await held.release();
+    await edit;
+    await touch;
+    expect(await loadProfileForOrigin(A)).toEqual({ ...edited, lastUsedAt: T });
+  });
+
+  it("locked: throws LockedError and writes nothing", async () => {
+    await saveProfile(profile("p1"));
+    await lock();
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    await expect(touchLastUsed(A, "p1", T)).rejects.toBeInstanceOf(LockedError);
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it("ignores a non-canonical origin or an invalid id", async () => {
+    await saveProfile(profile("p1"));
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    await touchLastUsed("https://A.example", "p1", T);
+    await touchLastUsed(A, "p|1", T);
+    expect(set).not.toHaveBeenCalled();
   });
 });

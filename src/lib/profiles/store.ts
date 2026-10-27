@@ -79,3 +79,37 @@ export async function loadProfileForOrigin(
   }
   return profile;
 }
+
+/**
+ * Sets `lastUsedAt` to `t` on the profile `id` of `origin`, as one compare-and-set under the store
+ * lock: the site record and the profile are read through `tx`, so a removal, revocation, profile
+ * replacement or edit that ran first is seen and kept. Writes nothing (and never creates a site
+ * record) when the site is missing or revoked, points at another profile, or the record is missing
+ * or unreadable. Throws `LockedError` when locked (nothing is written then). ADR 0025.
+ */
+export async function touchLastUsed(
+  origin: string,
+  id: string,
+  t: number,
+): Promise<void> {
+  if (normalizeOrigin(origin) !== origin || !ID_RE.test(id)) return;
+  await withStoreLock(async (tx) => {
+    const sites = await readSites(tx);
+    const site = Object.hasOwn(sites, origin) ? sites[origin]! : null;
+    if (site === null || site.accessRevoked || site.profileId !== id) return;
+    const key = profileKey(id);
+    const ad = aad.profile(id, origin);
+    let raw: unknown;
+    try {
+      raw = await getEncrypted<unknown>(key, ad, tx);
+    } catch (err) {
+      if (err instanceof DecryptError || err instanceof SyntaxError) return;
+      throw err;
+    }
+    const profile = raw === undefined ? null : parseProfile(raw);
+    if (!profile || profile.id !== id || profile.origin !== origin) return;
+    const next = parseProfile({ ...profile, lastUsedAt: t });
+    if (!next) return; // `t` not a valid timestamp
+    await putEncrypted(key, ad, next, tx);
+  });
+}
