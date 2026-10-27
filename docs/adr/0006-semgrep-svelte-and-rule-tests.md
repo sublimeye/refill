@@ -15,5 +15,10 @@ The first Semgrep rule set (ADR 0005 era) only used TS/JS patterns for the canon
 - Rule ids appear as `semgrep.<rule>` in output (Semgrep prefixes the config directory).
 - Adding a rule means adding a fixture; `semgrep --test` fails if an annotated rule does not fire, or if any other rule fires in the same fixture file.
 
+## Amendment (Plan 1 final review, M-1)
+- **Default ignores.** Semgrep's built-in ignore list (`tests/`, `test/`, `*.min.js`, ...) applies inside `src/`, so a future `src/lib/x/tests/helper.ts` or vendored `*.min.js` would have been skipped silently. The repo now has a `.semgrepignore` limited to `.git/`, `node_modules/`, `.output/` and `.wxt/`; a custom file replaces the defaults. The `selftest` path checks copy it next to the fixtures and include `src/foo/tests/x.ts` and `src/vendor.min.js` (both contain `fetch("x")` and must be flagged), so dropping the file or widening it fails CI.
+- **Fixtures stay out of `scan`.** `.semgrep/tests` and `.semgrep/path-fixtures` intentionally contain violations. Every rule is scoped to `/src/**`, so `scan` (target `.`) never matches them; no `.semgrepignore` entry is needed and none is added.
+- **`.mts` / `.cts`.** Semgrep does not parse these, so the rules would skip them without a word. `scripts/semgrep.sh scan` now fails with a clear message if any exist under `src/`; `selftest` proves the guard rejects such a directory and accepts a clean one.
+
 ## Status
 Accepted.
