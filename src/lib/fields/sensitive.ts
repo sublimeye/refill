@@ -7,6 +7,13 @@ import type { FormControl, Sig } from "./signature";
 const FIELD_MAX = 256;
 const CARD_VALUE_MAX = 64;
 
+const OBSERVE_OPTIONS: MutationObserverInit = {
+  subtree: true,
+  attributes: true,
+  attributeFilter: ["type"],
+  attributeOldValue: true,
+};
+
 /**
  * Remembers every control that has ever been `type=password` in this document, so a show-password
  * toggle (password to text) cannot make the field capturable. A MutationObserver on the `type`
@@ -16,6 +23,7 @@ const CARD_VALUE_MAX = 64;
 export class PasswordHistory {
   private readonly seen = new WeakSet<Element>();
   private observer: MutationObserver | null = null;
+  private shadows = new WeakSet<ShadowRoot>();
 
   observe(root: Document | ShadowRoot): void {
     this.disconnect();
@@ -25,12 +33,26 @@ export class PasswordHistory {
     this.observer = new MutationObserver((records) => {
       this.record(records);
     });
-    this.observer.observe(root, {
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["type"],
-      attributeOldValue: true,
+    this.observer.observe(root, OBSERVE_OPTIONS);
+  }
+
+  /**
+   * Also watch a shadow root (a document observer does not see inside shadow trees), without
+   * dropping what `observe` already watches; the document scanner calls this for every shadow root
+   * it enters. A no-op for a root already watched. Without a prior `observe` it starts its own
+   * observer, so the shadow root alone is covered. Only toggles from this point on are recorded: a
+   * control that was a password and is text by now is judged by its current type alone.
+   */
+  observeShadow(root: ShadowRoot): void {
+    if (this.shadows.has(root)) return;
+    this.shadows.add(root);
+    for (const el of root.querySelectorAll('input[type="password" i]')) {
+      this.seen.add(el);
+    }
+    this.observer ??= new MutationObserver((records) => {
+      this.record(records);
     });
+    this.observer.observe(root, OBSERVE_OPTIONS);
   }
 
   /** True if `el` is, or at any point since `observe` was, `type=password`. */
@@ -48,6 +70,7 @@ export class PasswordHistory {
   disconnect(): void {
     this.observer?.disconnect();
     this.observer = null;
+    this.shadows = new WeakSet();
   }
 
   private record(records: MutationRecord[]): void {
