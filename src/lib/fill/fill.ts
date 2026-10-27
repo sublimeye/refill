@@ -1,8 +1,8 @@
 // Fill engine (spec 5.5, 5.6). DOM-only, zero runtime dependencies: this runs in the content script
 // on hostile pages (ADR 0024).
 //
-// Every DOM member used here is captured from the prototypes at import time and called with
-// `.call(el)`. A page can shadow members on an element or its form (`<input name="value">` inside a
+// Every DOM member used here (getters, setters and methods) is captured from the prototypes at
+// import time and called with `.call(el)`. A page can shadow members on an element or its form (`<input name="value">` inside a
 // form, or React's own `value` property on a controlled input), and `el.value = x` through such a
 // shadow would skip the native setter, i.e. skip the framework's change detection.
 
@@ -91,28 +91,66 @@ const baseURI = get<string>(Node.prototype, "baseURI");
 const ownerDocument = get<Document | null>(Node.prototype, "ownerDocument");
 const isConnected = get<boolean>(Node.prototype, "isConnected");
 
+const focusFn = HTMLElement.prototype.focus;
+const blurFn = HTMLElement.prototype.blur;
+const clickFn = HTMLElement.prototype.click;
+const inputSelectFn = HTMLInputElement.prototype.select;
+const textareaSelectFn = HTMLTextAreaElement.prototype.select;
+const dispatchFn = EventTarget.prototype.dispatchEvent;
+const querySelectorFn = Element.prototype.querySelector;
+const execCommandFn = Document.prototype.execCommand;
+const getRootNodeFn = Node.prototype.getRootNode;
+const documentActive = get<Element | null>(Document.prototype, "activeElement");
+const shadowActive = get<Element | null>(ShadowRoot.prototype, "activeElement");
+const shadowHost = get<Element>(ShadowRoot.prototype, "host");
+
 const focusEl = (el: Element): void => {
-  HTMLElement.prototype.focus.call(el);
+  focusFn.call(el);
 };
 const blurEl = (el: Element): void => {
-  HTMLElement.prototype.blur.call(el);
+  blurFn.call(el);
 };
 const clickEl = (el: Element): void => {
-  HTMLElement.prototype.click.call(el);
+  clickFn.call(el);
 };
 const inputSelect = (el: Element): void => {
-  HTMLInputElement.prototype.select.call(el);
+  inputSelectFn.call(el);
 };
 const textareaSelect = (el: Element): void => {
-  HTMLTextAreaElement.prototype.select.call(el);
+  textareaSelectFn.call(el);
 };
 const dispatch = (el: Element, event: Event): void => {
-  EventTarget.prototype.dispatchEvent.call(el, event);
+  dispatchFn.call(el, event);
 };
 const querySelector = (el: Element, selector: string): Element | null =>
-  Element.prototype.querySelector.call(el, selector);
+  querySelectorFn.call(el, selector);
 const execCommand = (doc: Document, command: string, value: string): boolean =>
-  Document.prototype.execCommand.call(doc, command, false, value);
+  execCommandFn.call(doc, command, false, value);
+
+const MAX_FOCUS_DEPTH = 64;
+
+/**
+ * True only if `el` is the deepest focused element: it is the `activeElement` of its own root and
+ * every enclosing shadow host is the `activeElement` of the root it lives in, up to the document.
+ * (`document.activeElement` alone is the outermost host for an input in a shadow tree.) A detached
+ * element, or any failure, is false.
+ */
+function isDeepFocused(el: Element): boolean {
+  try {
+    let node: Node = el;
+    for (let i = 0; i < MAX_FOCUS_DEPTH; i++) {
+      const root = getRootNodeFn.call(node);
+      const type = nodeType(root);
+      if (type === Node.DOCUMENT_NODE) return documentActive(root) === node;
+      if (type !== Node.DOCUMENT_FRAGMENT_NODE) return false;
+      if (shadowActive(root) !== node) return false;
+      node = shadowHost(root);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 // --- guard -------------------------------------------------------------------------------------
 
@@ -191,6 +229,31 @@ function sameOriginForm(el: FormControl, origin: string): boolean {
 }
 
 /**
+ * The spec 5.5 rules that depend on the control and the page, in cheapest-first order: kind,
+ * eligible, not sensitive, form posts to `origin`, current value empty or equal to `pageDefault`
+ * (checkbox/radio: `String(checked)`). Shared by `canFill` and the re-check in `fillControl`.
+ */
+function vet(
+  item: FillItem,
+  history: PasswordHistory,
+  origin: string,
+  isTopWindow: ((win: Window) => boolean) | undefined,
+): FillOutcome | "ok" {
+  const { el } = item;
+  if (controlKind(el) !== item.kind) return "unsupported";
+  const doc = ownerDocument(el);
+  if (doc === null || !isEligible(el, doc, isTopWindow)) {
+    return "skipped-ineligible";
+  }
+  // Ordinal and form action do not enter the sensitivity rules.
+  if (isSensitive(el, buildSignature(el, 0, null), history)) {
+    return "skipped-ineligible";
+  }
+  if (!sameOriginForm(el, origin)) return "skipped-ineligible";
+  return untouched(item) ? "ok" : "skipped-not-empty";
+}
+
+/**
  * The spec 5.5 fill rules that depend on the control and the page: eligible, not sensitive, current
  * value empty or equal to `pageDefault` (checkbox/radio: `String(checked)`), form posts to `origin`.
  * (Vault state, `fillMode` and field policy are the caller's.) Never throws; any failure is false.
@@ -203,15 +266,7 @@ export function canFill(
   isTopWindow?: (win: Window) => boolean,
 ): boolean {
   try {
-    const { el } = item;
-    if (controlKind(el) !== item.kind) return false;
-    const doc = ownerDocument(el);
-    if (doc === null) return false;
-    if (!isEligible(el, doc, isTopWindow)) return false;
-    // Ordinal and form action do not enter the sensitivity rules.
-    if (isSensitive(el, buildSignature(el, 0, null), history)) return false;
-    if (!untouched(item)) return false;
-    return sameOriginForm(el, origin);
+    return vet(item, history, origin, isTopWindow) === "ok";
   } catch {
     return false;
   }
@@ -257,9 +312,10 @@ function isCustomWidget(el: FormControl): boolean {
 // --- writing -----------------------------------------------------------------------------------
 
 // Plain `Event`, not `InputEvent`: React and Vue listen for the event name only, and a plain event
-// carries no `data` for page code to read the value from.
+// carries no `data` for page code to read the value from. `composed`, like the native events, so
+// listeners outside an open shadow root (document-level validators) see them too.
 const fire = (el: Element, type: "input" | "change"): void => {
-  dispatch(el, new Event(type, { bubbles: true }));
+  dispatch(el, new Event(type, { bubbles: true, composed: true }));
 };
 
 function writeNative(el: FormControl, value: string): void {
@@ -270,7 +326,8 @@ function writeNative(el: FormControl, value: string): void {
 /**
  * Text technique (spec 5.6): focus, native prototype setter, `input` + `change`, blur; if the page
  * rewrote the value (a mask), `select()` + `execCommand("insertText")`, which produces the trusted
- * events a keystroke-driven mask expects. True when the value stuck. Caller holds the guard.
+ * events a keystroke-driven mask expects, but only while `el` is the focused element (see below).
+ * True when the value stuck. Caller holds the guard.
  */
 function writeText(el: FormControl, value: string): boolean {
   focusEl(el);
@@ -287,12 +344,16 @@ function writeText(el: FormControl, value: string): boolean {
   } catch {
     // select() does not apply to this input type
   }
+  // `execCommand` edits whatever element has focus. A page can move focus in a `focus` handler (or
+  // lose it by disabling the field on `blur` and focusing the next one), which would put the value
+  // into an element that was never vetted. Insert only while `el` itself is the deepest focused one.
   const doc = ownerDocument(el);
-  if (doc !== null) {
-    // An empty target means "clear": insertText with "" is a no-op.
-    if (value === "") execCommand(doc, "delete", "");
-    else execCommand(doc, "insertText", value);
-  }
+  if (doc === null || !isDeepFocused(el)) return false;
+  // An empty target means "clear": `select()` made the whole value the selection and `delete`
+  // removes it explicitly (`insertText` with "" also removes a selection in Chromium; `delete` just
+  // says what is meant).
+  if (value === "") execCommand(doc, "delete", "");
+  else execCommand(doc, "insertText", value);
   fire(el, "change");
   blurEl(el);
   return readValue(el) === value;
@@ -327,38 +388,76 @@ function writeToggle(el: HTMLInputElement, checked: boolean): boolean {
 }
 
 /**
- * Fills one control. Re-checks eligibility and "empty or page default" right before writing (an
- * earlier fill's handlers may have changed this field), then writes under the filling guard.
- * Origin, sensitivity and policy were `canFill`'s and the caller's business. Never throws.
- * `isTopWindow` is for tests only (see `isEligible`).
+ * Puts a control the page refused back to the value it had before the fill (setter + `input` +
+ * `change`, no focus), so no page-mangled copy of the secret stays in the field.
+ */
+function putBack(el: FormControl, kind: ControlKind, before: string): void {
+  try {
+    if (kind === "select") selectSetValue(el, before);
+    else writeNative(el, before);
+    fire(el, "input");
+    fire(el, "change");
+  } catch {
+    // the page's own handler threw: nothing more to do
+  }
+}
+
+/**
+ * Fills one control. First re-runs every control-level rule of `canFill` (eligible, not sensitive,
+ * form origin, empty or page default: an earlier field's handlers can change `name`, `autocomplete`,
+ * `action` or the value between a batched `canFill` and this write) and returns the matching
+ * `skipped-*` outcome without writing; then writes under the filling guard. A text or select value
+ * the page refuses is put back to its pre-fill value (`rejected-by-page`). Vault state, `fillMode`
+ * and field policy stay the caller's. Never throws. `isTopWindow` is for tests only (see
+ * `isEligible`).
+ *
+ * Toggles: the value must be exactly "true" or "false", else `unsupported` with no click. A radio
+ * cannot be unchecked by clicking: "false" on an unchecked radio is already satisfied (`filled`, no
+ * click), on a checked radio it is `unsupported` (no click; checking another radio of the group
+ * unchecks it).
  */
 export function fillControl(
   item: FillItem,
+  history: PasswordHistory,
+  origin: string,
   isTopWindow?: (win: Window) => boolean,
 ): FillOutcome {
   return withFillingGuard(() => {
+    const { el, kind, value } = item;
+    let verdict: FillOutcome | "ok";
     try {
-      const { el, kind, value } = item;
-      if (controlKind(el) !== kind) return "unsupported";
-      const doc = ownerDocument(el);
-      if (doc === null || !isEligible(el, doc, isTopWindow)) {
-        return "skipped-ineligible";
-      }
-      if (!untouched(item)) return "skipped-not-empty";
+      verdict = vet(item, history, origin, isTopWindow);
+    } catch {
+      return "skipped-ineligible"; // a page getter threw: fail closed, nothing written
+    }
+    if (verdict !== "ok") return verdict;
+    try {
       if (isCustomWidget(el)) return "unsupported";
       switch (kind) {
-        case "text":
-          return writeText(el, value) ? "filled" : "rejected-by-page";
+        case "text": {
+          const before = readValue(el);
+          if (writeText(el, value)) return "filled";
+          putBack(el, kind, before);
+          return "rejected-by-page";
+        }
         case "select": {
           const select = el as HTMLSelectElement;
           if (!hasOption(select, value)) return "unsupported";
-          return writeSelect(select, value) ? "filled" : "rejected-by-page";
+          const before = readValue(el);
+          if (writeSelect(select, value)) return "filled";
+          putBack(el, kind, before);
+          return "rejected-by-page";
         }
         case "checkbox":
-        case "radio":
-          return writeToggle(el as HTMLInputElement, value === "true")
-            ? "filled"
-            : "rejected-by-page";
+        case "radio": {
+          if (value !== "true" && value !== "false") return "unsupported";
+          const want = value === "true";
+          const input = el as HTMLInputElement;
+          if (kind === "radio" && !want) {
+            return inputChecked(input) ? "unsupported" : "filled";
+          }
+          return writeToggle(input, want) ? "filled" : "rejected-by-page";
+        }
       }
     } catch {
       return "rejected-by-page";

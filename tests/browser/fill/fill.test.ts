@@ -68,7 +68,7 @@ function item(
 }
 
 const can = (i: FillItem, o = origin) => canFill(i, history(), o, top);
-const fill = (i: FillItem) => fillControl(i, top);
+const fill = (i: FillItem, o = origin) => fillControl(i, history(), o, top);
 
 describe("text fill", () => {
   it("fills a plain input, fires input/change/blur and focuses first", () => {
@@ -203,7 +203,7 @@ describe("text fill", () => {
     expect(isFilling()).toBe(false);
   });
 
-  it("clears with the fallback when the target is empty (restore of a masked field)", () => {
+  it("restore puts the pre-fill value back", () => {
     mount(`<input name="a" value="x">`);
     const el = q<HTMLInputElement>("[name=a]");
     const s = snapshot([item(el, "y", "x")]);
@@ -517,7 +517,7 @@ describe("snapshot and restore", () => {
       "filled",
       "filled",
       "filled",
-      "rejected-by-page", // a checked radio cannot be unchecked by clicking
+      "unsupported", // a checked radio cannot be unchecked by clicking
       "filled",
     ]);
     expect(q<HTMLInputElement>("[name=t]").value).toBe("new");
@@ -707,5 +707,208 @@ describe("DOM clobbering", () => {
       )?.get?.call(el),
     ).toBe("x");
     expect(stored.v).toBe("");
+  });
+});
+
+/** Page script that reverts programmatic writes and accepts typing (what a keystroke mask does). */
+function revertUntrusted(el: HTMLInputElement): void {
+  let accepted = el.value;
+  el.addEventListener("input", (e) => {
+    if (e.isTrusted) accepted = el.value;
+    else el.value = accepted;
+  });
+}
+
+describe("insertText fallback only writes into the vetted, focused control", () => {
+  it("focus redirected to a field of a cross-origin form: the decoy stays empty", () => {
+    mount(
+      `<input name="a"><form action="https://evil.example/x"><input name="decoy"></form>`,
+    );
+    const a = q<HTMLInputElement>("[name=a]");
+    const decoy = q<HTMLInputElement>("[name=decoy]");
+    expect(can(item(decoy, "x"))).toBe(false); // premise
+    revertUntrusted(a);
+    a.addEventListener("focus", () => {
+      decoy.focus();
+      decoy.select();
+    });
+    expect(fill(item(a, "SECRET"))).toBe("rejected-by-page");
+    expect(decoy.value).toBe("");
+    expect(a.value).toBe("");
+    expect(isFilling()).toBe(false);
+  });
+
+  it("focus redirected to a contenteditable: it stays empty", () => {
+    mount(`<input name="a"><div id="ce" contenteditable="true"></div>`);
+    const a = q<HTMLInputElement>("[name=a]");
+    const ce = q<HTMLElement>("#ce");
+    revertUntrusted(a);
+    a.addEventListener("focus", () => {
+      ce.focus();
+    });
+    expect(fill(item(a, "SECRET"))).toBe("rejected-by-page");
+    expect(ce.textContent).toBe("");
+    expect(a.value).toBe("");
+  });
+
+  it("validate-and-advance (blur disables the field and focuses the next): the next field stays empty", () => {
+    mount(`<input name="a"><input name="next">`);
+    const a = q<HTMLInputElement>("[name=a]");
+    const next = q<HTMLInputElement>("[name=next]");
+    revertUntrusted(a);
+    a.addEventListener("blur", () => {
+      a.disabled = true;
+      next.focus();
+    });
+    expect(fill(item(a, "SECRET"))).toBe("rejected-by-page");
+    expect(next.value).toBe("");
+    expect(a.value).toBe("");
+  });
+
+  it("still fills an input inside a shadow root through the fallback", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const shadow = host.attachShadow({ mode: "open" });
+    const inner = document.createElement("input");
+    inner.name = "s";
+    shadow.append(inner);
+    revertUntrusted(inner);
+    expect(fill(item(inner, "(555) 123-4567"))).toBe("filled");
+    expect(inner.value).toBe("(555) 123-4567");
+  });
+
+  it("still fills a nested shadow-root input through the fallback", () => {
+    const outer = document.createElement("div");
+    document.body.append(outer);
+    const mid = document.createElement("div");
+    outer.attachShadow({ mode: "open" }).append(mid);
+    const inner = document.createElement("input");
+    mid.attachShadow({ mode: "open" }).append(inner);
+    revertUntrusted(inner);
+    expect(fill(item(inner, "42"))).toBe("filled");
+    expect(inner.value).toBe("42");
+  });
+
+  it("restore never deletes in another field when focus is redirected", () => {
+    mount(`<input name="a"><input name="decoy" value="DECOY">`);
+    const a = q<HTMLInputElement>("[name=a]");
+    const decoy = q<HTMLInputElement>("[name=decoy]");
+    const s = snapshot([item(a, "x")]);
+    a.value = "later";
+    revertUntrusted(a);
+    a.addEventListener("focus", () => {
+      decoy.focus();
+      decoy.select();
+    });
+    restore(s);
+    expect(decoy.value).toBe("DECOY");
+    expect(a.value).toBe("later");
+  });
+
+  it("restore to empty goes through delete when the page reverts programmatic writes", () => {
+    mount(`<input name="a">`);
+    const a = q<HTMLInputElement>("[name=a]");
+    const s = snapshot([item(a, "x")]);
+    a.value = "filled earlier";
+    revertUntrusted(a);
+    restore(s);
+    expect(a.value).toBe("");
+  });
+});
+
+describe("rejected-by-page puts the pre-fill value back", () => {
+  it("leaves no page-mangled copy of the secret", () => {
+    mount(`<input name="a" value="100">`);
+    const a = q<HTMLInputElement>("[name=a]");
+    a.addEventListener("input", () => {
+      if (a.value.includes("SECRET"))
+        a.value = a.value.replace("SECRET", "S3CR3T");
+    });
+    expect(fill(item(a, "SECRET", "100"))).toBe("rejected-by-page");
+    expect(a.value).toBe("100");
+    expect(isFilling()).toBe(false);
+  });
+});
+
+describe("fillControl re-checks the control rules right before writing", () => {
+  it("skips a field that became sensitive after canFill", () => {
+    mount(`<input name="a">`);
+    const a = q<HTMLInputElement>("[name=a]");
+    const i = item(a, "SECRET");
+    const hist = history();
+    expect(canFill(i, hist, origin, top)).toBe(true);
+    a.setAttribute("autocomplete", "cc-number");
+    expect(fillControl(i, hist, origin, top)).toBe("skipped-ineligible");
+    expect(a.value).toBe("");
+  });
+
+  it("skips a field whose form now posts cross-origin", () => {
+    mount(`<form action="/ok"><input name="a"></form>`);
+    const a = q<HTMLInputElement>("[name=a]");
+    const i = item(a, "SECRET");
+    const hist = history();
+    expect(canFill(i, hist, origin, top)).toBe(true);
+    q<HTMLElement>("form").setAttribute("action", "https://evil.example/p");
+    expect(fillControl(i, hist, origin, top)).toBe("skipped-ineligible");
+    expect(a.value).toBe("");
+  });
+
+  it("skips a field that was a password in between (show-password toggle)", () => {
+    mount(`<input name="a">`);
+    const hist = history();
+    const a = q<HTMLInputElement>("[name=a]");
+    const i = item(a, "x");
+    expect(canFill(i, hist, origin, top)).toBe(true);
+    a.type = "password";
+    a.type = "text";
+    expect(fillControl(i, hist, origin, top)).toBe("skipped-ineligible");
+    expect(a.value).toBe("");
+  });
+});
+
+describe("toggle values", () => {
+  it("accepts exactly true and false; anything else is unsupported and not clicked", () => {
+    mount(`<input type="checkbox" name="c" checked>`);
+    const c = q<HTMLInputElement>("[name=c]");
+    let clicks = 0;
+    c.addEventListener("click", () => clicks++);
+    for (const bad of ["on", "TRUE", "1", "", "yes"]) {
+      expect(fill(item(c, bad, "true")), bad).toBe("unsupported");
+    }
+    expect(c.checked).toBe(true);
+    expect(clicks).toBe(0);
+  });
+
+  it("radio false: already unchecked is satisfied, checked is unsupported; neither clicks", () => {
+    mount(
+      `<input type="radio" name="r" value="a" checked><input type="radio" name="r" value="b">`,
+    );
+    const [a, b] = Array.from(
+      document.querySelectorAll<HTMLInputElement>("[name=r]"),
+    ) as [HTMLInputElement, HTMLInputElement];
+    let clicks = 0;
+    for (const r of [a, b]) r.addEventListener("click", () => clicks++);
+    expect(fill(item(b, "false", "false"))).toBe("filled");
+    expect(fill(item(a, "false", "true"))).toBe("unsupported");
+    expect(fill(item(b, "on", "false"))).toBe("unsupported");
+    expect([a.checked, b.checked]).toEqual([true, false]);
+    expect(clicks).toBe(0);
+  });
+});
+
+describe("synthetic events are composed", () => {
+  it("a listener on the shadow host sees input and change", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const inner = document.createElement("input");
+    host.attachShadow({ mode: "open" }).append(inner);
+    const seen: string[] = [];
+    for (const t of ["input", "change"]) {
+      host.addEventListener(t, (e) => {
+        seen.push(`${e.type}:${e.composed}`);
+      });
+    }
+    expect(fill(item(inner, "x"))).toBe("filled");
+    expect(seen).toEqual(["input:true", "change:true"]);
   });
 });
