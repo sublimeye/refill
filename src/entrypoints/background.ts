@@ -1,6 +1,7 @@
 import { calibrate } from "../lib/crypto/kdf";
 import { createPageHandlers } from "../lib/messaging/page-handlers";
 import { createRouter, toRuntimeListener } from "../lib/messaging/router";
+import { installSiteListeners } from "../lib/sites/reconcile";
 import { enforceOnWake, installLockTriggers } from "../lib/vault/lock-triggers";
 
 export default defineBackground(() => {
@@ -15,6 +16,7 @@ export default defineBackground(() => {
       );
     });
   installLockTriggers();
+  installSiteListeners();
   enforceOnWake().catch((err: unknown) => {
     console.error(
       "[refill] wake check failed:",

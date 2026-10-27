@@ -48,6 +48,10 @@ function spyHandlers() {
     "vault-create": vi.fn(async () => ({ ok: true })),
     "vault-unlock": vi.fn(async () => ({ ok: true })),
     "vault-lock": vi.fn(async () => ({ ok: true })),
+    "site-status": vi.fn(async () => ({ origin: null })),
+    "site-enable": vi.fn(async () => ({ ok: true })),
+    "site-remove": vi.fn(async () => ({ ok: true })),
+    "site-intent": vi.fn(async () => ({ ok: true })),
   };
   return { h, handlers: { page: h } as { page: PageHandlers } };
 }
@@ -212,6 +216,93 @@ describe("parsePageRequest", () => {
   it("returns a fresh object", () => {
     const raw = { type: "vault-unlock", passphrase: "x" };
     expect(parsePageRequest(raw)).not.toBe(raw);
+  });
+});
+
+describe("site requests", () => {
+  const SITE = "https://a.example";
+  const long = "https://" + "a".repeat(249); // 257 chars
+  const exact = "https://" + "a".repeat(248); // 256 chars
+
+  it("parses the four shapes with exact keys", () => {
+    expect(parsePageRequest({ type: "site-status", origin: SITE })).toEqual({
+      type: "site-status",
+      origin: SITE,
+    });
+    expect(parsePageRequest({ type: "site-remove", origin: SITE })).toEqual({
+      type: "site-remove",
+      origin: SITE,
+    });
+    expect(
+      parsePageRequest({ type: "site-enable", tabId: 3, origin: SITE }),
+    ).toEqual({ type: "site-enable", tabId: 3, origin: SITE });
+    expect(
+      parsePageRequest({ type: "site-intent", tabId: 0, origin: SITE }),
+    ).toEqual({ type: "site-intent", tabId: 0, origin: SITE });
+  });
+
+  it("accepts a 256-char origin string and rejects 257", () => {
+    expect(exact).toHaveLength(256);
+    expect(long).toHaveLength(257);
+    for (const type of ["site-status", "site-remove"]) {
+      expect(parsePageRequest({ type, origin: exact })).not.toBeNull();
+      expect(parsePageRequest({ type, origin: long })).toBeNull();
+    }
+    for (const type of ["site-enable", "site-intent"]) {
+      expect(
+        parsePageRequest({ type, tabId: 1, origin: exact }),
+      ).not.toBeNull();
+      expect(parsePageRequest({ type, tabId: 1, origin: long })).toBeNull();
+    }
+  });
+
+  it.each([
+    ["status without origin", { type: "site-status" }],
+    ["status with a number origin", { type: "site-status", origin: 5 }],
+    ["status with extra key", { type: "site-status", origin: SITE, x: 1 }],
+    ["remove with tabId", { type: "site-remove", origin: SITE, tabId: 1 }],
+    ["enable without tabId", { type: "site-enable", origin: SITE }],
+    [
+      "enable with a timestamp",
+      { type: "site-enable", tabId: 1, origin: SITE, ts: 1 },
+    ],
+    ["intent without origin", { type: "site-intent", tabId: 1 }],
+    ["negative tabId", { type: "site-enable", tabId: -1, origin: SITE }],
+    ["fractional tabId", { type: "site-intent", tabId: 1.5, origin: SITE }],
+    ["NaN tabId", { type: "site-intent", tabId: NaN, origin: SITE }],
+    ["Infinity tabId", { type: "site-intent", tabId: Infinity, origin: SITE }],
+    ["unsafe tabId", { type: "site-intent", tabId: 2 ** 53, origin: SITE }],
+    ["string tabId", { type: "site-intent", tabId: "1", origin: SITE }],
+  ])("rejects %s", (_name, raw) => {
+    expect(parsePageRequest(raw)).toBeNull();
+  });
+
+  it("a page sender reaches the handler; a content sender never does", async () => {
+    const { h, handlers } = spyHandlers();
+    const router = createRouter(handlers);
+    const msgs = [
+      { type: "site-status", origin: SITE },
+      { type: "site-enable", tabId: 1, origin: SITE },
+      { type: "site-remove", origin: SITE },
+      { type: "site-intent", tabId: 1, origin: SITE },
+    ];
+    for (const m of msgs) expect(await router(m, content)).toEqual(REJECTED);
+    for (const spy of Object.values(h)) expect(spy).not.toHaveBeenCalled();
+    for (const m of msgs) await router(m, popup);
+    expect(h["site-status"]).toHaveBeenCalledOnce();
+    expect(h["site-enable"]).toHaveBeenCalledWith(msgs[1]);
+    expect(h["site-remove"]).toHaveBeenCalledOnce();
+    expect(h["site-intent"]).toHaveBeenCalledWith(msgs[3]);
+  });
+
+  it("an oversized origin is rejected by the router before any handler", async () => {
+    const { h, handlers } = spyHandlers();
+    const res = await createRouter(handlers)(
+      { type: "site-status", origin: long },
+      popup,
+    );
+    expect(res).toEqual(REJECTED);
+    expect(h["site-status"]).not.toHaveBeenCalled();
   });
 });
 
