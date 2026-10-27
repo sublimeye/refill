@@ -27,3 +27,4 @@ Each ADR has Context / Decision / Consequences / Status. Add a new `NNNN-<slug>.
 | [0021](0021-matcher-details.md) | Matcher details (type gate, derived pair, conflict resolution) | Accepted |
 | [0022](0022-profile-records-and-e2e-profile-seam.md) | Profile records (strict parse, one-lock save, origin check on load) and the e2e profile seam with CI positive control | Accepted |
 | [0023](0023-document-scanner.md) | Document scanner (bounded iterative walk, cap before signatures, shadow roots joined to the password history) | Accepted |
+| [0024](0024-fill-engine.md) | Fill engine (captured prototypes, guard depth counter, insertText fallback, widgets, React/Vue build gate) | Accepted |
