@@ -220,6 +220,45 @@ describe("scan, report, fill", () => {
     expect(h.results()[0]).toMatchObject({ filled: 1, skipped: 0 });
   });
 
+  it("does not fill an element the page re-used for another field during the round trip", async () => {
+    mount(
+      `<form><label><span id="t">Amount</span> <input name="amount"></label>` +
+        `<label>Payee <input name="payee"></label></form>`,
+    );
+    const h = harness((req) => {
+      const plan = byName({ amount: "42.00", payee: "City Water" })(req);
+      // The user clicked Next: the framework renames and relabels the same node in place.
+      input("amount").name = "memo";
+      document.getElementById("t")!.textContent = "Memo";
+      return plan;
+    });
+    start(h);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(1));
+    expect(input("memo").value).toBe("");
+    expect(input("payee").value).toBe("City Water");
+    expect(h.results()[0]).toMatchObject({ filled: 1, skipped: 1 });
+    // The re-scan reports the node under its new meaning.
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2));
+    expect(h.reports()[1]!.controls[0]!.sig).toMatchObject({
+      name: "memo",
+      labelText: "memo",
+    });
+  });
+
+  it("does not fill an element the page swapped out during the round trip", async () => {
+    mount(`<form><label>Amount <input name="amount"></label></form>`);
+    const h = harness((req) => {
+      const plan = byName({ amount: "42.00" })(req);
+      const old = input("amount");
+      old.replaceWith(old.cloneNode());
+      return plan;
+    });
+    start(h);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(1));
+    expect(h.results()[0]).toMatchObject({ filled: 0, skipped: 1 });
+    expect(input("amount").value).toBe("");
+  });
+
   it("vets every item before writing any: a page handler cannot empty a field into a fill", async () => {
     mount(`<input name="a"><input name="b" value="typed">`);
     // The page clears b when a changes. Before Refill wrote anything, b held the user's value.
@@ -315,6 +354,42 @@ describe("re-scans", () => {
     expect(h.reports()[1]!.controls.map((c) => c.sig.name)).toEqual(["b"]);
   });
 
+  it("a bfcache restore while a report is in flight still reports again", async () => {
+    mount(`<input name="a">`);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let first = true;
+    const h = harness(() => ({ state: "none" }), { isTrusted: () => true });
+    const inner = h.env.send;
+    h.env.send = async (msg) => {
+      const answer = inner(msg);
+      if (first) {
+        first = false;
+        await held;
+      }
+      return answer;
+    };
+    start(h);
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(1));
+    window.dispatchEvent(
+      new PageTransitionEvent("pageshow", { persisted: true }),
+    );
+    release();
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2));
+  });
+
+  it("ignores a pageshow the page dispatched itself", async () => {
+    mount(`<input name="a">`);
+    const h = harness();
+    start(h);
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(1));
+    window.dispatchEvent(
+      new PageTransitionEvent("pageshow", { persisted: true }),
+    );
+    await settle();
+    expect(h.reports()).toHaveLength(1);
+  });
+
   it("fills each field at most once per document", async () => {
     const root = mount(`<input name="a">`);
     const h = harness(byName({ a: "A", b: "B" }));
@@ -337,7 +412,8 @@ describe("re-scans", () => {
 
   it("a bfcache restore reports again but does not fill again", async () => {
     mount(`<input name="a">`);
-    const h = harness(byName({ a: "A" }));
+    // A real bfcache restore cannot be produced here: the test trusts its synthetic events.
+    const h = harness(byName({ a: "A" }), { isTrusted: () => true });
     start(h);
     await vi.waitFor(() => expect(input("a").value).toBe("A"));
     input("a").value = "";
@@ -448,10 +524,13 @@ describe("lifecycle", () => {
     });
     start(h);
     await vi.waitFor(() => expect(calls).toBe(1));
-    const b = document.createElement("input");
-    b.name = "b";
-    root.append(b);
+    // The next trigger reports the unchanged page again: the failed report was not remembered.
+    root.append(document.createElement("span"));
     await vi.waitFor(() => expect(calls).toBe(2));
+    // Delivered now: the same page is not reported a third time.
+    root.append(document.createElement("span"));
+    await settle();
+    expect(calls).toBe(2);
   });
 
   it("stop() ends re-scans", async () => {

@@ -13,6 +13,11 @@ import {
 } from "../fields/scan";
 import { PasswordHistory } from "../fields/sensitive";
 import {
+  buildSignature,
+  type FormControl,
+  type Sig,
+} from "../fields/signature";
+import {
   canFill,
   fillControl,
   withFillingGuard,
@@ -44,6 +49,8 @@ export interface ContentEnv {
   isTopWindow?: (win: Window) => boolean;
   /** Tests only: defaults to the captured `Document.prototype.prerendering` getter. */
   isPrerendering?: () => boolean;
+  /** Tests only: defaults to `event.isTrusted` (a synthetic `pageshow` must not force a report). */
+  isTrusted?: (e: Event) => boolean;
 }
 
 export interface ContentRun {
@@ -61,7 +68,34 @@ const prerenderingGet = Object.getOwnPropertyDescriptor(
 const prerendering = (doc: Document): boolean =>
   prerenderingGet?.call(doc) === true;
 const persisted = getter<boolean>(PageTransitionEvent.prototype, "persisted");
+const isConnected = getter<boolean>(Node.prototype, "isConnected");
 const now = (): number => performance.now();
+
+/** What `send` returns when the message did not get through (it threw). */
+const FAILED: unique symbol = Symbol("send failed");
+
+/**
+ * True while `el` is still the control the worker matched: connected, and the parts of its
+ * signature that do not depend on its position (name, id, autocomplete, type, label) are the
+ * scanned ones. A framework that re-uses one `<input>` for the next step renames and relabels it
+ * in place; the plan's value for the old step must not land in it.
+ */
+function stillMeans(el: FormControl, scanned: Sig): boolean {
+  try {
+    if (!isConnected(el)) return false;
+    const sig = buildSignature(el, scanned.ordinal, scanned.formAction);
+    return (
+      sig.name === scanned.name &&
+      sig.idStable === scanned.idStable &&
+      sig.autocomplete === scanned.autocomplete &&
+      sig.type === scanned.type &&
+      sig.labelText === scanned.labelText &&
+      sig.nameIdDerived === scanned.nameIdDerived
+    );
+  } catch {
+    return false;
+  }
+}
 
 const KINDS: readonly string[] = ["text", "select", "checkbox", "radio"];
 
@@ -145,6 +179,7 @@ export function startContentScript(
 function run(env: ContentEnv): ContentRun {
   const { win, doc, origin, isTopWindow } = env;
   const isPrerendering = env.isPrerendering ?? (() => prerendering(doc));
+  const isTrusted = env.isTrusted ?? ((e: Event) => e.isTrusted);
   const history = new PasswordHistory();
   const observer = new MutationObserver(() => schedule());
   const watched = new WeakSet<ShadowRoot>();
@@ -152,6 +187,8 @@ function run(env: ContentEnv): ContentRun {
   let stopped = false;
   let started = false;
   let lastFingerprint: string | null = null;
+  /** Bumped by a bfcache restore, so a report in flight then does not re-remember its page. */
+  let resets = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let firstPending: number | undefined;
   let scanning = false;
@@ -202,17 +239,17 @@ function run(env: ContentEnv): ContentRun {
     return root;
   }
 
-  /** Sends `msg`; `undefined` when it failed (and the run stopped if the extension is gone). */
+  /** Sends `msg`; `FAILED` when it threw (and the run stopped if the extension is gone). */
   async function send(msg: ContentRequest): Promise<unknown> {
     if (!aliveNow()) {
       stop();
-      return undefined;
+      return FAILED;
     }
     try {
       return await env.send(msg);
     } catch (err) {
       if (invalidated(err) || !aliveNow()) stop();
-      return undefined;
+      return FAILED;
     }
   }
 
@@ -232,7 +269,7 @@ function run(env: ContentEnv): ContentRun {
     withFillingGuard(() => {
       // Vet every item against the page as it was before any write: a page handler that runs
       // during one fill must not make another field look empty.
-      const ready: { fieldId: string; item: ControlItem }[] = [];
+      const ready: { fieldId: string; item: ControlItem; sig: Sig }[] = [];
       const named = new Set<string>();
       for (const { fieldId, i, kind, value, pageDefault } of items) {
         // Filled earlier in this document, or named twice in this plan: never written again.
@@ -245,12 +282,19 @@ function run(env: ContentEnv): ContentRun {
         }
         const item = { el: control.el, kind, value, pageDefault };
         if (canFill(item, history, origin, isTopWindow)) {
-          ready.push({ fieldId, item });
+          ready.push({ fieldId, item, sig: control.sig });
         } else {
           counts.skipped++;
         }
       }
-      for (const { fieldId, item } of ready) {
+      for (const { fieldId, item, sig } of ready) {
+        // Re-checked right before each write: the page may have re-used the element for another
+        // field during the round trip, or an earlier write's handlers may have changed it. Not
+        // marked filled: the re-scan reports the element under its new meaning.
+        if (!stillMeans(item.el, sig)) {
+          counts.skipped++;
+          continue;
+        }
         switch (fillControl(item, history, origin, isTopWindow)) {
           case "filled":
             filled.add(fieldId);
@@ -274,14 +318,20 @@ function run(env: ContentEnv): ContentRun {
     const result = scanDocument(doc, history, shadowRootOf, isTopWindow);
     const fingerprint = JSON.stringify(pageFingerprint(result));
     if (fingerprint === lastFingerprint) return;
-    lastFingerprint = fingerprint;
-    if (result.controls.length === 0) return;
+    if (result.controls.length === 0) {
+      lastFingerprint = fingerprint;
+      return;
+    }
+    const generation = resets;
     const plan = await send({
       type: "scan-report",
       controls: result.controls.map(({ i, kind, sig }) => ({ i, kind, sig })),
       truncated: result.truncated,
     });
     if (stopped) return;
+    // Remembered only once delivered: after a failed send the next trigger reports again.
+    if (plan === FAILED) return;
+    if (generation === resets) lastFingerprint = fingerprint;
     const items = fillItems(plan);
     if (items === null) return;
     const counts = apply(items, result.controls);
@@ -347,12 +397,15 @@ function run(env: ContentEnv): ContentRun {
         // throws for a plain `Event` named "pageshow", which page code can dispatch.
         let restored: boolean;
         try {
+          // Page code can construct a persisted PageTransitionEvent; only the browser's counts.
+          if (!isTrusted(e)) return;
           restored = persisted(e);
         } catch {
           return;
         }
         if (!restored) return;
         lastFingerprint = null;
+        resets++;
         schedule();
       },
       false,
