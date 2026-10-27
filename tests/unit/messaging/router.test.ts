@@ -12,8 +12,12 @@ import {
   classifySender,
   createRouter,
   toRuntimeListener,
+  type ContentHandlers,
   type PageHandlers,
 } from "../../../src/lib/messaging/router";
+import { createContentHandlers } from "../../../src/lib/messaging/content-handlers";
+import { upsertSite } from "../../../src/lib/sites";
+import { installShims } from "../helpers/browser-shims";
 import { __resetForTests } from "../../../src/lib/vault/vault";
 
 const SLOW = { timeout: 30_000 };
@@ -53,7 +57,18 @@ function spyHandlers() {
     "site-remove": vi.fn(async () => ({ ok: true })),
     "site-intent": vi.fn(async () => ({ ok: true })),
   };
-  return { h, handlers: { page: h } as { page: PageHandlers } };
+  const c = {
+    "scan-report": vi.fn(async () => ({ state: "none" })),
+    "fill-result": vi.fn(async () => ({ ok: true })),
+  };
+  return {
+    h,
+    c,
+    handlers: { page: h, content: c } as {
+      page: PageHandlers;
+      content: ContentHandlers;
+    },
+  };
 }
 
 beforeEach(() => {
@@ -336,13 +351,6 @@ describe("router", () => {
     for (const spy of Object.values(h)) expect(spy).not.toHaveBeenCalled();
   });
 
-  it("any content-classified message is rejected for now", async () => {
-    const { h, handlers } = spyHandlers();
-    const res = await createRouter(handlers)({ type: "scan-report" }, content);
-    expect(res).toEqual(REJECTED);
-    for (const spy of Object.values(h)) expect(spy).not.toHaveBeenCalled();
-  });
-
   it("sender with another extension id is rejected", async () => {
     const { h, handlers } = spyHandlers();
     const res = await createRouter(handlers)(
@@ -449,6 +457,206 @@ describe("router", () => {
     expect(await createRouter(handlers)({ type: "vault-lock" }, popup)).toEqual(
       INTERNAL,
     );
+  });
+});
+
+describe("content senders", () => {
+  const SITE = "https://example.com";
+  const scanReport = {
+    type: "scan-report",
+    controls: [
+      {
+        i: 0,
+        kind: "text",
+        sig: {
+          name: "email",
+          idStable: null,
+          autocomplete: "email",
+          type: "email",
+          labelText: "email",
+          ordinal: 0,
+          formAction: null,
+          nameIdDerived: false,
+        },
+      },
+    ],
+    truncated: false,
+  };
+  const fillResult = {
+    type: "fill-result",
+    filled: 1,
+    skipped: 0,
+    unsupported: 0,
+  };
+
+  /** An enabled, granted site, as after a completed enable flow. */
+  async function enabled() {
+    const shims = installShims();
+    shims.grant(`${SITE}/*`);
+    await upsertSite(SITE, {});
+    return shims;
+  }
+
+  it("an enabled, granted site reaches the handler with the context from the sender", async () => {
+    await enabled();
+    const { c, handlers } = spyHandlers();
+    const s = mk({ ...content, documentId: "doc-9", url: `${SITE}/a/b?q=1#h` });
+    expect(await createRouter(handlers)(scanReport, s)).toEqual({
+      state: "none",
+    });
+    expect(c["scan-report"]).toHaveBeenCalledWith(scanReport, {
+      origin: SITE,
+      pathname: "/a/b",
+      tabId: 1,
+      documentId: "doc-9",
+    });
+    expect(await createRouter(handlers)(fillResult, content)).toEqual({
+      ok: true,
+    });
+    expect(c["fill-result"]).toHaveBeenCalledWith(fillResult, {
+      origin: SITE,
+      pathname: "/form",
+      tabId: 1,
+      documentId: undefined,
+    });
+  });
+
+  it("the handler gets a fresh parsed copy, not the message object", async () => {
+    await enabled();
+    const { c, handlers } = spyHandlers();
+    await createRouter(handlers)(scanReport, content);
+    const calls = c["scan-report"].mock.calls as unknown[][];
+    expect(calls[0]![0]).toEqual(scanReport);
+    expect(calls[0]![0]).not.toBe(scanReport);
+  });
+
+  it("a site that was never enabled is rejected", async () => {
+    installShims().grant(`${SITE}/*`);
+    const { c, handlers } = spyHandlers();
+    expect(await createRouter(handlers)(scanReport, content)).toEqual(REJECTED);
+    expect(c["scan-report"]).not.toHaveBeenCalled();
+  });
+
+  it("a revoked site is rejected", async () => {
+    await enabled();
+    await upsertSite(SITE, { accessRevoked: true });
+    const { c, handlers } = spyHandlers();
+    expect(await createRouter(handlers)(scanReport, content)).toEqual(REJECTED);
+    expect(await createRouter(handlers)(fillResult, content)).toEqual(REJECTED);
+    expect(c["scan-report"]).not.toHaveBeenCalled();
+    expect(c["fill-result"]).not.toHaveBeenCalled();
+  });
+
+  it("an enabled site without the host permission is rejected", async () => {
+    const shims = await enabled();
+    shims.grants.clear();
+    const { c, handlers } = spyHandlers();
+    expect(await createRouter(handlers)(scanReport, content)).toEqual(REJECTED);
+    expect(c["scan-report"]).not.toHaveBeenCalled();
+    expect(shims.permissions.contains).toHaveBeenCalledWith({
+      origins: [`${SITE}/*`],
+    });
+  });
+
+  it.each([
+    ["a non-canonical origin", { origin: `${SITE}/` }],
+    ["an upper-case origin", { origin: "https://Example.com" }],
+    ["an explicit default port", { origin: `${SITE}:443` }],
+    ["a url on another origin", { url: "https://evil.example/form" }],
+    ["a url on another port", { url: `${SITE}:8443/form` }],
+    ["an http url", { url: "http://example.com/form" }],
+    ["an unparsable url", { url: "not a url" }],
+    ["no url", { url: undefined }],
+    ["no tab id", { tab: { url: `${SITE}/form` } }],
+    ["a negative tab id", { tab: { id: -1, url: `${SITE}/form` } }],
+    ["a sub-frame", { frameId: 2 }],
+  ])("%s is rejected", async (_name, patch) => {
+    await enabled();
+    const { c, handlers } = spyHandlers();
+    const s = mk({ ...content, ...patch });
+    expect(await createRouter(handlers)(scanReport, s)).toEqual(REJECTED);
+    expect(c["scan-report"]).not.toHaveBeenCalled();
+  });
+
+  it("page-kind messages from content are rejected", async () => {
+    await enabled();
+    const { h, c, handlers } = spyHandlers();
+    for (const m of [
+      { type: "vault-status" },
+      { type: "vault-lock" },
+      { type: "site-status", origin: SITE },
+    ]) {
+      expect(await createRouter(handlers)(m, content)).toEqual(REJECTED);
+    }
+    for (const spy of [...Object.values(h), ...Object.values(c)]) {
+      expect(spy).not.toHaveBeenCalled();
+    }
+  });
+
+  it("content messages from a page are rejected", async () => {
+    await enabled();
+    const { h, c, handlers } = spyHandlers();
+    expect(await createRouter(handlers)(scanReport, popup)).toEqual(REJECTED);
+    expect(await createRouter(handlers)(fillResult, popup)).toEqual(REJECTED);
+    for (const spy of [...Object.values(h), ...Object.values(c)]) {
+      expect(spy).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    ["origin", { origin: SITE }],
+    ["url", { url: `${SITE}/form` }],
+    ["now", { now: 1 }],
+    ["tabId", { tabId: 1 }],
+  ])("a payload %s key is rejected", async (_name, extra) => {
+    await enabled();
+    const { c, handlers } = spyHandlers();
+    expect(
+      await createRouter(handlers)({ ...scanReport, ...extra }, content),
+    ).toEqual(REJECTED);
+    expect(c["scan-report"]).not.toHaveBeenCalled();
+  });
+
+  it("301 controls are rejected", async () => {
+    await enabled();
+    const { c, handlers } = spyHandlers();
+    const sig = { ...scanReport.controls[0]!.sig, name: null, labelText: null };
+    const controls = Array.from({ length: 301 }, (_, i) => ({
+      i: i % 300,
+      kind: "text",
+      sig,
+    }));
+    const msg = { ...scanReport, controls };
+    expect(JSON.stringify(msg).length).toBeLessThan(MAX_MESSAGE_CHARS);
+    expect(await createRouter(handlers)(msg, content)).toEqual(REJECTED);
+    expect(c["scan-report"]).not.toHaveBeenCalled();
+  });
+
+  it("an oversized content message is rejected before any store read", async () => {
+    const shims = await enabled();
+    const { c, handlers } = spyHandlers();
+    const msg = { ...scanReport, pad: "x".repeat(MAX_MESSAGE_CHARS) };
+    expect(await createRouter(handlers)(msg, content)).toEqual(REJECTED);
+    expect(shims.permissions.contains).not.toHaveBeenCalled();
+    expect(c["scan-report"]).not.toHaveBeenCalled();
+  });
+
+  it("a content handler that throws is internal", async () => {
+    await enabled();
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { c, handlers } = spyHandlers();
+    c["scan-report"].mockRejectedValue(new Error("secret detail"));
+    expect(await createRouter(handlers)(scanReport, content)).toEqual(INTERNAL);
+    expect(JSON.stringify(err.mock.calls)).not.toContain("secret detail");
+  });
+
+  it("a failing permission check is internal, never a pass", async () => {
+    const shims = await enabled();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    shims.permissions.contains.mockRejectedValue(new Error("boom"));
+    const { c, handlers } = spyHandlers();
+    expect(await createRouter(handlers)(scanReport, content)).toEqual(INTERNAL);
+    expect(c["scan-report"]).not.toHaveBeenCalled();
   });
 });
 
@@ -578,7 +786,10 @@ describe("sendToSw", () => {
 describe("vault through the router", SLOW, () => {
   it("vault-create → vault-lock → vault-unlock round-trip", async () => {
     const calibrate = vi.fn(async () => newKdfParams());
-    const route = createRouter({ page: createPageHandlers(calibrate) });
+    const route = createRouter({
+      page: createPageHandlers(calibrate),
+      content: createContentHandlers(),
+    });
     const call = (m: unknown) => route(m, popup);
 
     expect(await call({ type: "vault-status" })).toEqual({ state: "none" });
@@ -609,6 +820,7 @@ describe("vault through the router", SLOW, () => {
   it("vault-create maps exists and weak", async () => {
     const route = createRouter({
       page: createPageHandlers(async () => newKdfParams()),
+      content: createContentHandlers(),
     });
     expect(
       await route({ type: "vault-create", passphrase: "short" }, popup),
@@ -628,7 +840,10 @@ describe("vault through the router", SLOW, () => {
 
   it("an invalid create never calibrates", async () => {
     const calibrate = vi.fn(async () => newKdfParams());
-    const route = createRouter({ page: createPageHandlers(calibrate) });
+    const route = createRouter({
+      page: createPageHandlers(calibrate),
+      content: createContentHandlers(),
+    });
     expect(
       await route({ type: "vault-create", passphrase: "short" }, popup),
     ).toEqual({ ok: false, error: "weak" });
@@ -644,7 +859,10 @@ describe("vault through the router", SLOW, () => {
 
   it("create over an existing vault never calibrates", async () => {
     const calibrate = vi.fn(async () => newKdfParams());
-    const route = createRouter({ page: createPageHandlers(calibrate) });
+    const route = createRouter({
+      page: createPageHandlers(calibrate),
+      content: createContentHandlers(),
+    });
     expect(await route({ type: "vault-create", passphrase: P }, popup)).toEqual(
       { ok: true },
     );
@@ -660,6 +878,7 @@ describe("vault through the router", SLOW, () => {
       page: createPageHandlers(async () => {
         throw new RangeError("calibration failed");
       }),
+      content: createContentHandlers(),
     });
     vi.spyOn(console, "error").mockImplementation(() => {});
     expect(await route({ type: "vault-create", passphrase: P }, popup)).toEqual(

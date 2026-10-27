@@ -61,6 +61,20 @@ describe("records", { timeout: 30_000 }, () => {
     expect(await getEncrypted("p:y", A)).toEqual({ a: 1 });
   });
 
+  it("reads through a StoreTx inside withStoreLock", async () => {
+    await putEncrypted("p:y", A, { a: 2 });
+    let stale: Parameters<Parameters<typeof withStoreLock>[0]>[0] | undefined;
+    const got = await withStoreLock(async (tx) => {
+      stale = tx;
+      return getEncrypted("p:y", A, tx);
+    });
+    expect(got).toEqual({ a: 2 });
+    // The read went through the tx: once the job settled, the same tx refuses.
+    await expect(getEncrypted("p:y", A, stale)).rejects.toThrow(
+      "store tx used after withStoreLock job settled",
+    );
+  });
+
   it("rejects a value that has no JSON form", async () => {
     await expect(putEncrypted("p:z", A, undefined)).rejects.toBeInstanceOf(
       TypeError,

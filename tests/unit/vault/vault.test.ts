@@ -30,6 +30,7 @@ import {
   getDek,
   getDraftPrivateKey,
   lock,
+  lockEpoch,
   onLockChange,
   status,
   unlockWithPassphrase,
@@ -539,6 +540,22 @@ describe("session and service-worker restart", SLOW, () => {
 });
 
 describe("lock wins races (R23)", SLOW, () => {
+  it("lockEpoch changes on every lock() and on nothing else", async () => {
+    await createVault(P, newKdfParams(), T0);
+    const e0 = lockEpoch();
+    await status(T0);
+    await getDek(T0);
+    expect(lockEpoch()).toBe(e0);
+    await lock();
+    const e1 = lockEpoch();
+    expect(e1).not.toBe(e0);
+    expect((await unlockWithPassphrase(P, T0)).ok).toBe(true);
+    expect(lockEpoch()).toBe(e1);
+    await lock(); // even when already locked
+    await lock();
+    expect(lockEpoch()).not.toBe(e1);
+  });
+
   it("lock() during unlock's KDF: no keys installed, no session written, reason locked-during-unlock", async () => {
     await lockedVault();
     const seen: boolean[] = [];

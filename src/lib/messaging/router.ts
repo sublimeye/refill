@@ -1,6 +1,10 @@
 // Sender-validated router for runtime messages (spec §7). Every message is size-checked, the
-// sender is classified, and the payload is parsed before any handler runs. Decisions: ADR 0014.
+// sender is classified, and the payload is parsed before any handler runs. Decisions: ADR 0014,
+// ADR 0025 (content senders).
 import { browser, type Browser } from "wxt/browser";
+import { readSites } from "../sites";
+import { normalizeOrigin, originPattern } from "../sites/origin";
+import { parseContentRequest, type ContentRequest } from "./content-protocol";
 import {
   MAX_MESSAGE_CHARS,
   parsePageRequest,
@@ -45,6 +49,67 @@ export type PageHandlers = {
   ) => Promise<unknown>;
 };
 
+/**
+ * What a content handler learns about its caller. Every member comes from the browser-provided
+ * sender, never from the message (spec §7).
+ */
+export interface ContentContext {
+  /** `sender.origin`: canonical https, enabled, not revoked, granted. */
+  origin: string;
+  /** Pathname of `sender.url`, whose origin equals `origin`. */
+  pathname: string;
+  tabId: number;
+  documentId: string | undefined;
+}
+
+export type ContentHandlers = {
+  [K in ContentRequest["type"]]: (
+    req: Extract<ContentRequest, { type: K }>,
+    ctx: ContentContext,
+  ) => Promise<unknown>;
+};
+
+/**
+ * Re-checks a sender `classifySender` called `content`, in this order: `sender.origin` is a
+ * canonical https origin; the site index has a record for exactly that origin with
+ * `accessRevoked: false`; the host permission for its pattern is held; `sender.url` parses as https
+ * on that same origin; the tab id is real. The default-port pattern grants every port (ADR 0018),
+ * so the exact-origin record is what keeps another port of an enabled site out. `null` = reject.
+ * Storage or permission API failures reject the promise (the router answers `internal`).
+ */
+export async function authorizeContentSender(
+  sender: Browser.runtime.MessageSender,
+): Promise<ContentContext | null> {
+  const origin = sender.origin;
+  if (origin === undefined || normalizeOrigin(origin) !== origin) return null;
+  const sites = await readSites();
+  // A canonical https origin is never a prototype key.
+  if (!Object.hasOwn(sites, origin) || sites[origin]!.accessRevoked) {
+    return null;
+  }
+  const granted = await browser.permissions.contains({
+    origins: [originPattern(origin)],
+  });
+  if (granted !== true) return null;
+  let url: URL;
+  try {
+    url = new URL(sender.url ?? "");
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.origin !== origin) return null;
+  const tabId = sender.tab?.id;
+  if (tabId === undefined || !Number.isSafeInteger(tabId) || tabId < 0) {
+    return null;
+  }
+  return {
+    origin,
+    pathname: url.pathname,
+    tabId,
+    documentId: sender.documentId,
+  };
+}
+
 const REJECTED: RouterError = { ok: false, error: "rejected" };
 const INTERNAL: RouterError = { ok: false, error: "internal" };
 
@@ -66,8 +131,33 @@ function logFailure(type: string, err: unknown): void {
   );
 }
 
+function routeContent(
+  handlers: ContentHandlers,
+  msg: unknown,
+  sender: Browser.runtime.MessageSender,
+): Promise<unknown> {
+  // Parsed before any store read: malformed traffic costs no IO.
+  const req = parseContentRequest(msg);
+  if (req === null) return Promise.resolve(REJECTED);
+  const handler = handlers[req.type] as (
+    r: ContentRequest,
+    ctx: ContentContext,
+  ) => Promise<unknown>;
+  return (async () => {
+    try {
+      const ctx = await authorizeContentSender(sender);
+      if (ctx === null) return REJECTED;
+      return await handler(req, ctx);
+    } catch (err) {
+      logFailure(req.type, err);
+      return INTERNAL;
+    }
+  })();
+}
+
 export function createRouter(handlers: {
   page: PageHandlers;
+  content: ContentHandlers;
 }): (
   msg: unknown,
   sender: Browser.runtime.MessageSender,
@@ -75,7 +165,7 @@ export function createRouter(handlers: {
   return (msg, sender) => {
     if (tooLarge(msg)) return Promise.resolve(REJECTED);
     const kind = classifySender(sender, browser.runtime.id);
-    // Content handlers do not exist yet (ContentRequest is `never`), so only pages are served.
+    if (kind === "content") return routeContent(handlers.content, msg, sender);
     if (kind !== "page") return Promise.resolve(REJECTED);
     const req = parsePageRequest(msg);
     if (req === null) return Promise.resolve(REJECTED);
