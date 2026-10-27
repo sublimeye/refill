@@ -25,3 +25,4 @@ Each ADR has Context / Decision / Consequences / Status. Add a new `NNNN-<slug>.
 | [0019](0019-vitest-browser-mode-and-field-signatures.md) | Vitest browser mode (Playwright provider) for DOM tests; field signature rules (`idStable`, bounded `labelText`) | Accepted |
 | [0020](0020-eligibility-and-sensitive-field-rules.md) | Eligibility and sensitive-field rules (word semantics, bounded ancestor walk, fail closed, password type-flip history) | Accepted |
 | [0021](0021-matcher-details.md) | Matcher details (type gate, derived pair, conflict resolution) | Accepted |
+| [0022](0022-profile-records-and-e2e-profile-seam.md) | Profile records (strict parse, one-lock save, origin check on load) and the e2e profile seam with CI positive control | Accepted |

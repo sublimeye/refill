@@ -1,6 +1,7 @@
 import { calibrate } from "../lib/crypto/kdf";
 import { createPageHandlers } from "../lib/messaging/page-handlers";
 import { createRouter, toRuntimeListener } from "../lib/messaging/router";
+import { saveProfile } from "../lib/profiles/store";
 import { installSiteListeners } from "../lib/sites/reconcile";
 import { enforceOnWake, installLockTriggers } from "../lib/vault/lock-triggers";
 
@@ -15,6 +16,11 @@ export default defineBackground(() => {
         err instanceof Error ? err.name : "error",
       );
     });
+  // E2E seam (ADR 0022): lets Playwright seed a profile through `worker.evaluate`. `MODE` is
+  // folded at build time, so the production bundle has neither the marker nor this import.
+  if (import.meta.env.MODE === "e2e") {
+    (globalThis as Record<string, unknown>).__refillE2E = { saveProfile };
+  }
   installLockTriggers();
   installSiteListeners();
   enforceOnWake().catch((err: unknown) => {
