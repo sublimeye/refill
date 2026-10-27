@@ -6,8 +6,9 @@
   </head>
   <body>
     <h1>Billing address</h1>
-    <!-- A frame named "chrome". In the content script's world `chrome` is the global's own
-         property, so window named access does not replace it and this page still fills. -->
+    <!-- A frame named "chrome": on a fresh load, window named access makes `chrome` this frame's
+         window, also in the content script's isolated world. Refill refuses it and does nothing
+         on this page (fails closed). -->
     <iframe name="chrome" title="empty"></iframe>
     <form action="/billpay/twins" method="post">
       <p>

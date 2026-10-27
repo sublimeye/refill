@@ -25,14 +25,27 @@ export default defineBackground(() => {
   let content = createContentHandlers();
   // E2E seam (ADR 0022, ADR 0026): lets Playwright seed a profile through `worker.evaluate`, read
   // what content scripts reported (signatures, plan state and fill counts, never values; `boot` and
-  // `seq` order entries across a worker restart), and hold scan-report replies back to open the
-  // scan-to-fill window on purpose. `MODE` is folded at build time, so the production bundle has
+  // `seq` order entries across a worker restart), and hold scan-report replies until released, to
+  // change the page between scan and fill on purpose. `MODE` is folded at build time, so the production bundle has
   // neither the marker nor this code.
   if (import.meta.env.MODE === "e2e") {
     const contentLog: Record<string, unknown>[] = [];
     const boot = crypto.randomUUID();
     let seq = 0;
-    const seam = { saveProfile, contentLog, boot, replyDelayMs: 0 };
+    let held: Promise<void> | null = null;
+    let release: () => void = () => undefined;
+    const seam = {
+      saveProfile,
+      contentLog,
+      boot,
+      holdReplies: () => {
+        held ??= new Promise<void>((r) => (release = r));
+      },
+      releaseReplies: () => {
+        release();
+        held = null;
+      },
+    };
     (globalThis as Record<string, unknown>).__refillE2E = seam;
     const inner = content;
     const where = (ctx: ContentContext) => ({
@@ -54,9 +67,7 @@ export default defineBackground(() => {
           plan: plan.state,
           items: plan.state === "fill" ? plan.items.length : 0,
         });
-        if (seam.replyDelayMs > 0) {
-          await new Promise((r) => setTimeout(r, seam.replyDelayMs));
-        }
+        if (held !== null) await held;
         return plan;
       },
       "fill-result": async (req, ctx) => {

@@ -6,8 +6,8 @@
   </head>
   <body>
     <h1>Billing address</h1>
-    <!-- Window named access makes `browser.runtime` this hidden input, also in the content
-         script's isolated world. Refill reads `chrome`, so this page still fills. -->
+    <!-- Window named access makes `browser.runtime` this hidden input on a fresh load, also in
+         the content script's isolated world. Refill reads only `chrome`, so this page fills. -->
     <form id="browser"><input type="hidden" name="runtime" id="x" /></form>
     <form action="/billpay/twins" method="post">
       <p>

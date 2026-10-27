@@ -7,7 +7,8 @@ import { FIXTURE_A, FIXTURE_B } from "./fixtures-server";
 import {
   entriesSince,
   logMark,
-  delayReplies,
+  holdReplies,
+  releaseReplies,
   injectAgain,
   lockVault,
   profileFrom,
@@ -363,7 +364,7 @@ test("an input the page re-uses for another field before the plan arrives is not
 
   // Hold the worker's answer back, and turn "Address 1" into another field in place meanwhile
   // (a framework re-using the node for the next step).
-  await delayReplies(context, 1_500);
+  await holdReplies(context);
   const since = await logMark(context);
   await page.reload();
   await waitForEntry(context, since, "scan-report");
@@ -372,6 +373,7 @@ test("an input the page re-uses for another field before the plan arrives is not
     input.name = "memo";
     input.previousSibling!.textContent = "Memo ";
   });
+  await releaseReplies(context);
   const result = await waitForEntry(context, since, "fill-result");
   expect(result).toMatchObject({ filled: 2, skipped: 1, unsupported: 0 });
   await expect(page.getByLabel("Memo")).toHaveValue("");
@@ -379,10 +381,12 @@ test("an input the page re-uses for another field before the plan arrives is not
   await expect(page.getByLabel("City")).toHaveValue("London");
 });
 
-// Window named access reaches the isolated world: page markup can stand in for any name the
-// global does not define itself. Chrome defines no `browser` there, so `<form id="browser">` would
-// replace WXT's `browser`; `chrome` is the global's own property and cannot be replaced.
-test("page markup named `browser` or `chrome` cannot switch Refill off", async ({
+// Window named access reaches the content script's isolated world: on a document's first load in a
+// tab, page markup replaces `browser` (`<form id="browser">`) and even `chrome` (`<form id="chrome">`,
+// `<iframe name="chrome">`). Refill reads only `chrome` and checks it, so `browser` markup changes
+// nothing and `chrome` markup makes Refill do nothing on that page (fails closed). Each page opens
+// in a fresh tab: a document navigated to from another one in the same tab keeps the real globals.
+test("page markup named `browser` cannot switch Refill off; `chrome` markup fails closed", async ({
   context,
   extensionId,
   sites,
@@ -391,13 +395,21 @@ test("page markup named `browser` or `chrome` cannot switch Refill off", async (
   const { page } = await setUp(context, extensionId, [FIXTURE_A]);
   await seedTwins(context, page);
 
-  for (const name of [
-    "clobber-browser",
-    "clobber-chrome",
-    "clobber-chrome-form",
-  ]) {
-    await page.goto(`${FIXTURE_A}/billpay/${name}`);
-    await expectTwinsFilled(page);
+  const browserPage = await context.newPage();
+  await browserPage.goto(`${FIXTURE_A}/billpay/clobber-browser`);
+  await expectTwinsFilled(browserPage);
+
+  for (const name of ["clobber-chrome", "clobber-chrome-form"]) {
+    const since = await logMark(context);
+    const fresh = await context.newPage();
+    await fresh.goto(`${FIXTURE_A}/billpay/${name}`);
+    await fresh.waitForTimeout(1_000);
+    await expect(fresh.locator("html")).not.toHaveAttribute(
+      "data-refill-loaded",
+      "1",
+    );
+    await expectTwinsEmpty(fresh);
+    expect(await entriesSince(context, since)).toEqual([]);
   }
 });
 

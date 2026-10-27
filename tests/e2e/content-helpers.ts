@@ -41,7 +41,8 @@ type Seam = {
     saveProfile(p: unknown): Promise<void>;
     contentLog: LogEntry[];
     boot: string;
-    replyDelayMs: number;
+    holdReplies(): void;
+    releaseReplies(): void;
   };
   chrome: {
     tabs: { query(q: unknown): Promise<{ id: number; url?: string }[]> };
@@ -82,13 +83,22 @@ export async function entriesSince(
   );
 }
 
-/** Holds every scan-report reply back by `ms` in the worker (0 = off). */
-export async function delayReplies(context: BrowserContext, ms: number) {
+/**
+ * Holds every scan-report reply in the worker until `releaseReplies` (the entry is logged before
+ * the hold). A worker restart drops the hold, which makes the spec fail, never pass falsely.
+ */
+export async function holdReplies(context: BrowserContext) {
   await (
     await serviceWorker(context)
-  ).evaluate((d) => {
-    (globalThis as unknown as Seam).__refillE2E.replyDelayMs = d;
-  }, ms);
+  ).evaluate(() => (globalThis as unknown as Seam).__refillE2E.holdReplies());
+}
+
+export async function releaseReplies(context: BrowserContext) {
+  await (
+    await serviceWorker(context)
+  ).evaluate(() =>
+    (globalThis as unknown as Seam).__refillE2E.releaseReplies(),
+  );
 }
 
 /** Waits for a log entry after `since` that `pick` accepts, and returns it. */
