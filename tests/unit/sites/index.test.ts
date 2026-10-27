@@ -5,6 +5,7 @@ import {
   readSites,
   removeSite,
   upsertSite,
+  type SiteRecord,
 } from "../../../src/lib/sites";
 import {
   KEYS,
@@ -137,5 +138,49 @@ describe("upsertSite / removeSite", () => {
     });
     await upsertSite(B, {});
     expect(await getItem(KEYS.sites)).toEqual({ [A]: DEFAULT, [B]: DEFAULT });
+  });
+
+  it.each([
+    "https://a.example/path",
+    "http://a.example",
+    "https://A.example",
+    "constructor",
+    "__proto__",
+    "",
+  ])("upsertSite and removeSite throw TypeError for origin %j", async (o) => {
+    await expect(upsertSite(o, {})).rejects.toBeInstanceOf(TypeError);
+    await expect(removeSite(o)).rejects.toBeInstanceOf(TypeError);
+    expect(await getItem(KEYS.sites)).toBeUndefined();
+    expect(({} as Record<string, unknown>).profileId).toBeUndefined();
+  });
+
+  it.each([0, -1, Number.NaN, Infinity])(
+    "upsertSite throws TypeError for ttl %j and writes nothing",
+    async (ttl) => {
+      await upsertSite(A, {});
+      await expect(upsertSite(A, { ttl })).rejects.toBeInstanceOf(TypeError);
+      expect((await readSites())[A]).toEqual(DEFAULT);
+    },
+  );
+
+  it("upsertSite throws TypeError for a wrongly typed or unknown patch field", async () => {
+    await expect(
+      upsertSite(A, { profileId: 5 } as unknown as Partial<SiteRecord>),
+    ).rejects.toBeInstanceOf(TypeError);
+    await expect(
+      upsertSite(A, { extra: 1 } as unknown as Partial<SiteRecord>),
+    ).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it("a rejected upsert inside a tx does not poison the lock", async () => {
+    await withTimeout(
+      withStoreLock(async (tx) => {
+        await expect(upsertSite(A, { ttl: 0 }, tx)).rejects.toBeInstanceOf(
+          TypeError,
+        );
+        await upsertSite(B, {}, tx);
+      }),
+    );
+    expect(Object.keys(await readSites())).toEqual([B]);
   });
 });

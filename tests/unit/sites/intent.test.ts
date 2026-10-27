@@ -72,4 +72,24 @@ describe("pending intent", () => {
     await writeIntent({ ...intent, ts: Date.now() });
     expect(await takeIntent(A)).not.toBeNull();
   });
+
+  it("two concurrent takes: exactly one gets the intent", async () => {
+    await writeIntent(intent);
+    const [x, y] = await Promise.all([
+      takeIntent(A, intent.ts + 1000),
+      takeIntent(A, intent.ts + 1000),
+    ]);
+    expect([x, y].filter((r) => r !== null)).toEqual([intent]);
+  });
+
+  it("treats an intent stamped more than 60 s in the future as expired", async () => {
+    await writeIntent(intent);
+    expect(await takeIntent(A, intent.ts - 60_001)).toBeNull();
+    expect(await takeIntent(A, intent.ts)).toBeNull();
+  });
+
+  it("accepts an intent stamped up to 60 s in the future", async () => {
+    await writeIntent(intent);
+    expect(await takeIntent(A, intent.ts - 60_000)).toEqual(intent);
+  });
 });

@@ -11,7 +11,12 @@ export interface SiteRecord {
 
 export const DEFAULT_TTL_MS = 604_800_000;
 
-const FIELDS = ["profileId", "drafts", "ttl", "accessRevoked"];
+const FIELDS = [
+  "profileId",
+  "drafts",
+  "ttl",
+  "accessRevoked",
+] as const satisfies readonly (keyof SiteRecord)[];
 
 function isSiteRecord(v: unknown): v is SiteRecord {
   if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
@@ -66,27 +71,38 @@ function mutate<T>(
   return tx ? job(tx) : withStoreLock(job);
 }
 
-export function upsertSite(
+function assertCanonicalOrigin(origin: string): void {
+  if (normalizeOrigin(origin) !== origin) {
+    throw new TypeError("origin must be a canonical https origin");
+  }
+}
+
+/** Throws TypeError on a non-canonical origin or a patch that yields an invalid record. */
+export async function upsertSite(
   origin: string,
   patch: Partial<SiteRecord>,
   tx?: StoreTx,
 ): Promise<SiteRecord> {
+  assertCanonicalOrigin(origin);
   return mutate(tx, (sites) => {
-    const rec: SiteRecord = {
-      ...(sites[origin] ?? {
-        profileId: null,
-        drafts: false,
-        ttl: DEFAULT_TTL_MS,
-        accessRevoked: false,
-      }),
-      ...patch,
-    };
+    const base: SiteRecord = Object.hasOwn(sites, origin)
+      ? sites[origin]!
+      : {
+          profileId: null,
+          drafts: false,
+          ttl: DEFAULT_TTL_MS,
+          accessRevoked: false,
+        };
+    const rec: unknown = { ...base, ...patch };
+    if (!isSiteRecord(rec)) throw new TypeError("invalid site record");
+    // origin is canonical https, so it cannot be "__proto__" or "constructor".
     sites[origin] = rec;
     return { ...rec };
   });
 }
 
 export async function removeSite(origin: string, tx?: StoreTx): Promise<void> {
+  assertCanonicalOrigin(origin);
   await mutate(tx, (sites) => {
     delete sites[origin];
   });
