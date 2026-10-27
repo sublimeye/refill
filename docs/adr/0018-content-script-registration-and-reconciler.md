@@ -1,0 +1,26 @@
+# ADR 0018: Content-script registration and permission reconciler
+
+## Context
+Refill must run a content script only on origins the user enabled, with no install-time host access (production manifest: `content_scripts` empty, `host_permissions` empty, `optional_host_permissions` `https://*/*`). WXT's own runtime-registration helpers for content scripts add required host permissions to the manifest (WXT issue #2239), which would break that. Host permissions can also change outside Refill (the user revokes access in the browser's extension menu), and the service worker can be woken by the grant event with the popup already gone (ADR 0007).
+
+## Decision
+- The script is a WXT *unlisted script* (`src/entrypoints/refill-content.ts`, built to `/refill-content.js`) and is registered manually with `scripting.registerContentScripts`. Exactly one registration id, `refill-content`, with `allFrames: false`, `runAt: "document_idle"`, `world: "ISOLATED"`, `persistAcrossSessions: true`, and `matches` = `<origin>/*` for every origin that has a site record AND a granted host permission. No origins desired means no registration.
+- `reconcile()` computes that set from `permissions.contains` (the source of truth, failing closed), flags site records `accessRevoked` when the permission is missing (and clears the flag when it returns, data kept), and registers, updates or unregisters. It runs on `onInstalled`, `onStartup`, `permissions.onAdded` and `permissions.onRemoved`, and after `site-enable` / `site-remove`.
+- Reconciles are serialized and coalesced: one run at a time; any number of calls arriving mid-run share one follow-up run. Two concurrent runs could both call `registerContentScripts` for the same id, which Chrome rejects with "Duplicate script ID".
+- A registration only affects pages loaded later, so after a grant the service worker also calls `scripting.executeScript({ target: { tabId }, files: ["/refill-content.js"] })` into the tab named by the pending intent (`onAdded` path) or by the request (`site-enable`, the already-granted path). Failures (tab closed, not https, navigated away) are swallowed and logged by error name only.
+- `site-remove` deletes the site record and its `p:<id>` profile record by key (no decryption, works while locked), then calls `permissions.remove`. A failure there is non-fatal: required permissions (the e2e build pre-grants `https://localhost/*`) and already-removed ones cannot be removed, and the reconciler stops matching an origin with no record regardless.
+- The popup-side helper `requestSiteEnable` runs in the click handler's synchronous turn: Chrome honors `permissions.request` only during user activation, so nothing is awaited before it. In that turn it starts the `site-intent` write (not awaited) and calls `permissions.request` directly (no `contains` check first; `request` resolves true at once for an already-granted origin). If `request` resolves true the popup is still alive, so it sends `site-enable`; if the popup was closed by the dialog (ADR 0007), `permissions.onAdded` plus the intent does the same work. Both paths are idempotent, so both firing is fine. It never throws: any messaging or permission error is `"denied"`.
+- `normalizeOrigin` rejects any host containing `*` or `%`, so a wildcard can never become a registration match (`https://*` + `/*` would match every site). WHATWG parsers keep `*` in a host while Chromium escapes it to `%2A`; rejecting both makes the result independent of the parser.
+- The `permissions.onAdded` handler always ends with a `reconcile()` (try/finally), even if consuming the intent, the upsert or the injection failed.
+- The content-script stub marks `document.documentElement` (`data-refill-loaded="1"`) only when `import.meta.env.MODE === "e2e"`; the marker `__refillE2E` is in that block so `scripts/check-no-seams.mjs` proves it is absent from the production build.
+
+## Consequences
+- Production manifest is unchanged; granting and revoking both converge through the one reconciler.
+- A change made while a reconcile runs triggers exactly one more run, never a concurrent one.
+- Verified in real Chromium (e2e): `site-enable` marks an open tab without reload, a reload gets the script from the registration, and `site-remove` stops it.
+- `accessRevoked` is only updated on reconcile triggers; between a revocation and its `onRemoved` event the flag can lag briefly.
+
+- Known limits, carried to Task 5: a match pattern without a port covers every port of the host (ADR 0017 relies on this for `https://localhost/*`), so the script can also land on another port of an enabled host, or on a granted origin with no site record (after a failed `permissions.remove`, or an injection into a tab that navigated). The content script must therefore be idempotent (a guard flag in the isolated world), and the service worker must refuse content messages whose `sender.origin` has no enabled site record.
+
+## Status
+Accepted (2026-10-26).

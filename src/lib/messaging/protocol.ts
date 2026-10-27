@@ -3,11 +3,25 @@
 import { browser } from "wxt/browser";
 import type { UnlockResult, VaultStatus } from "../vault/types";
 
+export type SiteStatus =
+  | {
+      origin: string;
+      enabled: boolean;
+      granted: boolean;
+      accessRevoked: boolean;
+      hasProfile: boolean;
+    }
+  | { origin: null };
+
 export type PageRequest =
   | { type: "vault-status" }
   | { type: "vault-create"; passphrase: string }
   | { type: "vault-unlock"; passphrase: string }
-  | { type: "vault-lock" };
+  | { type: "vault-lock" }
+  | { type: "site-status"; origin: string }
+  | { type: "site-enable"; tabId: number; origin: string }
+  | { type: "site-remove"; origin: string }
+  | { type: "site-intent"; tabId: number; origin: string };
 
 /** Placeholder: Plan 2 adds the content-script messages. Until then no content message is valid. */
 export type ContentRequest = never;
@@ -22,7 +36,16 @@ export type PageResponse<R extends PageRequest> = R extends {
       ? UnlockResult
       : R extends { type: "vault-lock" }
         ? { ok: true }
-        : never;
+        : R extends { type: "site-status" }
+          ? SiteStatus
+          : R extends { type: "site-enable" }
+            ? | { ok: true }
+              | { ok: false; error: "not-granted" | "invalid-origin" }
+            : R extends { type: "site-remove" }
+              ? { ok: true }
+              : R extends { type: "site-intent" }
+                ? { ok: true } | { ok: false; error: "invalid-origin" }
+                : never;
 
 /** What the router resolves for a message it refuses or whose handler threw. Never carries detail. */
 export type RouterError = { ok: false; error: "rejected" | "internal" };
@@ -35,7 +58,22 @@ const KEYS_BY_TYPE: Readonly<Record<PageRequest["type"], readonly string[]>> = {
   "vault-create": ["type", "passphrase"],
   "vault-unlock": ["type", "passphrase"],
   "vault-lock": ["type"],
+  "site-status": ["type", "origin"],
+  "site-enable": ["type", "tabId", "origin"],
+  "site-remove": ["type", "origin"],
+  "site-intent": ["type", "tabId", "origin"],
 };
+
+/** Origins are short: a longer string cannot be a canonical https origin worth handling. */
+export const MAX_ORIGIN_LENGTH = 256;
+
+function parseOrigin(v: unknown): string | null {
+  return typeof v === "string" && v.length <= MAX_ORIGIN_LENGTH ? v : null;
+}
+
+function parseTabId(v: unknown): number | null {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
+}
 
 function isPlainObject(x: unknown): x is Record<string, unknown> {
   if (typeof x !== "object" || x === null || Array.isArray(x)) return false;
@@ -69,6 +107,19 @@ export function parsePageRequest(raw: unknown): PageRequest | null {
       if (typeof passphrase !== "string") return null;
       if (passphrase.length > MAX_STRING_LENGTH) return null;
       return { type: type as "vault-create" | "vault-unlock", passphrase };
+    }
+    case "site-status":
+    case "site-remove": {
+      const origin = parseOrigin(raw["origin"]);
+      if (origin === null) return null;
+      return { type: type as "site-status" | "site-remove", origin };
+    }
+    case "site-enable":
+    case "site-intent": {
+      const origin = parseOrigin(raw["origin"]);
+      const tabId = parseTabId(raw["tabId"]);
+      if (origin === null || tabId === null) return null;
+      return { type: type as "site-enable" | "site-intent", tabId, origin };
     }
   }
 }

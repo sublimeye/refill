@@ -1,8 +1,11 @@
 import { fakeBrowser } from "wxt/testing/fake-browser";
 import { beforeEach, expect, it, vi } from "vitest";
+import { installShims } from "../helpers/browser-shims";
 
 beforeEach(() => {
   fakeBrowser.reset();
+  installShims(); // the site reconciler needs scripting and permissions
+  vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 it("registers the runtime.onMessage router in the first turn, rejecting foreign senders", async () => {
@@ -53,10 +56,13 @@ it("opens onboarding on install only", async () => {
 
   main();
 
-  expect(add).toHaveBeenCalledOnce();
-  const onInstalled = add.mock.calls[0]![0] as unknown as (d: {
-    reason: string;
-  }) => void;
+  // Two listeners: onboarding (this file's subject) and the site reconciler.
+  expect(add).toHaveBeenCalledTimes(2);
+  const onInstalled = (d: { reason: string }): void => {
+    for (const [fn] of add.mock.calls) {
+      (fn as unknown as (d: { reason: string }) => void)(d);
+    }
+  };
   onInstalled({ reason: "update" });
   onInstalled({ reason: "chrome_update" });
   expect(create).not.toHaveBeenCalled();

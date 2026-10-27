@@ -20,6 +20,11 @@ describe("normalizeOrigin", () => {
     "chrome-extension://abcdefghijklmnop/page.html",
     "garbage",
     "",
+    "https://*",
+    "https://*.example.com",
+    "https://a.*.example.com/x",
+    "https://%2A.example.com",
+    "https://exa%2Ample.com",
   ])("rejects %s", (u) => {
     expect(normalizeOrigin(u)).toBeNull();
   });
