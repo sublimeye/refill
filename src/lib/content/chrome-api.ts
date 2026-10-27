@@ -1,13 +1,12 @@
 // The extension APIs the content script needs, captured once at start and checked (ADR 0026).
 //
-// In the isolated world, window named access still reaches page markup for any name the global
-// does not define itself. Chrome defines no `browser` there, so `<form id="browser"><input
-// name="runtime">` makes WXT's `browser.runtime` a page element (verified). The content script
-// therefore reads `chrome`, which is the isolated global's own property: `<iframe name="chrome">`
-// and `<form id="chrome">` do not replace it (verified end to end). It is still captured once and
-// checked, as defense in depth: a plain object with a callable `sendMessage` and a non-empty string
-// `id`, never page markup or a frame's window. Anything else fails closed (Refill does nothing on
-// that page), and nothing found that way is ever called.
+// Window named access reaches the isolated world: on a document's first load in a tab, page markup
+// replaces `browser` (`<form id="browser"><input name="runtime" id="x">`, which WXT's `browser`
+// would then pick) and even `chrome` (`<form id="chrome">`, `<iframe name="chrome">`). The content
+// script reads only `chrome`, once, and starts only if it is the real runtime: a plain object (not
+// page markup, not a frame's window) with a callable `sendMessage` and a non-empty string `id`.
+// Anything else fails closed: Refill does nothing on that page, and nothing found that way is ever
+// called. A page can always disable Refill on itself; it cannot make Refill send or fill anything.
 
 export interface ChromeApi {
   send(msg: unknown): Promise<unknown>;

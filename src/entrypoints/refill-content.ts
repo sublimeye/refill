@@ -8,8 +8,8 @@ export default defineUnlistedScript(() => {
   // The registration says allFrames: false, but executeScript can still reach a frame.
   if (window !== window.top) return;
   if (location.protocol !== "https:") return;
-  // `chrome`, not WXT's `browser`: page markup can stand in for `browser` through window named
-  // access. `chrome` is checked anyway; anything but the real API is refused (fail closed).
+  // `chrome`, not WXT's `browser`, and checked: page markup can replace either name through window
+  // named access on a fresh load. Anything but the real API is refused (fails closed).
   const api = captureChrome((globalThis as { chrome?: unknown }).chrome);
   if (api === null) return;
   // `globalThis` is this script's isolated world: a registered script and an executeScript after
