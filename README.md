@@ -16,8 +16,11 @@ toast and drafts arrive in later plans. Not on the Chrome Web Store yet.
   origin, and Refill runs only there. Remove the site, or revoke access in the browser, to stop it.
 - Fill from a saved profile: on an enabled site with a profile, once the vault is unlocked, Refill
   fills the matching fields of the current page (including multi-step forms that change without a
-  reload). It never fills password, one-time-code or card fields, hidden or covered fields, forms
-  that submit to another origin, or a field you already edited.
+  reload). It skips fields it detects as passwords, one-time codes or card security codes (judged by
+  field type, autocomplete value, name and label heuristics), fields that are hidden or covered under
+  its eligibility rules, forms whose `action` points to another origin, and fields you already edited.
+  Detection is heuristic and has known gaps; see the residual risks in the
+  [threat model](docs/security/threat-model.md).
 
 Profiles are created by the recorder, which is Plan 3, so there is no way to create one from the UI
 yet. The tests seed them through an e2e-only seam. A profile set to One gesture never fills until the
