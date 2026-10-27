@@ -73,16 +73,30 @@ const AUTOCOMPLETE_SENSITIVE = new Set([
   "one-time-code",
 ]);
 
-// Word semantics: the haystack is lowercased with camelCase boundaries split and every
-// non-alphanumeric run (including `_`, `$`, `-`, `[`) turned into one space, so `\b` means "word
-// edge" in `csrf_token`, `authenticity_token`, `__RequestVerificationToken` and `cardNumber`.
+// Word semantics: the haystack has camelCase and leading-acronym boundaries split (`cardNumber`,
+// `PINCode` -> `PIN Code`, `txtCVVCode`), is lowercased, and every non-alphanumeric run (including
+// `_`, `$`, `-`, `[`) becomes one space, so `\b` means "word edge" in `csrf_token`,
+// `authenticity_token` and `__RequestVerificationToken`.
 //   - Short or ambiguous tokens must be whole words: `pin` hits "pin" / "pin code" but not "pinnacle",
-//     "spinner"; `pass` hits "pass" but not "passenger", "bypass", "compass"; `seed` not "seeded".
+//     "spinner" (nor the unsplit Indian postal `pincode`); `pass` hits "pass" but not "passenger",
+//     "bypass", "compass"; `seed` not "seeded".
 //   - `token` / `tokens` may be the end of a word (`accesstoken`) but not the start of one, so
 //     "tokenized" does not hit. `otp` may start a word (`otpcode`).
+//   - `code` is sensitive only after an allow-listed qualifier (an OTP or CVV code), as the bare name
+//     `code` / `otc`, or in the labels "6-digit code" / "code we sent". `zip`, `postal`, `promo`,
+//     `coupon`, `area`, `country`, `discount`, `referral` codes stay capturable. `confirmation code`
+//     is included: it is the emailed sign-up code; `confirm code` is not (ambiguous).
 // All patterns are alternations of literals and bounded classes: linear on a <= 256 char input.
-const WORD_RE =
-  /\b(?:pass|pwd|pin|2fa|mfa|cvv2?|cvc2?|csc|ssn|seed|nonce)\b|\botp|tokens?\b|\b(?:verification code|security code|social security|recovery phrase|card ?number)\b/;
+const CODE_QUALIFIER =
+  "sms|text|verify|verification|auth|authentication|authenticator|one ?time|onetime|otc|2fa|twofa|two ?factor|mfa|login|security|card|cc|access|confirmation";
+const WORD_RE = new RegExp(
+  "\\b(?:pass|pwd|pin|2fa|twofa|mfa|cvv2?|cvc2?|csc|ssn|seed|nonce)\\b" +
+    "|\\botp|tokens?\\b" +
+    "|\\b(?:social security|recovery phrase|card ?(?:number|num|no)|cc ?num(?:ber)?)\\b" +
+    `|\\b(?:${CODE_QUALIFIER}) ?code\\b` +
+    "|\\b\\d ?digits? code\\b|\\bcode (?:we )?sent\\b",
+);
+const BARE_CODE_RE = /^(?:code|otc)$/;
 // Unambiguous long forms are also matched in the separator-free form, so `confirmpassword`,
 // `__VIEWSTATE` and `cardnumber` hit.
 const COMPACT_RE =
@@ -92,6 +106,7 @@ function wordForm(raw: string): string {
   return raw
     .slice(0, FIELD_MAX)
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
@@ -100,7 +115,11 @@ function wordForm(raw: string): string {
 function nameMatchesSensitive(raw: string | null): boolean {
   if (raw === null || raw === "") return false;
   const words = wordForm(raw);
-  return WORD_RE.test(words) || COMPACT_RE.test(words.replaceAll(" ", ""));
+  return (
+    WORD_RE.test(words) ||
+    BARE_CODE_RE.test(words) ||
+    COMPACT_RE.test(words.replaceAll(" ", ""))
+  );
 }
 
 function captchaLike(raw: string | null): boolean {

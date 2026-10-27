@@ -26,6 +26,7 @@ function q<T extends Element = HTMLInputElement>(
 }
 
 afterEach(() => {
+  document.documentElement.style.overflowX = "";
   document.body.replaceChildren();
 });
 
@@ -146,6 +147,86 @@ describe("isEligible", () => {
     const r = mount(
       `<input style="position:absolute;left:-9999px;top:0">` +
         `<input id="b" style="position:absolute;left:0;top:-9999px">`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+    expect(isEligible(q(r, "#b"))).toBe(false);
+  });
+
+  it("parked off-canvas to the right, with or without overflow-x hidden", () => {
+    const html =
+      `<input style="position:absolute;left:9999px;top:0">` +
+      `<input id="b" style="position:absolute;left:0;top:0;transform:translateX(10000px)">`;
+    const r = mount(html);
+    expect(isEligible(q(r))).toBe(false);
+    expect(isEligible(q(r, "#b"))).toBe(false);
+    document.documentElement.style.overflowX = "hidden";
+    document.body.style.overflowX = "hidden";
+    expect(isEligible(q(r))).toBe(false);
+    expect(isEligible(q(r, "#b"))).toBe(false);
+    document.body.style.overflowX = "";
+  });
+
+  it("a box wider than the viewport that starts inside it is eligible", () => {
+    const r = mount(`<input style="width:${window.innerWidth * 3}px">`);
+    expect(isEligible(q(r))).toBe(true);
+  });
+
+  it("opacity just above and below the threshold", () => {
+    const r = mount(
+      `<input style="opacity:0.01"><input id="b" style="opacity:0.09">` +
+        `<input id="c" style="opacity:0.5">`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+    expect(isEligible(q(r, "#b"))).toBe(false);
+    expect(isEligible(q(r, "#c"))).toBe(true);
+  });
+
+  it("effective opacity is the product along the ancestors", () => {
+    const r = mount(
+      `<div style="opacity:0.3"><div style="opacity:0.3"><input></div></div>` +
+        `<div style="opacity:0.5"><div style="opacity:0.5"><input id="b"></div></div>`,
+    );
+    expect(isEligible(q(r))).toBe(false); // 0.09
+    expect(isEligible(q(r, "#b"))).toBe(true); // 0.25
+  });
+
+  it("filter: opacity(0) hides, other filters do not", () => {
+    const r = mount(
+      `<input style="filter:opacity(0)"><input id="b" style="filter:opacity(5%)">` +
+        `<div style="filter:opacity(0)"><input id="c"></div>` +
+        `<input id="d" style="filter:blur(1px)"><input id="e" style="filter:opacity(0.8)">`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+    expect(isEligible(q(r, "#b"))).toBe(false);
+    expect(isEligible(q(r, "#c"))).toBe(false);
+    expect(isEligible(q(r, "#d"))).toBe(true);
+    expect(isEligible(q(r, "#e"))).toBe(true);
+  });
+
+  it("transparent text on a transparent background is hidden; either alone is fine", () => {
+    const r = mount(
+      `<input style="color:transparent;background:transparent;border:0">` +
+        `<input id="b" style="color:rgba(0,0,0,0);background-color:rgba(255,255,255,0);border:0">` +
+        `<input id="c" style="color:transparent;background:#fff">` +
+        `<input id="d" style="color:#000;background:transparent">` +
+        `<input id="e" style="color:rgb(255,0,0);background:rgb(0,0,0)">` +
+        `<input id="f" style="color:transparent;background:transparent linear-gradient(red,blue)">` +
+        `<input id="g" type="checkbox" style="color:transparent;background:transparent">` +
+        `<textarea id="h" style="color:transparent;background:transparent"></textarea>`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+    expect(isEligible(q(r, "#b"))).toBe(false);
+    expect(isEligible(q(r, "#c"))).toBe(true);
+    expect(isEligible(q(r, "#d"))).toBe(true);
+    expect(isEligible(q(r, "#e"))).toBe(true);
+    expect(isEligible(q(r, "#f"))).toBe(true); // a background image shows the field
+    expect(isEligible(q(r, "#g"))).toBe(true); // native checkbox paints regardless of color
+    expect(isEligible(q(r, "#h"))).toBe(false);
+  });
+
+  it("aria-hidden is case- and whitespace-insensitive", () => {
+    const r = mount(
+      `<div aria-hidden="TRUE"><input></div><div aria-hidden=" true "><input id="b"></div>`,
     );
     expect(isEligible(q(r))).toBe(false);
     expect(isEligible(q(r, "#b"))).toBe(false);
@@ -310,5 +391,59 @@ describe("isEligible", () => {
       (el.getRootNode() as ShadowRoot).host.setAttribute("aria-hidden", "true");
       expect(isEligible(el)).toBe(false);
     });
+  });
+});
+
+describe("isEligible in a doctype-less (quirks mode) frame", () => {
+  async function quirksFrame(body: string): Promise<Document> {
+    const frame = document.createElement("iframe");
+    frame.style.cssText = "width:400px;height:300px;border:0";
+    // A srcdoc document is always standards mode; a same-origin blob document without a doctype is not.
+    const url = URL.createObjectURL(
+      new Blob([`<body style="margin:0">${body}</body>`], {
+        type: "text/html",
+      }),
+    );
+    frame.src = url;
+    document.body.append(frame);
+    await new Promise((resolve) => frame.addEventListener("load", resolve));
+    URL.revokeObjectURL(url);
+    const doc = frame.contentDocument as Document;
+    expect(doc.compatMode).toBe("BackCompat");
+    return doc;
+  }
+  const eligible = (doc: Document, selector: string) =>
+    isEligibleIn(q(doc, selector), doc, () => true);
+
+  it("a field below the fold is eligible", async () => {
+    const doc = await quirksFrame(
+      `<div style="height:3000px"></div><input id="a" style="height:24px">`,
+    );
+    expect(eligible(doc, "#a")).toBe(true);
+  });
+
+  it("a field partly below the fold is eligible", async () => {
+    const doc = await quirksFrame(
+      `<div style="height:290px"></div><input id="a" style="height:40px">`,
+    );
+    expect(eligible(doc, "#a")).toBe(true);
+  });
+
+  it("an in-viewport field covered by an overlay is not", async () => {
+    const doc = await quirksFrame(
+      `<input id="a" style="position:absolute;left:20px;top:20px;width:100px;height:30px">` +
+        `<div style="position:absolute;left:0;top:0;width:300px;height:200px"></div>` +
+        `<div style="height:3000px"></div>`,
+    );
+    expect(eligible(doc, "#a")).toBe(false);
+  });
+
+  it("an in-viewport uncovered field is eligible; parked right is not", async () => {
+    const doc = await quirksFrame(
+      `<input id="a" style="width:100px"><input id="b" style="position:absolute;left:9999px;top:0">` +
+        `<div style="height:3000px"></div>`,
+    );
+    expect(eligible(doc, "#a")).toBe(true);
+    expect(eligible(doc, "#b")).toBe(false);
   });
 });

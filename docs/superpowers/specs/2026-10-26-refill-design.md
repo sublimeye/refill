@@ -242,8 +242,10 @@ For each candidate control: `{ name, idStable, autocomplete, type, labelText, or
 Eligible only if: in top frame; `input` (text-like, email, tel, number, date, search, url),
 `textarea`, `select`, `checkbox`, `radio`; enabled; not readonly; visible:
 `el.checkVisibility({opacityProperty:true, visibilityProperty:true, contentVisibilityAuto:true})`,
-bounding box ≥ 4×4 px, box intersects the document's scrollable area (not parked off-canvas),
-no `inert`/`aria-hidden` ancestor, and — if currently in the viewport — `elementFromPoint` at its
+bounding box ≥ 4×4 px, box overlaps the horizontal band `[0, viewport width]` (document coordinates) and
+lies within the document's scroll height (not parked off-canvas; right-side parking is rejected),
+effective opacity ≥ 0.1 (ancestor `opacity` and `filter: opacity()` product) and not fully transparent
+text on a fully transparent background (text-entry controls), no `inert`/`aria-hidden` ancestor, and — if currently in the viewport — `elementFromPoint` at its
 center hits the element or a descendant (not covered by another element).
 Not run while `document.prerendering`; waits for `prerenderingchange`. A bfcache restore
 (`pageshow.persisted`) is treated as the same document.
@@ -423,6 +425,9 @@ are treated as hints while locked.
 
 ### 8.3 Out of scope / accepted residual risk
 - Malware with OS-level access (keyloggers, memory readers).
+- Same-origin honeypots that §5.2 does not catch: `mask-image` hiding, opaque `pointer-events:none`
+  overlays, covered fields below the fold, font-based masking. They need a hostile same-origin page,
+  which can already read filled values (next bullet); step matching limits what they can harvest.
 - Scripts on the *same* origin reading values after Refill fills them. With Auto mode this happens
   without a user action; mitigated (visible, eligible, current-step, once-per-document,
   same-origin form action) to roughly the exposure of typing it yourself. Users can set a profile
