@@ -6,7 +6,7 @@ import { expect } from "./fixtures";
 import { createVault, openOnboarding, PASSPHRASE } from "./vault-helpers";
 
 /** What the e2e service worker logs per content message (background.ts seam; never values). */
-export type LogEntry =
+export type LogEntry = { boot: string; seq: number } & (
   | {
       type: "scan-report";
       origin: string;
@@ -27,12 +27,21 @@ export type LogEntry =
       filled: number;
       skipped: number;
       unsupported: number;
-    };
+    }
+);
+
+/** A point in the log. The worker may restart mid-spec (empty log, new `boot`). */
+export interface LogMark {
+  boot: string;
+  seq: number;
+}
 
 type Seam = {
   __refillE2E: {
     saveProfile(p: unknown): Promise<void>;
     contentLog: LogEntry[];
+    boot: string;
+    replyDelayMs: number;
   };
   chrome: {
     tabs: { query(q: unknown): Promise<{ id: number; url?: string }[]> };
@@ -55,10 +64,37 @@ export async function contentLog(context: BrowserContext): Promise<LogEntry[]> {
   );
 }
 
-/** Waits for a log entry after index `since` that `pick` accepts, and returns it. */
+/** Marks the current end of the log; `entriesSince` returns what came after it. */
+export async function logMark(context: BrowserContext): Promise<LogMark> {
+  return (await serviceWorker(context)).evaluate(() => {
+    const seam = (globalThis as unknown as Seam).__refillE2E;
+    return { boot: seam.boot, seq: seam.contentLog.at(-1)?.seq ?? 0 };
+  });
+}
+
+/** Entries after `mark`, including everything a restarted worker logged since. */
+export async function entriesSince(
+  context: BrowserContext,
+  mark: LogMark,
+): Promise<LogEntry[]> {
+  return (await contentLog(context)).filter(
+    (e) => e.boot !== mark.boot || e.seq > mark.seq,
+  );
+}
+
+/** Holds every scan-report reply back by `ms` in the worker (0 = off). */
+export async function delayReplies(context: BrowserContext, ms: number) {
+  await (
+    await serviceWorker(context)
+  ).evaluate((d) => {
+    (globalThis as unknown as Seam).__refillE2E.replyDelayMs = d;
+  }, ms);
+}
+
+/** Waits for a log entry after `since` that `pick` accepts, and returns it. */
 export async function waitForEntry<T extends LogEntry["type"]>(
   context: BrowserContext,
-  since: number,
+  since: LogMark,
   type: T,
   pick: (e: Extract<LogEntry, { type: T }>) => boolean = () => true,
 ): Promise<Extract<LogEntry, { type: T }>> {
@@ -66,7 +102,7 @@ export async function waitForEntry<T extends LogEntry["type"]>(
   await expect
     .poll(
       async () => {
-        const log = (await contentLog(context)).slice(since);
+        const log = await entriesSince(context, since);
         found = log.find(
           (e): e is Extract<LogEntry, { type: T }> =>
             e.type === type && pick(e as Extract<LogEntry, { type: T }>),
@@ -135,7 +171,7 @@ export async function recordScan(
   page: Page,
   url: string,
 ): Promise<{ pathname: string; controls: ScanControl[] }> {
-  const since = (await contentLog(context)).length;
+  const since = await logMark(context);
   await page.goto(url);
   const { origin, pathname } = new URL(url);
   const entry = await waitForEntry(

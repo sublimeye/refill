@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Frame named chrome</title>
+  </head>
+  <body>
+    <h1>Billing address</h1>
+    <!-- A frame named "chrome". In the content script's world `chrome` is the global's own
+         property, so window named access does not replace it and this page still fills. -->
+    <iframe name="chrome" title="empty"></iframe>
+    <form action="/billpay/twins" method="post">
+      <p>
+        <label>Address 1 <input name="address" /></label>
+      </p>
+      <p>
+        <label>Address 2 <input name="address" /></label>
+      </p>
+      <p>
+        <label>City <input name="city" /></label>
+      </p>
+    </form>
+  </body>
+</html>

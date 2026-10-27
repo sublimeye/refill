@@ -5,7 +5,9 @@ import type { BrowserContext, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import { FIXTURE_A, FIXTURE_B } from "./fixtures-server";
 import {
-  contentLog,
+  entriesSince,
+  logMark,
+  delayReplies,
   injectAgain,
   lockVault,
   profileFrom,
@@ -61,7 +63,7 @@ test("SPA wizard: each step fills on the same URL once it appears", async ({
 
   // Record both steps: step 2 only exists after "Next", on the same URL.
   const step1 = await recordScan(context, page, url);
-  const since = (await contentLog(context)).length;
+  const since = await logMark(context);
   await page.getByRole("button", { name: "Next" }).click();
   const step2 = await waitForEntry(
     context,
@@ -105,11 +107,11 @@ test("SPA wizard: each step fills on the same URL once it appears", async ({
 
   // Back and Next re-render both steps with empty fields in the same document. The page is
   // re-scanned and reported, but every field was filled once already: nothing is filled again.
-  const before = (await contentLog(context)).length;
+  const before = await logMark(context);
   const reportsSince = async () =>
-    (await contentLog(context))
-      .slice(before)
-      .filter((e) => e.type === "scan-report").length;
+    (await entriesSince(context, before)).filter(
+      (e) => e.type === "scan-report",
+    ).length;
   await page.getByRole("button", { name: "Back" }).click();
   await expect.poll(reportsSince).toBe(1);
   await expect(page.getByLabel("Full name")).toHaveValue("");
@@ -119,9 +121,9 @@ test("SPA wizard: each step fills on the same URL once it appears", async ({
   await page.waitForTimeout(500);
   await expect(page.getByLabel("City")).toHaveValue("");
   await expect(page.getByLabel("Paperless billing")).not.toBeChecked();
-  const fills = (await contentLog(context))
-    .slice(before)
-    .filter((e) => e.type === "fill-result");
+  const fills = (await entriesSince(context, before)).filter(
+    (e) => e.type === "fill-result",
+  );
   expect(fills).toEqual([]);
 });
 
@@ -154,7 +156,7 @@ test("POST wizard: an amount the user edited and the server re-rendered is not o
   await expect(page.getByLabel("Amount")).toHaveValue("42.00");
 
   await page.getByLabel("Amount").fill("55.00");
-  const since = (await contentLog(context)).length;
+  const since = await logMark(context);
   await page.getByRole("button", { name: "Pay" }).click(); // no "authorize": validation fails
   await expect(page.getByRole("alert")).toHaveText(
     "Please authorize the payment.",
@@ -208,7 +210,7 @@ test("twins get their own values, and a second injection does not run a second s
   const { page } = await setUp(context, extensionId, [FIXTURE_A]);
   await seedTwins(context, page);
 
-  const since = (await contentLog(context)).length;
+  const since = await logMark(context);
   await page.reload();
   await expectTwinsFilled(page);
   await waitForEntry(context, since, "fill-result");
@@ -229,9 +231,9 @@ test("twins get their own values, and a second injection does not run a second s
     e.controls.some((c) => c.sig.name === "postcode"),
   );
   await page.waitForTimeout(1_000); // room for a second scanner's report to arrive
-  const reports = (await contentLog(context))
-    .slice(since)
-    .filter((e) => e.type === "scan-report");
+  const reports = (await entriesSince(context, since)).filter(
+    (e) => e.type === "scan-report",
+  );
   expect(reports).toHaveLength(2); // the load, then the one re-scan
   await expectTwinsFilled(page);
 });
@@ -277,7 +279,7 @@ test("react-select is left empty and reported unsupported", async ({
     ]),
   );
 
-  const since = (await contentLog(context)).length;
+  const since = await logMark(context);
   await page.reload();
   const result = await waitForEntry(context, since, "fill-result");
   expect(result).toMatchObject({ filled: 1, skipped: 0, unsupported: 1 });
@@ -299,7 +301,7 @@ test("a form in a cross-origin iframe is never filled", async ({
   await expectTwinsFilled(page);
 
   // The same B page framed by A: no content script in the frame, nothing filled.
-  const sinceFrame = (await contentLog(context)).length;
+  const sinceFrame = await logMark(context);
   await page.goto(`${FIXTURE_A}/billpay/iframe-host`);
   const frame = page.frameLocator('iframe[title="Payment form"]');
   await expect(frame.getByLabel("City")).toBeVisible();
@@ -315,9 +317,9 @@ test("a form in a cross-origin iframe is never filled", async ({
   }
   // Nothing from B reached the worker's handlers after the top-level visit.
   expect(
-    (await contentLog(context))
-      .slice(sinceFrame)
-      .filter((e) => e.origin === FIXTURE_B),
+    (await entriesSince(context, sinceFrame)).filter(
+      (e) => e.origin === FIXTURE_B,
+    ),
   ).toEqual([]);
 });
 
@@ -338,7 +340,7 @@ test("honeypot decoys stay empty while the visible fields fill", async ({
     ]),
   );
 
-  const since = (await contentLog(context)).length;
+  const since = await logMark(context);
   await page.reload();
   await waitForEntry(context, since, "fill-result");
   await expect(page.locator("form > p input").nth(0)).toHaveValue(
@@ -348,6 +350,55 @@ test("honeypot decoys stay empty while the visible fields fill", async ({
   const decoys = page.locator("[data-decoy]");
   await expect(decoys).toHaveCount(4);
   for (const decoy of await decoys.all()) await expect(decoy).toHaveValue("");
+});
+
+test("an input the page re-uses for another field before the plan arrives is not filled", async ({
+  context,
+  extensionId,
+  sites,
+}) => {
+  void sites;
+  const { page } = await setUp(context, extensionId, [FIXTURE_A]);
+  await seedTwins(context, page);
+
+  // Hold the worker's answer back, and turn "Address 1" into another field in place meanwhile
+  // (a framework re-using the node for the next step).
+  await delayReplies(context, 1_500);
+  const since = await logMark(context);
+  await page.reload();
+  await waitForEntry(context, since, "scan-report");
+  await page.evaluate(() => {
+    const input = document.querySelector<HTMLInputElement>("input")!;
+    input.name = "memo";
+    input.previousSibling!.textContent = "Memo ";
+  });
+  const result = await waitForEntry(context, since, "fill-result");
+  expect(result).toMatchObject({ filled: 2, skipped: 1, unsupported: 0 });
+  await expect(page.getByLabel("Memo")).toHaveValue("");
+  await expect(page.getByLabel("Address 2")).toHaveValue("Flat 2");
+  await expect(page.getByLabel("City")).toHaveValue("London");
+});
+
+// Window named access reaches the isolated world: page markup can stand in for any name the
+// global does not define itself. Chrome defines no `browser` there, so `<form id="browser">` would
+// replace WXT's `browser`; `chrome` is the global's own property and cannot be replaced.
+test("page markup named `browser` or `chrome` cannot switch Refill off", async ({
+  context,
+  extensionId,
+  sites,
+}) => {
+  void sites;
+  const { page } = await setUp(context, extensionId, [FIXTURE_A]);
+  await seedTwins(context, page);
+
+  for (const name of [
+    "clobber-browser",
+    "clobber-chrome",
+    "clobber-chrome-form",
+  ]) {
+    await page.goto(`${FIXTURE_A}/billpay/${name}`);
+    await expectTwinsFilled(page);
+  }
 });
 
 test("same origin outside the profile's path prefix (/account) is not filled", async ({
@@ -361,7 +412,7 @@ test("same origin outside the profile's path prefix (/account) is not filled", a
   await page.reload();
   await expectTwinsFilled(page); // the profile works under /billpay/
 
-  const since = (await contentLog(context)).length;
+  const since = await logMark(context);
   await page.goto(`${FIXTURE_A}/account`);
   const report = await waitForEntry(
     context,
@@ -383,14 +434,14 @@ test("locked vault fills nothing; unlock and reload fills", async ({
   await seedTwins(context, page);
   await lockVault(ext);
 
-  let since = (await contentLog(context)).length;
+  let since = await logMark(context);
   await page.reload();
   const report = await waitForEntry(context, since, "scan-report");
   expect(report.plan).toBe("locked");
   await expectTwinsEmpty(page);
 
   await unlockInPopup(context, extensionId);
-  since = (await contentLog(context)).length;
+  since = await logMark(context);
   await page.reload();
   await expectTwinsFilled(page);
   expect((await waitForEntry(context, since, "scan-report")).plan).toBe("fill");
@@ -410,7 +461,7 @@ test("after the site is removed a reload runs no content script and fills nothin
   expect(
     await sendFromPage(ext, { type: "site-remove", origin: FIXTURE_A }),
   ).toEqual({ ok: true });
-  const since = (await contentLog(context)).length;
+  const since = await logMark(context);
   await page.reload();
   await page.waitForTimeout(1_000);
   await expect(page.locator("html")).not.toHaveAttribute(
@@ -418,7 +469,7 @@ test("after the site is removed a reload runs no content script and fills nothin
     "1",
   );
   await expectTwinsEmpty(page);
-  expect((await contentLog(context)).slice(since)).toEqual([]);
+  expect(await entriesSince(context, since)).toEqual([]);
 });
 
 // No prerender spec: Chromium refuses to prerender while DevTools is attached

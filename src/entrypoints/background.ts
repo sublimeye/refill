@@ -23,15 +23,17 @@ export default defineBackground(() => {
       );
     });
   let content = createContentHandlers();
-  // E2E seam (ADR 0022, ADR 0026): lets Playwright seed a profile through `worker.evaluate` and read
-  // what content scripts reported (signatures, plan state and fill counts, never values). `MODE`
-  // is folded at build time, so the production bundle has neither the marker nor this code.
+  // E2E seam (ADR 0022, ADR 0026): lets Playwright seed a profile through `worker.evaluate`, read
+  // what content scripts reported (signatures, plan state and fill counts, never values; `boot` and
+  // `seq` order entries across a worker restart), and hold scan-report replies back to open the
+  // scan-to-fill window on purpose. `MODE` is folded at build time, so the production bundle has
+  // neither the marker nor this code.
   if (import.meta.env.MODE === "e2e") {
     const contentLog: Record<string, unknown>[] = [];
-    (globalThis as Record<string, unknown>).__refillE2E = {
-      saveProfile,
-      contentLog,
-    };
+    const boot = crypto.randomUUID();
+    let seq = 0;
+    const seam = { saveProfile, contentLog, boot, replyDelayMs: 0 };
+    (globalThis as Record<string, unknown>).__refillE2E = seam;
     const inner = content;
     const where = (ctx: ContentContext) => ({
       origin: ctx.origin,
@@ -43,6 +45,8 @@ export default defineBackground(() => {
       "scan-report": async (req, ctx) => {
         const plan = (await inner["scan-report"](req, ctx)) as FillPlan;
         contentLog.push({
+          boot,
+          seq: ++seq,
           type: req.type,
           ...where(ctx),
           controls: req.controls,
@@ -50,10 +54,13 @@ export default defineBackground(() => {
           plan: plan.state,
           items: plan.state === "fill" ? plan.items.length : 0,
         });
+        if (seam.replyDelayMs > 0) {
+          await new Promise((r) => setTimeout(r, seam.replyDelayMs));
+        }
         return plan;
       },
       "fill-result": async (req, ctx) => {
-        contentLog.push({ ...req, ...where(ctx) });
+        contentLog.push({ boot, seq: ++seq, ...req, ...where(ctx) });
         return inner["fill-result"](req, ctx);
       },
     };
