@@ -2,6 +2,7 @@
 // dependencies: this runs in the content script. Page content is hostile, so every check is bounded
 // and fails closed: anything that throws is treated as sensitive.
 
+import { getAttr, nodeType } from "./dom";
 import type { FormControl, Sig } from "./signature";
 
 const FIELD_MAX = 256;
@@ -60,7 +61,7 @@ export class PasswordHistory {
     // Flush records the observer has not delivered yet, so a toggle in the same task is not missed.
     if (this.observer !== null) this.record(this.observer.takeRecords());
     if (this.seen.has(el)) return true;
-    if (isPasswordType(el.getAttribute("type"))) {
+    if (isPasswordType(getAttr(el, "type"))) {
       this.seen.add(el);
       return true;
     }
@@ -77,8 +78,8 @@ export class PasswordHistory {
     for (const r of records) {
       if (
         isPasswordType(r.oldValue) ||
-        (r.target.nodeType === Node.ELEMENT_NODE &&
-          isPasswordType((r.target as Element).getAttribute("type")))
+        (nodeType(r.target) === Node.ELEMENT_NODE &&
+          isPasswordType(getAttr(r.target as Element, "type")))
       ) {
         this.seen.add(r.target as Element);
       }

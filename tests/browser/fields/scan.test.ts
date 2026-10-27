@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   MAX_CONTROLS,
   MAX_NODE_VISITS,
+  MAX_SIGNATURES,
   pageFingerprint,
   scanDocument,
 } from "../../../src/lib/fields/scan";
@@ -182,7 +183,7 @@ describe("scanDocument shadow roots", () => {
     const getRoot = () => {
       throw new Error("boom");
     };
-    expect(names(scan(history(), getRoot))).toContain("light");
+    expect(names(scan(history(), getRoot))).toEqual(["light"]);
   });
 });
 
@@ -264,13 +265,46 @@ describe("scanDocument limits", () => {
     expect(reads).toBe(0);
   });
 
-  it("skipped controls do not count towards the cap", () => {
+  it("ineligible and sensitive controls do not count towards the cap", () => {
     mount(
-      `<form>${'<input type="password">'.repeat(400)}${'<input name="n">'.repeat(10)}</form>`,
+      `<form>${'<input style="display:none">'.repeat(400)}` +
+        `${'<input name="otp_code">'.repeat(200)}${'<input name="n">'.repeat(10)}</form>`,
     );
     const r = scan();
     expect(r.controls).toHaveLength(10);
     expect(r.truncated).toBe(false);
+  });
+
+  it("builds at most MAX_SIGNATURES signatures, then reports truncation", () => {
+    expect(MAX_SIGNATURES).toBe(1200);
+    mount(`<form>${'<input name="otp_code">'.repeat(10_000)}</form>`);
+    const t0 = performance.now();
+    const r = scan();
+    const ms = performance.now() - t0;
+    expect(r.controls).toHaveLength(0);
+    expect(r.truncated).toBe(true);
+    expect(ms).toBeLessThan(200);
+  });
+
+  it("the signature bound also holds when every control has an id (label lookup costs O(page))", () => {
+    mount(`<form>${'<input name="otp_code" id="x">'.repeat(10_000)}</form>`);
+    const t0 = performance.now();
+    const r = scan();
+    const ms = performance.now() - t0;
+    expect(r.truncated).toBe(true);
+    expect(ms).toBeLessThan(500); // about 180 ms locally; unbounded this is seconds
+  });
+
+  it("a thousand sensitive controls before a real field still find it quickly", () => {
+    mount(
+      `<form>${'<input name="otp_code">'.repeat(1000)}<input name="real"></form>`,
+    );
+    const t0 = performance.now();
+    const r = scan();
+    const ms = performance.now() - t0;
+    expect(names(r)).toEqual(["real"]);
+    expect(r.truncated).toBe(false);
+    expect(ms).toBeLessThan(200);
   });
 
   it("2 000 inputs scan in under 50 ms (median of 5)", () => {
@@ -305,19 +339,34 @@ describe("scanDocument limits", () => {
     expect(r.controls).toHaveLength(0);
   });
 
-  it("a deep chain does not recurse", () => {
-    let node: HTMLElement = document.createElement("div");
-    document.body.append(node);
-    for (let i = 0; i < 20000; i++) {
+  it("a very deep chain does not recurse and the field after it is found", () => {
+    const top = document.createElement("div");
+    top.style.display = "none"; // keeps Chromium's own layout recursion out of the picture
+    let node: HTMLElement = top;
+    document.body.append(top);
+    for (let i = 0; i < 40_000; i++) {
       const child = document.createElement("div");
       node.append(child);
       node = child;
     }
     node.append(
-      Object.assign(document.createElement("input"), { name: "bottom" }),
+      Object.assign(document.createElement("input"), { name: "deep" }),
     );
-    // The deep input is likely ineligible (ancestor-walk cap); the point is: no stack overflow, no throw.
-    expect(() => scan()).not.toThrow();
+    document.body.append(
+      Object.assign(document.createElement("input"), { name: "after" }),
+    );
+    const r = scan();
+    // "deep" is hidden and below the ancestor-walk cap (ineligible); the walk itself got past 40 000 levels.
+    expect(names(r)).toEqual(["after"]);
+    expect(r.truncated).toBe(false);
+  });
+
+  it("does not enter template content or iframe documents", () => {
+    mount(
+      `<template><input name="in-template"></template>` +
+        `<iframe srcdoc="&lt;input name='in-frame'&gt;"></iframe><input name="top">`,
+    );
+    expect(names(scan())).toEqual(["top"]);
   });
 });
 
@@ -338,6 +387,35 @@ describe("scanDocument hostile pages", () => {
     ]);
   });
 
+  it("a hidden input named nodeType does not let a faint wrapper's field through", () => {
+    const html = (n: string) =>
+      `<div style="opacity:0.001"><form action="/a"><input type="hidden" name="${n}">` +
+      `<input name="email" autocomplete="email"></form></div>`;
+    mount(html("zz"));
+    expect(names(scan())).toEqual([]);
+    document.body.replaceChildren();
+    mount(html("nodeType"));
+    expect(names(scan())).toEqual([]);
+  });
+
+  it("the same under an aria-hidden wrapper", () => {
+    mount(
+      `<div aria-hidden="true"><form><input type="hidden" name="nodeType">` +
+        `<input name="email"></form></div>`,
+    );
+    expect(names(scan())).toEqual([]);
+  });
+
+  it("an input named parentNode inside a form inside a label terminates and the target is kept", () => {
+    mount(
+      `<label for="y">Hello <form><input type="hidden" name="parentNode"> World</form></label>` +
+        `<input id="y" name="y">`,
+    );
+    const r = scan();
+    expect(names(r)).toEqual(["y"]);
+    expect(r.controls[0]?.sig.labelText).toBe("hello world");
+  });
+
   it("a control whose properties throw is skipped, the rest are kept", () => {
     const root = mount(`<input name="a"><input name="bad"><input name="c">`);
     const bad = root.querySelector('[name="bad"]') as HTMLInputElement;
@@ -354,6 +432,117 @@ describe("scanDocument hostile pages", () => {
     doc.documentElement.remove();
     const r = scanDocument(doc, new PasswordHistory(), undefined, top);
     expect(r).toEqual({ controls: [], truncated: false });
+  });
+});
+
+const CLOBBER_NAMES = [
+  "parentNode",
+  "firstChild",
+  "nextSibling",
+  "nodeType",
+  "localName",
+  "shadowRoot",
+  "getAttribute",
+  "hasAttribute",
+  "action",
+  "labels",
+  "ownerDocument",
+  "attributes",
+  "children",
+  "elements",
+  "length",
+  "id",
+  "name",
+  "style",
+  "form",
+  "type",
+  "scrollHeight",
+  "scrollWidth",
+  "scrollTop",
+  "clientHeight",
+  "clientWidth",
+  "clientLeft",
+  "clientTop",
+  "getBoundingClientRect",
+  "getRootNode",
+  "host",
+  "contains",
+  "closest",
+  "matches",
+  "checkVisibility",
+  "isConnected",
+  "nodeValue",
+];
+
+// Each fixture is rendered with a hidden input named `n` inside every form; the verdicts must equal
+// the ones with a harmless name.
+const CLOBBER_FIXTURES: Array<(n: string) => string> = [
+  (n) =>
+    `<div style="opacity:0.001"><form action="/a"><input type="hidden" name="${n}">` +
+    `<input name="faint"></form></div>`,
+  (n) =>
+    `<div aria-hidden="true"><form><input type="hidden" name="${n}"><input name="aria"></form></div>`,
+  (n) =>
+    `<div inert><form><input type="hidden" name="${n}"><input name="inert"></form></div>`,
+  (n) =>
+    `<form action="/f?x"><input type="hidden" name="${n}"><input name="q" autocomplete="email">` +
+    `<input name="r"><input type="radio" name="g"><input type="radio" name="g"></form>`,
+  (n) =>
+    `<label for="y">Hello <form><input type="hidden" name="${n}"> World</form></label>` +
+    `<input id="y" name="y">`,
+  (n) =>
+    `<form id="lab"><input type="hidden" name="${n}">Named by form</form>` +
+    `<input name="z" aria-labelledby="lab">`,
+  (n) =>
+    `<form style="overflow:auto;height:60px;width:200px"><input type="hidden" name="${n}">` +
+    `<input name="top"><div style="height:600px"></div><input name="scrolled"></form>`,
+  (n) =>
+    `<form style="overflow:auto;height:60px;width:200px;position:absolute;left:-5000px">` +
+    `<input type="hidden" name="${n}"><input name="parked"></form>`,
+  (n) =>
+    `<div id="host"></div><form><input type="hidden" name="${n}"><input name="outer"></form>`,
+];
+
+function verdicts(): unknown[] {
+  return scan().controls.map((c) => [
+    c.el.getAttribute("name"),
+    c.kind,
+    c.sig.ordinal,
+    c.sig.formAction,
+    c.sig.labelText,
+  ]);
+}
+
+describe("scanDocument clobber sweep", () => {
+  it.each(CLOBBER_FIXTURES.map((f, i) => [i, f] as const))(
+    "fixture %i: a named form control never changes a verdict",
+    (_i, fixture) => {
+      mount(fixture("zz"));
+      const baseline = verdicts();
+      document.body.replaceChildren();
+      for (const name of CLOBBER_NAMES) {
+        mount(fixture(name));
+        expect(verdicts(), name).toEqual(baseline);
+        document.body.replaceChildren();
+      }
+    },
+  );
+
+  it("baselines are not vacuous", () => {
+    const sizes = CLOBBER_FIXTURES.map((fixture) => {
+      mount(fixture("zz"));
+      const n = verdicts().length;
+      document.body.replaceChildren();
+      return n;
+    });
+    // faint, aria-hidden and inert fixtures keep nothing; the others keep something.
+    expect(sizes.slice(0, 3)).toEqual([0, 0, 0]);
+    expect(sizes[3]).toBe(4);
+    expect(sizes[4]).toBe(1);
+    expect(sizes[5]).toBe(1);
+    expect(sizes[6]).toBeGreaterThan(0);
+    expect(sizes[7]).toBe(0);
+    expect(sizes[8]).toBe(1);
   });
 });
 

@@ -2,6 +2,15 @@
 // modules: this runs in the content script. Page content is hostile, so the walk is iterative,
 // bounded in node visits and in kept controls, and never throws.
 
+import {
+  firstChild,
+  getAttr,
+  hasAttr,
+  localName,
+  nextSibling,
+  nodeType,
+  shadowRoot as ownShadowRoot,
+} from "./dom";
 import { controlKind, isEligible, type ControlKind } from "./eligibility";
 import { isSensitive, type PasswordHistory } from "./sensitive";
 import { buildSignature, type FormControl, type Sig } from "./signature";
@@ -11,6 +20,13 @@ import { sigKey } from "../match/match";
 export const MAX_CONTROLS = 300;
 /** Upper bound on nodes (elements, text, comments) the walk will look at. */
 export const MAX_NODE_VISITS = 50_000;
+
+/**
+ * Upper bound on `buildSignature` calls per scan. Eligible-but-sensitive controls build a signature
+ * before they are rejected and do not count as kept, and a signature costs O(page) (`el.labels`), so
+ * without this bound a page of N such controls costs O(N^2).
+ */
+export const MAX_SIGNATURES = 4 * MAX_CONTROLS;
 
 export interface ScannedControl {
   i: number;
@@ -23,26 +39,6 @@ export interface ScanResult {
   controls: ScannedControl[];
   truncated: boolean;
 }
-
-// A <form> exposes its named controls as properties that override its own (LegacyOverrideBuiltIns):
-// `<form><input name="firstChild">` makes `form.firstChild` that input. Everything the walk and the
-// form lookup read off a page node therefore goes through the prototype accessors, captured once.
-function getter<T>(proto: object, prop: string): (node: object) => T {
-  const get = Object.getOwnPropertyDescriptor(proto, prop)?.get;
-  if (get === undefined) throw new Error(`missing accessor ${prop}`);
-  return (node) => get.call(node) as T;
-}
-const nodeType = getter<number>(Node.prototype, "nodeType");
-const firstChild = getter<Node | null>(Node.prototype, "firstChild");
-const nextSibling = getter<Node | null>(Node.prototype, "nextSibling");
-const ownShadowRoot = getter<ShadowRoot | null>(
-  Element.prototype,
-  "shadowRoot",
-);
-const hasAttr = (el: Element, name: string): boolean =>
-  Element.prototype.hasAttribute.call(el, name);
-const getAttr = (el: Element, name: string): string | null =>
-  Element.prototype.getAttribute.call(el, name);
 
 /**
  * Path of the form's submit target: the explicit `action` resolved against the document's base,
@@ -70,11 +66,36 @@ function kindOf(el: Element): ControlKind | null {
   }
 }
 
+// Elements `attachShadow` accepts (custom elements, named by a dash, are the other kind). Asking any
+// other element for its shadow root is wasted work, and for closed roots it is an extension call.
+const SHADOW_HOSTS = new Set([
+  "article",
+  "aside",
+  "blockquote",
+  "body",
+  "div",
+  "footer",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "main",
+  "nav",
+  "p",
+  "section",
+  "span",
+]);
+
 function shadowRootOf(
   el: Element,
   getRoot: ((el: Element) => ShadowRoot | null) | undefined,
 ): ShadowRoot | null {
   try {
+    const name = localName(el);
+    if (!SHADOW_HOSTS.has(name) && !name.includes("-")) return null;
     return (getRoot?.(el) ?? null) || ownShadowRoot(el);
   } catch {
     return null;
@@ -89,7 +110,8 @@ function shadowRootOf(
  * Cost control, in order per element: `controlKind` (cheap, non-null) then `isEligible` then
  * `buildSignature` then `isSensitive`. After `MAX_CONTROLS` kept controls the first further
  * candidate (any element with a control kind, no eligibility or signature work) sets `truncated`
- * and ends the walk; `MAX_NODE_VISITS` bounds the walk itself and sets `truncated` when hit.
+ * and ends the walk; `MAX_SIGNATURES` bounds signatures built for eligible controls that turn out
+ * sensitive; `MAX_NODE_VISITS` bounds the walk itself. Each sets `truncated` when hit.
  *
  * `history` must be the document's `PasswordHistory`; every shadow root entered is added to it
  * (`observeShadow`) before its controls are judged, so the caller needs no per-root bookkeeping.
@@ -113,6 +135,7 @@ export function scanDocument(
     const resume: (Node | null)[] = [];
     let node: Node | null = doc.documentElement;
     let visits = 0;
+    let signatures = 0;
     while (node !== null || resume.length > 0) {
       if (node === null) {
         node = resume.pop() ?? null;
@@ -132,7 +155,10 @@ export function scanDocument(
             truncated = true;
             break;
           }
-          keep(el as FormControl, kind);
+          if (!keep(el as FormControl, kind)) {
+            truncated = true;
+            break;
+          }
         }
         const shadow = shadowRootOf(el, openOrClosedShadowRoot);
         const light = firstChild(el);
@@ -148,18 +174,22 @@ export function scanDocument(
       node = next;
     }
 
-    function keep(el: FormControl, kind: ControlKind): void {
+    // False when the signature budget is spent and the walk must stop.
+    function keep(el: FormControl, kind: ControlKind): boolean {
       try {
-        if (!isEligible(el, doc, isTopWindow)) return;
+        if (!isEligible(el, doc, isTopWindow)) return true;
+        if (signatures >= MAX_SIGNATURES) return false;
+        signatures++;
         const form = el.form;
         const ordinal = ordinals.get(form) ?? 0;
         const sig = buildSignature(el, ordinal, formActionOf(form, doc));
-        if (isSensitive(el, sig, history)) return;
+        if (isSensitive(el, sig, history)) return true;
         ordinals.set(form, ordinal + 1);
         controls.push({ i: controls.length, el, sig, kind });
       } catch {
         // A page-controlled getter threw: skip this control.
       }
+      return true;
     }
   } catch {
     truncated = true;
