@@ -224,6 +224,15 @@ describe("isEligible", () => {
     expect(isEligible(q(r, "#h"))).toBe(false);
   });
 
+  it("transparent text is allowed on date inputs (hidden mm/dd/yyyy placeholder)", () => {
+    const r = mount(
+      `<input type="date" style="color:transparent;background:transparent;border:1px solid #888">` +
+        `<input id="b" type="text" style="color:transparent;background:transparent;border:1px solid #888">`,
+    );
+    expect(isEligible(q(r))).toBe(true);
+    expect(isEligible(q(r, "#b"))).toBe(false);
+  });
+
   it("aria-hidden is case- and whitespace-insensitive", () => {
     const r = mount(
       `<div aria-hidden="TRUE"><input></div><div aria-hidden=" true "><input id="b"></div>`,
@@ -445,5 +454,232 @@ describe("isEligible in a doctype-less (quirks mode) frame", () => {
     );
     expect(eligible(doc, "#a")).toBe(true);
     expect(eligible(doc, "#b")).toBe(false);
+  });
+});
+
+describe("isEligible in a doctype-less frame without a scrolling element", () => {
+  it("uses the window size for the viewport (html,body overflow-x hidden)", async () => {
+    const frame = document.createElement("iframe");
+    frame.style.cssText = "width:400px;height:300px;border:0";
+    const url = URL.createObjectURL(
+      new Blob(
+        [
+          `<style>html,body{overflow-x:hidden}</style><body style="margin:0">` +
+            `<div style="height:3000px"></div><input id="a" style="height:24px">` +
+            `<input id="b" style="position:absolute;left:20px;top:20px;width:100px;height:30px">` +
+            `<div style="position:absolute;left:0;top:0;width:300px;height:200px"></div></body>`,
+        ],
+        { type: "text/html" },
+      ),
+    );
+    frame.src = url;
+    document.body.append(frame);
+    await new Promise((resolve) => frame.addEventListener("load", resolve));
+    URL.revokeObjectURL(url);
+    const doc = frame.contentDocument as Document;
+    expect(doc.compatMode).toBe("BackCompat");
+    expect(doc.scrollingElement).toBeNull();
+    expect(isEligibleIn(q(doc, "#a"), doc, () => true)).toBe(true);
+    expect(isEligibleIn(q(doc, "#b"), doc, () => true)).toBe(false); // covered
+  });
+});
+
+describe("isEligible inside scroll containers (app shell)", () => {
+  const CSS =
+    "html,body{height:100%;margin:0;overflow:hidden}" +
+    "#app{height:100%;overflow:auto;position:relative}";
+  let style: HTMLStyleElement | null = null;
+  afterEach(() => {
+    style?.remove();
+    style = null;
+  });
+  function shell(inner: string): HTMLElement {
+    style = document.createElement("style");
+    style.textContent = CSS;
+    document.head.append(style);
+    const app = document.createElement("div");
+    app.id = "app";
+    app.innerHTML = inner; // test-only fixture markup
+    document.body.append(app);
+    return app;
+  }
+
+  it("a field three screens down inside the app scroller is eligible", () => {
+    const r = shell(
+      `<div style="height:${window.innerHeight * 3}px"></div><input id="a"><div style="height:200px"></div>`,
+    );
+    const app = r;
+    expect(app.scrollHeight).toBeGreaterThan(app.clientHeight);
+    expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(
+      window.innerHeight,
+    );
+    expect(isEligible(q(r, "#a"))).toBe(true);
+  });
+
+  it("a field in view inside the scroller is eligible and hit-tested", () => {
+    const r = shell(
+      `<input id="a" style="position:absolute;left:10px;top:10px;width:100px;height:30px">` +
+        `<div style="position:absolute;left:0;top:0;width:200px;height:100px"></div>` +
+        `<div style="height:150px"></div><input id="b" style="width:80px"><div style="height:${window.innerHeight * 2}px"></div>`,
+    );
+    expect(isEligible(q(r, "#a"))).toBe(false); // covered
+    expect(isEligible(q(r, "#b"))).toBe(true);
+  });
+
+  it("a field scrolled down in the container stays eligible after scrolling", () => {
+    const r = shell(
+      `<div style="height:${window.innerHeight * 3}px"></div><input id="a" style="width:100px">`,
+    );
+    const app = r;
+    app.scrollTop = app.scrollHeight;
+    expect(isEligible(q(r, "#a"))).toBe(true);
+  });
+
+  it("parked right inside the container is ineligible", () => {
+    const r = shell(
+      `<input id="a" style="position:absolute;left:9999px;top:10px"><div style="height:${window.innerHeight * 2}px"></div>`,
+    );
+    expect(isEligible(q(r, "#a"))).toBe(false);
+  });
+
+  it("parked above inside the container is ineligible", () => {
+    const r = shell(
+      `<input id="a" style="position:absolute;left:10px;top:-9999px"><div style="height:${window.innerHeight * 2}px"></div>`,
+    );
+    expect(isEligible(q(r, "#a"))).toBe(false);
+  });
+
+  it("parked left inside the container is ineligible", () => {
+    const r = shell(
+      `<input id="a" style="position:absolute;left:-9999px;top:10px"><div style="height:${window.innerHeight * 2}px"></div>`,
+    );
+    expect(isEligible(q(r, "#a"))).toBe(false);
+  });
+
+  it("a decoy inside a small scroller that is itself parked right is ineligible", () => {
+    const r = mount(
+      `<div style="position:absolute;left:9999px;top:0;width:100px;height:100px;overflow:auto">` +
+        `<input id="a" style="position:absolute;left:5px;top:5px"><div style="height:500px"></div></div>`,
+    );
+    expect(isEligible(q(r, "#a"))).toBe(false);
+  });
+
+  it("a field partly clipped by its container is hit-tested at the clipped center", () => {
+    const r = mount(
+      `<div style="width:200px;height:80px;overflow:auto;position:relative">` +
+        `<input id="a" style="position:absolute;left:150px;top:10px;width:100px;height:30px">` +
+        `<div style="height:500px"></div></div>`,
+    );
+    expect(isEligible(q(r, "#a"))).toBe(true);
+  });
+
+  it("a field scrolled out of view horizontally inside a carousel container is ineligible", () => {
+    const r = mount(
+      `<div style="width:200px;height:60px;overflow:auto;position:relative">` +
+        `<div style="width:3000px;height:30px"><input id="a" style="position:absolute;left:2000px;top:5px"></div></div>`,
+    );
+    expect(isEligible(q(r, "#a"))).toBe(false);
+  });
+});
+
+describe("custom-styled checkbox and radio (label proxy)", () => {
+  const PATTERN = (attrs: string, labelStyle = "") =>
+    `<label style="${labelStyle}"><input ${attrs} style="opacity:0;position:absolute">` +
+    `<span style="display:inline-block;width:16px;height:16px;border:1px solid #333"></span> Agree</label>`;
+
+  it("opacity:0 input inside a visible label is eligible", () => {
+    const r = mount(
+      PATTERN('type="checkbox"') + PATTERN('type="radio" id="b"'),
+    );
+    expect(isEligible(q(r))).toBe(true);
+    expect(isEligible(q(r, "#b"))).toBe(true);
+  });
+
+  it("label[for] association works", () => {
+    const r = mount(
+      `<input type="checkbox" id="c" style="opacity:0;position:absolute"><label for="c">Agree</label>`,
+    );
+    expect(isEligible(q(r))).toBe(true);
+  });
+
+  it("the same input with no label is ineligible", () => {
+    const r = mount(`<input type="checkbox" style="opacity:0">`);
+    expect(isEligible(q(r))).toBe(false);
+  });
+
+  it("a hidden label does not help", () => {
+    for (const style of [
+      "display:none",
+      "visibility:hidden",
+      "opacity:0",
+      "position:absolute;left:-9999px",
+      "position:absolute;left:9999px",
+    ]) {
+      const r = mount(PATTERN('type="checkbox"', style));
+      expect(isEligible(q(r)), style).toBe(false);
+      r.remove();
+    }
+  });
+
+  it("a tiny label does not help", () => {
+    const r = mount(
+      `<input type="checkbox" id="c" style="opacity:0"><label for="c" style="display:block;width:2px;height:2px;overflow:hidden"></label>`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+  });
+
+  it("a label under an aria-hidden or faint ancestor does not help", () => {
+    const r = mount(
+      `<div aria-hidden="true">${PATTERN('type="checkbox"')}</div>` +
+        `<div style="opacity:0.05">${PATTERN('type="checkbox" id="b"')}</div>`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+    expect(isEligible(q(r, "#b"))).toBe(false);
+  });
+
+  it("1x1 sr-only style checkbox with a visible label is eligible", () => {
+    const r = mount(
+      `<input type="checkbox" id="c" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)"><label for="c">Agree</label>`,
+    );
+    expect(isEligible(q(r))).toBe(true);
+  });
+
+  it("a checkbox covered by its own styled sibling is eligible through the label", () => {
+    const r = mount(
+      `<label style="position:relative"><input type="checkbox" style="width:16px;height:16px">` +
+        `<span style="position:absolute;left:0;top:0;width:100%;height:100%;background:#eee"></span> Agree</label>`,
+    );
+    expect(isEligible(q(r))).toBe(true);
+  });
+
+  it("display:none, disabled and aria-hidden controls are still ineligible even with a label", () => {
+    const r = mount(
+      `<label><input type="checkbox" style="display:none">A</label>` +
+        `<label><input type="checkbox" id="b" disabled style="opacity:0">B</label>` +
+        `<label aria-hidden="true"><input type="checkbox" id="c" style="opacity:0">C</label>` +
+        `<label><input type="checkbox" id="d" style="visibility:hidden">D</label>`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+    expect(isEligible(q(r, "#b"))).toBe(false);
+    expect(isEligible(q(r, "#c"))).toBe(false);
+    expect(isEligible(q(r, "#d"))).toBe(false);
+  });
+
+  it("a parked checkbox stays ineligible even with a visible label", () => {
+    const r = mount(
+      `<input type="checkbox" id="c" style="position:absolute;left:9999px"><label for="c">Agree</label>`,
+    );
+    expect(isEligible(q(r))).toBe(false);
+  });
+
+  it("selects and text inputs stay strict", () => {
+    const r = mount(
+      `<label for="s">Pick</label><select id="s" style="opacity:0"><option>a</option></select>` +
+        `<label for="t">Name</label><input id="t" style="opacity:0">` +
+        `<label for="u">Name</label><input id="u" style="box-sizing:border-box;border:0;padding:0;width:2px;height:2px">`,
+    );
+    expect(isEligible(q(r, "#s"))).toBe(false);
+    expect(isEligible(q(r, "#t"))).toBe(false);
+    expect(isEligible(q(r, "#u"))).toBe(false);
   });
 });

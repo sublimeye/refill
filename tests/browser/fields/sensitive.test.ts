@@ -271,6 +271,11 @@ describe("isSensitive: name / id / label words", () => {
       "Verify code",
       "Code",
       "PIN code",
+      "Enter code",
+      "Enter your code",
+      "Enter the code",
+      "We sent a code to your phone",
+      "Verification code",
       "Card no.",
     ]) {
       expect(sensitive(`<label>${label} <input name="f"></label>`), label).toBe(
@@ -296,6 +301,10 @@ describe("isSensitive: name / id / label words", () => {
       "Referral code",
       "5-digit ZIP code",
       "Routing number",
+      "Enter promo code",
+      "Enter your promo code",
+      "Enter your zip code",
+      "Enter coupon code",
       "ZIP code",
       "Postal code",
       "Promo code",

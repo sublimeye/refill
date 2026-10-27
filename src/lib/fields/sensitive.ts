@@ -83,7 +83,7 @@ const AUTOCOMPLETE_SENSITIVE = new Set([
 //   - `token` / `tokens` may be the end of a word (`accesstoken`) but not the start of one, so
 //     "tokenized" does not hit. `otp` may start a word (`otpcode`).
 //   - `code` is sensitive only after an allow-listed qualifier (an OTP or CVV code), as the bare name
-//     `code` / `otc`, or in the labels "6-digit code" / "code we sent". `zip`, `postal`, `promo`,
+//     `code` / `otc`, or in the labels "6-digit code" / "code we sent" / "we sent a code" / "enter (your) code". `zip`, `postal`, `promo`,
 //     `coupon`, `area`, `country`, `discount`, `referral` codes stay capturable. `confirmation code`
 //     is included: it is the emailed sign-up code; `confirm code` is not (ambiguous).
 // All patterns are alternations of literals and bounded classes: linear on a <= 256 char input.
@@ -94,7 +94,7 @@ const WORD_RE = new RegExp(
     "|\\botp|tokens?\\b" +
     "|\\b(?:social security|recovery phrase|card ?(?:number|num|no)|cc ?num(?:ber)?)\\b" +
     `|\\b(?:${CODE_QUALIFIER}) ?code\\b` +
-    "|\\b\\d ?digits? code\\b|\\bcode (?:we )?sent\\b",
+    "|\\b\\d ?digits? code\\b|\\bcode (?:we )?sent\\b|\\b(?:we )?sent (?:you )?a code\\b|\\benter (?:your |the )?code\\b",
 );
 const BARE_CODE_RE = /^(?:code|otc)$/;
 // Unambiguous long forms are also matched in the separator-free form, so `confirmpassword`,
