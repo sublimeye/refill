@@ -19,6 +19,8 @@ export default defineConfig({
     minimum_chrome_version: "127",
     permissions: ["storage", "activeTab", "scripting", "alarms", "idle"],
     optional_host_permissions: ["https://*/*"],
+    // ADR 0017: only the e2e build pre-grants the fixture origins, so specs need no permission prompt.
+    ...(mode === "e2e" ? { host_permissions: ["https://localhost/*"] } : {}),
     externally_connectable: { ids: [], matches: [] },
     content_security_policy: {
       extension_pages: mode === "development" ? DEV_CSP : PROD_CSP,

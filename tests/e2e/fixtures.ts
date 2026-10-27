@@ -9,8 +9,10 @@ import {
   type Worker,
 } from "@playwright/test";
 import { EXTENSION_ID } from "../../src/manifest-key";
+import { startFixtureServers } from "./fixtures-server";
 
-const EXTENSION_PATH = resolve(".output/chrome-mv3");
+// The e2e build (`pnpm build:e2e`, ADR 0017): production code plus pre-granted fixture hosts.
+const EXTENSION_PATH = resolve(".output/chrome-mv3-e2e");
 
 /**
  * An unattended machine (a dev box, a CI runner) is "idle" to Chrome, which then sends one
@@ -47,11 +49,27 @@ async function settleIdle(worker: Worker): Promise<void> {
  * Shared e2e fixtures: a fresh persistent Chromium profile per test with the built extension
  * loaded, and the extension ID read from its service worker URL (asserted against the pinned ID).
  */
-export const test = base.extend<{
-  context: BrowserContext;
-  extensionId: string;
-  cspViolations: string[];
-}>({
+export const test = base.extend<
+  {
+    context: BrowserContext;
+    extensionId: string;
+    cspViolations: string[];
+  },
+  { sites: { close(): Promise<void> } }
+>({
+  // Worker-scoped: the two https fixture origins (FIXTURE_A, FIXTURE_B) for specs that need them.
+  sites: [
+    // eslint-disable-next-line no-empty-pattern -- Playwright requires a destructuring pattern here.
+    async ({}, use) => {
+      const servers = await startFixtureServers();
+      try {
+        await use(servers);
+      } finally {
+        await servers.close();
+      }
+    },
+    { scope: "worker" },
+  ],
   // ADR 0016: every test also asserts that no page logged a CSP violation. Violations arrive as
   // console errors ("Refused to ...") and as `securitypolicyviolation` events, which the init
   // script re-logs under a marker. A test that provokes one on purpose must splice it out.
@@ -86,6 +104,7 @@ export const test = base.extend<{
     const context = await chromium.launchPersistentContext(userDataDir, {
       channel: "chromium",
       headless: true,
+      ignoreHTTPSErrors: true, // the fixture origins use a per-run self-signed certificate
       args: [
         `--disable-extensions-except=${EXTENSION_PATH}`,
         `--load-extension=${EXTENSION_PATH}`,

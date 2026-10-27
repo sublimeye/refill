@@ -60,6 +60,10 @@ jobs:
       - name: Built output has no network APIs
         run: pnpm check:built-network
 
+      # ADR 0017: e2e-only seams (every identifier contains __refillE2E) must be absent from the shipped build.
+      - name: Production build has no e2e seams
+        run: node scripts/check-no-seams.mjs .output/chrome-mv3
+
       # scripts/semgrep.sh runs the digest-pinned image (ADR 0005). selftest proves the rules
       # still bite (rule tests + path include/exclude); scan is the gate (ADR 0006).
       - name: Semgrep rule self-test
@@ -82,9 +86,10 @@ jobs:
         timeout-minutes: 5
         run: pnpm exec playwright install chromium
 
+      # ADR 0017: e2e runs against the e2e build (production code plus pre-granted fixture hosts).
       - name: Build extension for e2e
         timeout-minutes: 5
-        run: pnpm build
+        run: pnpm build:e2e
 
       - name: Playwright e2e
         timeout-minutes: 8

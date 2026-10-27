@@ -20,3 +20,4 @@ Each ADR has Context / Decision / Consequences / Status. Add a new `NNNN-<slug>.
 | [0014](0014-messaging-router.md) | Messaging router (sendResponse listener, generic rejections, strict parsing, `sendToSw` errors) | Accepted |
 | [0015](0015-onboarding-popup-and-e2e-harness.md) | Onboarding, popup, e2e harness (zxcvbn only in onboarding, shared length rule, create-before-calibrate, idle settle in fixture) | Accepted |
 | [0016](0016-extension-page-csp-default-src-none.md) | Extension-page CSP `default-src 'none'`, modulepreload polyfill off, built-output network gate | Accepted |
+| [0017](0017-e2e-https-fixture-origins-and-e2e-build-mode.md) | E2E HTTPS fixture origins and e2e build mode (self-signed https, pre-granted fixture hosts only in e2e, seam guard) | Accepted |
