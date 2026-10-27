@@ -29,3 +29,4 @@ Each ADR has Context / Decision / Consequences / Status. Add a new `NNNN-<slug>.
 | [0023](0023-document-scanner.md) | Document scanner (bounded iterative walk, cap before signatures, shadow roots joined to the password history) | Accepted |
 | [0024](0024-fill-engine.md) | Fill engine (captured prototypes, guard depth counter, insertText fallback, widgets, React/Vue build gate) | Accepted |
 | [0025](0025-content-protocol-and-fill-plan.md) | Content protocol and fill plan (sender authorization order, exact-origin record, all-policy matching, zero fillable = none, lock-epoch re-check, `touchLastUsed` compare-and-set) | Accepted |
+| [0026](0026-content-script-runtime.md) | Content-script runtime and fixture e2e suite (isolated-world start guard, checked `chrome` capture, mutation/shadow/scrollend re-scan with max wait, vet-then-fill with signature re-check, profiles built from real scans, prerender untestable under DevTools) | Accepted |

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Clobbered browser</title>
+  </head>
+  <body>
+    <h1>Billing address</h1>
+    <!-- Window named access makes `browser.runtime` this hidden input on a fresh load, also in
+         the content script's isolated world. Refill reads only `chrome`, so this page fills. -->
+    <form id="browser"><input type="hidden" name="runtime" id="x" /></form>
+    <form action="/billpay/twins" method="post">
+      <p>
+        <label>Address 1 <input name="address" /></label>
+      </p>
+      <p>
+        <label>Address 2 <input name="address" /></label>
+      </p>
+      <p>
+        <label>City <input name="city" /></label>
+      </p>
+    </form>
+  </body>
+</html>

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Random ids</title>
+  </head>
+  <body>
+    <h1>Pay your water bill</h1>
+    <!-- random-ids.js gives every field a fresh random name and id on each load. -->
+    <form action="/billpay/random-ids" method="post">
+      <p><label data-for="payee">Payee</label> <input data-field="payee" /></p>
+      <p>
+        <label data-for="amount">Amount</label> <input data-field="amount" />
+      </p>
+    </form>
+    <!-- Formless and labelled only by its placeholder: too little evidence to match. -->
+    <p><input data-field="reference" placeholder="Reference" /></p>
+    <script src="random-ids.js"></script>
+  </body>
+</html>

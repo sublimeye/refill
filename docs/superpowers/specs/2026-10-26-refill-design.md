@@ -307,8 +307,9 @@ Not run while `document.prerendering`; waits for `prerenderingchange`. A bfcache
 - **Matching runs in the SW**: the content script sends a `scan-report` (signatures only, no
   values); the SW returns values **only for controls it matched on this page**, never the whole
   profile or other steps' values.
-- SPA wizards: a debounced (250 ms) MutationObserver re-scans; each saved field is filled **at most
-  once per document**.
+- SPA wizards: a debounced (250 ms, at most 1 s after the first change) MutationObserver re-scans,
+  also on `scrollend` (eligibility depends on scroll position); a scan is reported only when the
+  page fingerprint changed; each saved field is filled **at most once per document** (ADR 0026).
 
 ### 5.5 Fill rules (security mitigations, §8)
 Fill a control only if: vault unlocked; profile `fillMode` allows (auto, or user pressed Fill now);
@@ -451,6 +452,10 @@ are treated as hints while locked.
   overlays, covered fields (and covered labels of custom checkbox/radio controls) below the fold,
   font-based masking. They need a hostile same-origin page,
   which can already read filled values (next bullet); step matching limits what they can harvest.
+- A page disabling Refill on itself: window named access reaches the content script's isolated
+  world, so markup such as `<form id="chrome">` replaces the extension API there on a fresh load;
+  Refill then does nothing on that page (fails closed, never calls page objects). A page can
+  equally hide its fields from the scanner, so this grants it nothing new (ADR 0026).
 - Scripts on the *same* origin reading values after Refill fills them. With Auto mode this happens
   without a user action; mitigated (visible, eligible, current-step, once-per-document,
   same-origin form action) to roughly the exposure of typing it yourself. Users can set a profile

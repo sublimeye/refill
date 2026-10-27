@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>POST wizard</title>
+  </head>
+  <body>
+    <h1>Pay your water bill</h1>
+    <!-- Rendered by the fixture server: a POST without "authorize" re-renders the posted values. -->
+    <form action="/billpay/post-wizard" method="post">
+      <p role="alert">{{error}}</p>
+      <p>
+        <label>Payee <input name="payee" value="{{payee}}" /></label>
+      </p>
+      <p>
+        <label
+          >Account number <input name="account" value="{{account}}"
+        /></label>
+      </p>
+      <p>
+        <label>Amount <input name="amount" value="{{amount}}" /></label>
+      </p>
+      <p>
+        <label
+          ><input type="checkbox" name="authorize" /> I authorize this
+          payment</label
+        >
+      </p>
+      <button>Pay</button>
+    </form>
+  </body>
+</html>
