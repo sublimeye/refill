@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, type Server } from "node:https";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
@@ -62,6 +63,91 @@ function listen(server: Server, port: number): Promise<void> {
   });
 }
 
+/** Pages live under `/billpay/` (the e2e profiles' path prefix); `/account` is outside it. */
+const BILLPAY = /^\/billpay(?=\/)/;
+
+/**
+ * URL path to a file under `SITES_DIR`: the `/billpay` segment is dropped and an extensionless
+ * path gets `.html` (`/billpay/twins` and `/account` are `twins.html` and `account.html`; a
+ * relative `twins.js` on that page is `/billpay/twins.js`, so `twins.js`). Null when the path
+ * leaves `SITES_DIR`.
+ */
+function fileFor(pathname: string): string | null {
+  let rel = normalize(pathname.replace(BILLPAY, ""));
+  if (rel !== sep && rel !== "/" && extname(rel) === "") rel += ".html";
+  const file = resolve(SITES_DIR, "." + rel);
+  return file === SITES_DIR || file.startsWith(SITES_DIR + sep) ? file : null;
+}
+
+const MAX_BODY = 64 * 1024;
+
+/** The urlencoded body of a POST (at most 64 KiB), or null for any other method. */
+async function postedFields(
+  req: IncomingMessage,
+): Promise<Map<string, string> | null> {
+  if (req.method !== "POST") return null;
+  let body = "";
+  for await (const chunk of req) {
+    body += String(chunk);
+    if (body.length > MAX_BODY) throw new Error("body too large");
+  }
+  return new Map(new URLSearchParams(body));
+}
+
+const escapeHtml = (s: string): string =>
+  s
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+/**
+ * Server-side rendering for HTML fixtures: `{{name}}` becomes the escaped posted value of `name`
+ * (empty on GET), the way a server framework re-renders a form after failed validation. A POST
+ * without an `authorize` field fails validation: `{{error}}` becomes the error text.
+ */
+function render(html: string, posted: Map<string, string> | null): string {
+  return html.replace(/\{\{(\w+)\}\}/g, (_, key: string) => {
+    if (key === "error") {
+      return posted !== null && !posted.has("authorize")
+        ? "Please authorize the payment."
+        : "";
+    }
+    return escapeHtml(posted?.get(key) ?? "");
+  });
+}
+
+async function serve(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    let file = fileFor(
+      decodeURIComponent(new URL(req.url ?? "/", "https://localhost").pathname),
+    );
+    if (file === null) {
+      res.writeHead(403).end();
+      return;
+    }
+    if ((await stat(file)).isDirectory()) file = join(file, "index.html");
+    const posted = await postedFields(req);
+    const type = TYPES[extname(file)] ?? "application/octet-stream";
+    const headers = { "content-type": type, "cache-control": "no-store" };
+    if (extname(file) === ".html") {
+      const html = render(await readFile(file, "utf8"), posted);
+      res.writeHead(200, headers).end(html);
+      return;
+    }
+    if (posted !== null) {
+      res.writeHead(405).end();
+      return;
+    }
+    res.writeHead(200, headers);
+    createReadStream(file).pipe(res);
+  } catch {
+    if (!res.headersSent) res.writeHead(404);
+    res.end();
+  }
+}
+
 /** Serves `tests/e2e/sites/` over https on both fixture ports. */
 export async function startFixtureServers(): Promise<{
   close(): Promise<void>;
@@ -78,28 +164,7 @@ export async function startFixtureServers(): Promise<{
     const tls = await makeCertificate(dir);
     for (const port of PORTS) {
       const server = createServer(tls, (req, res) => {
-        void (async () => {
-          try {
-            const pathname = decodeURIComponent(
-              new URL(req.url ?? "/", "https://localhost").pathname,
-            );
-            let file = resolve(SITES_DIR, "." + normalize(pathname));
-            if (file !== SITES_DIR && !file.startsWith(SITES_DIR + sep)) {
-              res.writeHead(403).end();
-              return;
-            }
-            if ((await stat(file)).isDirectory())
-              file = join(file, "index.html");
-            res.writeHead(200, {
-              "content-type":
-                TYPES[extname(file)] ?? "application/octet-stream",
-              "cache-control": "no-store",
-            });
-            createReadStream(file).pipe(res);
-          } catch {
-            res.writeHead(404).end();
-          }
-        })();
+        void serve(req, res);
       });
       servers.push(server);
       await listen(server, port);

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Account</title>
+  </head>
+  <body>
+    <h1>Account settings</h1>
+    <!-- Served at /account: same origin as the bill pages, outside the profile's /billpay/ prefix.
+         The fields are the twins page's, so only the path rule keeps them from filling. -->
+    <form action="/account" method="post">
+      <p>
+        <label>Address 1 <input name="address" /></label>
+      </p>
+      <p>
+        <label>Address 2 <input name="address" /></label>
+      </p>
+      <p>
+        <label>City <input name="city" /></label>
+      </p>
+    </form>
+  </body>
+</html>

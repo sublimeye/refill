@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>React select</title>
+  </head>
+  <body>
+    <h1>Service address</h1>
+    <form action="/billpay/react-select" method="post">
+      <p>
+        <label>Name <input name="name" /></label>
+      </p>
+      <!-- The markup react-select renders: a combobox text input, a listbox, a hidden value input. -->
+      <div class="select">
+        <label id="state-label" for="react-select-3-input">State</label>
+        <div class="select__control">
+          <div class="select__placeholder" id="react-select-3-placeholder">
+            Select…
+          </div>
+          <input
+            id="react-select-3-input"
+            type="text"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded="false"
+            aria-haspopup="true"
+            aria-controls="react-select-3-listbox"
+            aria-labelledby="state-label"
+            aria-describedby="react-select-3-placeholder"
+            autocomplete="off"
+            value=""
+          />
+        </div>
+        <div id="react-select-3-listbox" role="listbox" hidden>
+          <div role="option" data-value="CA">California</div>
+          <div role="option" data-value="NY">New York</div>
+        </div>
+        <input type="hidden" name="state" value="" />
+      </div>
+    </form>
+    <script src="react-select.js"></script>
+  </body>
+</html>

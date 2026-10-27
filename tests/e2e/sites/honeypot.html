@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Honeypot</title>
+  </head>
+  <body>
+    <h1>Pay your water bill</h1>
+    <form action="/billpay/honeypot" method="post" style="position: relative">
+      <p>
+        <label>Name <input name="name" /></label>
+      </p>
+      <p>
+        <label>Amount <input name="amount" /></label>
+      </p>
+      <!-- Decoys: same names and accessible names as the real fields, none of them usable. -->
+      <input name="name" aria-label="Name" data-decoy="hidden" hidden />
+      <input
+        name="amount"
+        aria-label="Amount"
+        data-decoy="off-canvas"
+        style="position: absolute; left: -9999px; top: 0"
+      />
+      <input
+        name="name"
+        aria-label="Name"
+        data-decoy="transparent"
+        style="opacity: 0"
+      />
+      <div style="position: relative; display: inline-block">
+        <input name="amount" aria-label="Amount" data-decoy="covered" />
+        <div style="position: absolute; inset: 0; background: #fff"></div>
+      </div>
+    </form>
+  </body>
+</html>
