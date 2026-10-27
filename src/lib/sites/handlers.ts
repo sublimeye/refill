@@ -4,7 +4,7 @@ import { profileKey, withStoreLock } from "../store/local";
 import type { PageHandlers } from "../messaging/router";
 import { normalizeOrigin, originPattern } from "./origin";
 import { readSites, removeSite, upsertSite } from "./index";
-import { writeIntent } from "./intent";
+import { takeIntent, writeIntent } from "./intent";
 import { injectContentScript, reconcile } from "./reconcile";
 
 type SiteHandlers = Pick<
@@ -37,6 +37,8 @@ export function createSiteHandlers(now: () => number = Date.now): SiteHandlers {
         return { ok: false, error: "invalid-origin" };
       }
       if (!(await granted(origin))) return { ok: false, error: "not-granted" };
+      // This call does the intent's work; drop it so it cannot be replayed later (P8). Discarded.
+      await takeIntent(origin, now());
       await upsertSite(origin, { accessRevoked: false });
       await reconcile();
       await injectContentScript(tabId);
@@ -45,6 +47,9 @@ export function createSiteHandlers(now: () => number = Date.now): SiteHandlers {
 
     "site-remove": async ({ origin }) => {
       if (normalizeOrigin(origin) !== origin) return { ok: true }; // nothing can exist for it
+      // A removal is deliberate: an unconsumed intent must not re-enable the site if access is
+      // granted again within its TTL (P8). Taken first, result discarded.
+      await takeIntent(origin, now());
       await withStoreLock(async (tx) => {
         const rec = (await readSites(tx))[origin];
         await removeSite(origin, tx);
