@@ -39,8 +39,19 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # No --with-deps (ADR 0009): ubuntu-latest already ships Chromium's shared libraries, and
+      # --with-deps ran apt-get for fonts only, which stalled for 12-15 min on a slow mirror.
+      - name: Install Playwright Chromium
+        timeout-minutes: 5
+        run: pnpm exec playwright install chromium
+
       - name: Unit tests
         run: pnpm test
+
+      # ADR 0019: real-DOM tests in headless Chromium (Vitest browser mode).
+      - name: Browser tests
+        timeout-minutes: 5
+        run: pnpm test:browser
 
       - name: Manifest / CSP snapshot
         run: pnpm test:manifest
@@ -79,12 +90,6 @@ jobs:
 
       - name: pnpm audit
         run: pnpm audit --audit-level high
-
-      # No --with-deps (ADR 0009): ubuntu-latest already ships Chromium's shared libraries, and
-      # --with-deps ran apt-get for fonts only, which stalled for 12-15 min on a slow mirror.
-      - name: Install Playwright Chromium
-        timeout-minutes: 5
-        run: pnpm exec playwright install chromium
 
       # ADR 0017: e2e runs against the e2e build (production code plus pre-granted fixture hosts).
       - name: Build extension for e2e
