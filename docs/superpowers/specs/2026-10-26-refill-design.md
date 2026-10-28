@@ -424,9 +424,14 @@ Touch ID, default TTL, change passphrase) → Export/Import → About/Security.
     enabled, granted, https site; the origin used is always `sender.origin`, never from payload.
     Allowed types (complete list):
     - `scan-report` (signatures, no values) → SW replies with a fill plan: values only for
-      controls matched on this page, only if unlocked and mode/policy allow.
+      controls matched on this page, only if unlocked and mode/policy allow. While a session
+      records the tab, `scan-report` drives the recording: the SW files the page into the session
+      (step tracking) and answers with a fill plan built from the session, never from the stored
+      profile (ADR 0030).
     - `fill-result` (counts for toast/badge).
-    - `record-capture`, `record-finish` (only with an active session for that tab + origin).
+    - `record-status`, `record-capture`, `record-finish` (only for the active session of that tab
+      + origin; otherwise answered `off`, or `stopped` after a lock or expiry). `record-capture`
+      carries the one value the user typed, at most 4096 chars, sealed on arrival.
     - `draft-seal`, `draft-mark-submitted`, `draft-offer-query`, `draft-restore`, `draft-discard`
       (drafts for `sender.origin` only).
     - `toast-unlock-click`.
@@ -434,6 +439,8 @@ Touch ID, default TTL, change passphrase) → Export/Import → About/Security.
     script context; all other vault/admin operations (unlock, record start, profile edit,
     export/import, settings, intent-execute) are page-only.
 - Payload size caps and schema checks on every message.
+- SW → content script: only `refill-nudge`, sent to frame 0 and carrying no data; the content
+  script answers by asking `record-status`.
 
 ---
 

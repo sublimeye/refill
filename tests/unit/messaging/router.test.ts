@@ -60,6 +60,9 @@ function spyHandlers() {
   const c = {
     "scan-report": vi.fn(async () => ({ state: "none" })),
     "fill-result": vi.fn(async () => ({ ok: true })),
+    "record-status": vi.fn(async () => ({ state: "off" })),
+    "record-capture": vi.fn(async () => ({ state: "off" })),
+    "record-finish": vi.fn(async () => ({ ok: false })),
   };
   return {
     h,
@@ -591,6 +594,65 @@ describe("content senders", () => {
     for (const spy of [...Object.values(h), ...Object.values(c)]) {
       expect(spy).not.toHaveBeenCalled();
     }
+  });
+
+  it("record-start from a content sender is rejected before any handler", async () => {
+    const shims = await enabled();
+    const { h, c, handlers } = spyHandlers();
+    for (const m of [
+      { type: "record-start", tabId: 1, origin: SITE },
+      { type: "record-start" },
+    ]) {
+      expect(await createRouter(handlers)(m, content)).toEqual(REJECTED);
+    }
+    for (const spy of [...Object.values(h), ...Object.values(c)]) {
+      expect(spy).not.toHaveBeenCalled();
+    }
+    expect(shims.permissions.contains).not.toHaveBeenCalled();
+  });
+
+  it("recording requests reach their handler with the sender's context", async () => {
+    await enabled();
+    const { c, handlers } = spyHandlers();
+    const capture = {
+      type: "record-capture",
+      kind: "text",
+      sig: scanReport.controls[0]!.sig,
+      value: "typed",
+      pageDefault: "",
+      fieldId: "f1",
+    };
+    const s = mk({ ...content, documentId: "doc-3" });
+    const where = {
+      origin: SITE,
+      pathname: "/form",
+      tabId: 1,
+      documentId: "doc-3",
+    };
+    const r = createRouter(handlers);
+    expect(await r({ type: "record-status" }, s)).toEqual({ state: "off" });
+    expect(await r(capture, s)).toEqual({ state: "off" });
+    expect(await r({ type: "record-finish" }, s)).toEqual({ ok: false });
+    expect(c["record-status"]).toHaveBeenCalledWith(
+      { type: "record-status" },
+      where,
+    );
+    expect(c["record-capture"]).toHaveBeenCalledWith(capture, where);
+    expect(c["record-finish"]).toHaveBeenCalledWith(
+      { type: "record-finish" },
+      where,
+    );
+  });
+
+  it("recording requests from a page or a revoked site are rejected", async () => {
+    await enabled();
+    const { c, handlers } = spyHandlers();
+    const r = createRouter(handlers);
+    expect(await r({ type: "record-status" }, popup)).toEqual(REJECTED);
+    expect(await r({ type: "record-finish" }, popup)).toEqual(REJECTED);
+    await upsertSite(SITE, { accessRevoked: true });
+    expect(await r({ type: "record-finish" }, content)).toEqual(REJECTED);
+    for (const spy of Object.values(c)) expect(spy).not.toHaveBeenCalled();
   });
 
   it("content messages from a page are rejected", async () => {

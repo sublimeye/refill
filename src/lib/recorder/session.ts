@@ -13,7 +13,7 @@ import { ID_RE, type Profile } from "../profiles/types";
 import { normalizeOrigin } from "../sites/origin";
 import { TAG_BYTES, parseSealed } from "../vault/header";
 import { LockedError } from "../vault/types";
-import { getDek, onLockChange } from "../vault/vault";
+import { getDek, lockEpoch, onLockChange } from "../vault/vault";
 import { emptyBody, seedBody, type RecBody } from "./types";
 
 /** A session lives 30 min from its start; Finish resets it to 30 min from then. */
@@ -171,6 +171,11 @@ async function setBadge(tabId: number, text: string): Promise<void> {
   }
 }
 
+/** Clears the tab's recording badge (Finish, discard). Failures are logged by error name only. */
+export function clearBadge(tabId: number): Promise<void> {
+  return setBadge(tabId, "");
+}
+
 /**
  * Wakes the tab's content script with a data-free message, so it asks the worker for the state.
  * Failures (no content script, a closed tab) are ignored and logged by error name only.
@@ -210,7 +215,7 @@ async function drop(
   }
   // A closed tab has neither a badge nor a content script left.
   if (reason === "tab-closed") return;
-  await setBadge(meta.tabId, "");
+  await clearBadge(meta.tabId);
   // Not awaited: the content script answers a nudge by messaging the worker, whose handler queues
   // on this chain behind the current job.
   void nudge(meta.tabId);
@@ -264,9 +269,12 @@ function matches(meta: SessionMeta, m: SessionMatch): boolean {
  * when there is none, or it belongs to another tab, origin or id. An expired session is discarded
  * (`"expired"`), and so is one whose body cannot be opened because the vault is locked
  * (`"locked"`); both answer `"off"`. A body that fails to open under an unlocked vault (tampered,
- * or moved under another id) is dropped without a tombstone. A returned `body` is re-sealed with a
- * fresh IV; a returned `meta` patch updates `finished`/`expiresAt`. If `fn` throws, nothing is
- * written.
+ * or moved under another id) is dropped without a tombstone. `fn` gets a copy of the metadata. A
+ * returned `body` is re-sealed with a fresh IV; a returned `meta` patch updates `finished` and
+ * `expiresAt` (at most `now + RECORDING_TTL_MS`, else `TypeError`). If `fn` throws, nothing is
+ * written. A lock that lands after the DEK was taken and before `fn` returned drops the session as
+ * `"locked"` and answers `"off"`, writing nothing. A lock can still land during the write itself:
+ * a caller that replies with values re-checks `lockEpoch()` synchronously before replying.
  */
 export function withSession<T>(
   match: SessionMatch,
@@ -286,6 +294,9 @@ export function withSession<T>(
       return "off";
     }
     if (!matches(meta, match)) return "off";
+    // Before the DEK: a lock from here on must not let a body opened with that DEK be written back
+    // (or its values answered) as if the vault were still unlocked.
+    const epoch = lockEpoch();
     let dek: CryptoKey;
     let body: RecBody;
     try {
@@ -302,7 +313,11 @@ export function withSession<T>(
       }
       throw err;
     }
-    const out = fn(meta, body);
+    const out = fn({ ...meta }, body);
+    if (lockEpoch() !== epoch) {
+      await drop(meta, "locked", now);
+      return "off";
+    }
     const next: SessionMeta = { ...meta };
     if (out.meta?.finished !== undefined) {
       if (typeof out.meta.finished !== "boolean") {
@@ -311,7 +326,11 @@ export function withSession<T>(
       next.finished = out.meta.finished;
     }
     if (out.meta?.expiresAt !== undefined) {
-      if (!Number.isFinite(out.meta.expiresAt)) {
+      // Finish may reset the TTL to 30 min from now, never extend a session past that.
+      if (
+        !Number.isFinite(out.meta.expiresAt) ||
+        out.meta.expiresAt > now + RECORDING_TTL_MS
+      ) {
         throw new TypeError("bad expiresAt");
       }
       next.expiresAt = out.meta.expiresAt;
@@ -327,12 +346,21 @@ export function withSession<T>(
   });
 }
 
-/** Discards the session, if any (see `drop`). */
-export function discardSession(reason: DiscardReason): Promise<void> {
+/**
+ * Discards the session, if any (see `drop`). With `id`, only while the stored session still has
+ * that id, so a late discard of an old session never ends a newer one. A malformed record is
+ * removed either way.
+ */
+export function discardSession(
+  reason: DiscardReason,
+  id?: string,
+): Promise<void> {
   return serialized(async () => {
     const rec = await load();
     if (rec === "malformed") await removeRecord();
-    else if (rec) await drop(rec.meta, reason, Date.now());
+    else if (rec && (id === undefined || rec.meta.id === id)) {
+      await drop(rec.meta, reason, Date.now());
+    }
   });
 }
 

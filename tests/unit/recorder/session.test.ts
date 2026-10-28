@@ -12,6 +12,7 @@ import { newKdfParams } from "../../../src/lib/crypto/kdf";
 import { applyCapture } from "../../../src/lib/recorder/fields";
 import {
   RECORDING_TTL_MS,
+  clearBadge,
   discardSession,
   installRecorderListeners,
   startSession,
@@ -409,5 +410,114 @@ describe("recording session", { timeout: 30_000 }, () => {
     const logged = JSON.stringify(log.mock.calls);
     expect(logged).toContain("TypeError");
     expect(logged).not.toContain(SECRET);
+  });
+
+  it.each([
+    ["a negative tab id", -1, ORIGIN],
+    ["a fractional tab id", 1.5, ORIGIN],
+    ["a NaN tab id", NaN, ORIGIN],
+    ["a string tab id", "7" as unknown as number, ORIGIN],
+    ["an http origin", TAB, "http://pay.example.com"],
+    ["a non-canonical origin", TAB, "https://Pay.example.com"],
+    ["an origin with a path", TAB, `${ORIGIN}/`],
+    ["not a URL", TAB, "nope"],
+  ])(
+    "start refuses %s with TypeError and changes nothing",
+    async (_n, tabId, origin) => {
+      await startSession(TAB, ORIGIN, T0, null);
+      const before = JSON.stringify(await sessionStore());
+      await expect(
+        startSession(tabId, origin, T0, null),
+      ).rejects.toBeInstanceOf(TypeError);
+      expect(JSON.stringify(await sessionStore())).toBe(before);
+      expect(await badge(TAB)).toBe("●");
+    },
+  );
+
+  it("discarding a malformed record removes it without badge or nudge", async () => {
+    await fakeBrowser.storage.session.set({ [KEY]: { meta: "x" } });
+    await discardSession("cancelled");
+    expect((await sessionStore())[KEY]).toBeUndefined();
+    expect((await sessionStore())[TOMB]).toBeUndefined();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("discarding by id leaves a newer session alone", async () => {
+    const one = await startSession(TAB, ORIGIN, T0, null);
+    const two = await startSession(TAB, ORIGIN, T0, null);
+    sendMessage.mockClear();
+    await discardSession("cancelled", one.id);
+    expect(await read({ id: two.id })).not.toBe("off");
+    expect(await badge(TAB)).toBe("●");
+    expect(sendMessage).not.toHaveBeenCalled();
+    await discardSession("cancelled", two.id);
+    expect(await read({ id: two.id })).toBe("off");
+    expect(await badge(TAB)).toBe("");
+  });
+
+  it("a lock landing between getDek() and the write: off, nothing written, a locked tombstone", async () => {
+    const t = Date.now();
+    await startSession(TAB, ORIGIN, t, null);
+    const set = vi.spyOn(fakeBrowser.storage.session, "set");
+    const controls = page("card");
+    const got = await withSession(at, t, (_m, body) => {
+      void lock(); // bumps the lock epoch synchronously, as a lock landing mid-job would
+      const onPage = observePage(body, keys(controls), "doc1", "/pay");
+      if (onPage === "full") throw new Error("full");
+      const r = applyCapture(onPage, capture(controls[0]!, SECRET));
+      return { body: r.body, result: "written" };
+    });
+    expect(got).toBe("off");
+    expect(set.mock.calls.some(([items]) => KEY in (items as object))).toBe(
+      false,
+    );
+    await vi.waitFor(async () =>
+      expect((await sessionStore())[KEY]).toBeUndefined(),
+    );
+    expect(await stoppedReason(TAB, t)).toBe("locked");
+  });
+
+  it("refuses an expiresAt past now + 30 min and writes nothing", async () => {
+    await startSession(TAB, ORIGIN, T0, null);
+    const before = JSON.stringify(await sessionStore());
+    const now = T0 + 5000;
+    await expect(
+      withSession(at, now, () => ({
+        meta: { expiresAt: now + RECORDING_TTL_MS + 1 },
+        result: null,
+      })),
+    ).rejects.toThrow(TypeError);
+    expect(JSON.stringify(await sessionStore())).toBe(before);
+    await withSession(at, now, () => ({
+      meta: { expiresAt: now + RECORDING_TTL_MS },
+      result: null,
+    }));
+    const got = (await read(at, now)) as { meta: SessionMeta };
+    expect(got.meta.expiresAt).toBe(now + RECORDING_TTL_MS);
+  });
+
+  it("the callback gets a copy of the metadata", async () => {
+    const meta = await startSession(TAB, ORIGIN, T0, null);
+    await withSession(at, T0, (m, body) => {
+      m.finished = true;
+      m.expiresAt = T0 + 1;
+      m.tabId = 99;
+      return { body, result: null }; // a re-seal writes the metadata too
+    });
+    const got = (await read(at)) as { meta: SessionMeta };
+    expect(got.meta).toEqual(meta);
+  });
+
+  it("clearBadge clears the tab's badge and logs a failure by name only", async () => {
+    await startSession(TAB, ORIGIN, T0, null);
+    await clearBadge(TAB);
+    expect(await badge(TAB)).toBe("");
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(fakeBrowser.action, "setBadgeText").mockRejectedValue(
+      new RangeError(`No tab ${SECRET}`),
+    );
+    await clearBadge(TAB);
+    expect(JSON.stringify(log.mock.calls)).toContain("RangeError");
+    expect(JSON.stringify(log.mock.calls)).not.toContain(SECRET);
   });
 });

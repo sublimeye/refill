@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_CAPTURE_VALUE,
   MAX_CONTROLS,
   MAX_ORDINAL,
   MAX_SIG_STRING,
@@ -101,7 +102,10 @@ describe("parseContentRequest", () => {
 
   it.each([
     ["page message type", { type: "vault-unlock", passphrase: "x" }],
-    ["unknown type", { type: "record-capture" }],
+    [
+      "unknown type",
+      { type: "record-start", tabId: 1, origin: "https://a.example" },
+    ],
     ["array", [scan()]],
     ["null", null],
     ["string", "scan-report"],
@@ -203,5 +207,90 @@ describe("parseContentRequest", () => {
   it("rejects a symbol key", () => {
     const raw = { ...result(), [Symbol("x")]: 1 };
     expect(parseContentRequest(raw)).toBeNull();
+  });
+});
+
+const without = (o: Record<string, unknown>, key: string) =>
+  Object.fromEntries(Object.entries(o).filter(([k]) => k !== key));
+
+describe("recording requests", () => {
+  const cap = (o: Record<string, unknown> = {}) => ({
+    type: "record-capture",
+    kind: "text",
+    sig: sig(),
+    value: "v",
+    pageDefault: "",
+    fieldId: null,
+    ...o,
+  });
+
+  it("accepts the three shapes and returns fresh objects", () => {
+    expect(parseContentRequest({ type: "record-status" })).toEqual({
+      type: "record-status",
+    });
+    expect(parseContentRequest({ type: "record-finish" })).toEqual({
+      type: "record-finish",
+    });
+    const raw = cap({ fieldId: "f_1-A" });
+    const parsed = parseContentRequest(raw);
+    expect(parsed).toEqual(raw);
+    expect(parsed).not.toBe(raw);
+    if (parsed?.type !== "record-capture") throw new Error("unreachable");
+    expect(parsed.sig).not.toBe(raw.sig);
+  });
+
+  it("accepts every kind, a 4096-char value and page default, and a 64-char field id", () => {
+    expect(MAX_CAPTURE_VALUE).toBe(4096);
+    for (const kind of ["text", "select", "checkbox", "radio"]) {
+      expect(parseContentRequest(cap({ kind })), kind).not.toBeNull();
+    }
+    expect(
+      parseContentRequest(
+        cap({
+          value: "x".repeat(4096),
+          pageDefault: "y".repeat(4096),
+          fieldId: "f".repeat(64),
+        }),
+      ),
+    ).not.toBeNull();
+  });
+
+  it.each([
+    ["status extra key", { type: "record-status", tabId: 1 }],
+    ["finish extra key", { type: "record-finish", id: "abc" }],
+    ["finish payload now", { type: "record-finish", now: 1 }],
+    ["capture extra key", cap({ origin: "https://evil.example" })],
+    ["capture missing fieldId", without(cap(), "fieldId")],
+    ["capture missing pageDefault", without(cap(), "pageDefault")],
+    ["a 4097-char value", cap({ value: "x".repeat(4097) })],
+    ["a 4097-char page default", cap({ pageDefault: "x".repeat(4097) })],
+    ["a value that is not a string", cap({ value: 1 })],
+    ["a null value", cap({ value: null })],
+    ["a page default that is not a string", cap({ pageDefault: false })],
+    ["an empty field id", cap({ fieldId: "" })],
+    ["a field id with a space", cap({ fieldId: "f 1" })],
+    ["a field id with a slash", cap({ fieldId: "../f1" })],
+    ["a 65-char field id", cap({ fieldId: "f".repeat(65) })],
+    ["a numeric field id", cap({ fieldId: 1 })],
+    ["an unknown kind", cap({ kind: "password" })],
+    ["a sig with an extra key", cap({ sig: sig({ value: "x" }) })],
+    [
+      "a 257-char sig string",
+      cap({ sig: sig({ labelText: "x".repeat(257) }) }),
+    ],
+    ["a null sig", cap({ sig: null })],
+  ])("rejects %s", (_name, raw) => {
+    expect(parseContentRequest(raw)).toBeNull();
+  });
+
+  it("rejects record-start, a page-only request", () => {
+    expect(
+      parseContentRequest({
+        type: "record-start",
+        tabId: 1,
+        origin: "https://a.example",
+      }),
+    ).toBeNull();
+    expect(parseContentRequest({ type: "record-start" })).toBeNull();
   });
 });

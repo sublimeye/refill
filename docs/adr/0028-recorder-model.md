@@ -137,9 +137,10 @@ always fits a profile.
   left to corpus tuning.
 - **A fieldless step outside the prefix** is saved with the profile, but the profile never applies
   on its page. It still takes part in the gate on pages inside the prefix.
-- **After `"full"` the body is unchanged**, so `current` still names the previous step. The Task 6
-  handler sets `current` to null on `"full"`, so captures from the eleventh page are not filed into
-  that step.
+- **After `"full"` the body is unchanged**, so `current` still names the previous step. The
+  scan-report handler (`recordingScan`, ADR 0030) stores the body with `current: null` and
+  `lastDocument` set to that document, so captures from the eleventh page get `"no-step"` and
+  answer `full` instead of being filed into the previous step.
 - The model is pure and imports DOM modules as types only, so it can run in the worker bundle
   (`check:sw-no-dom`).
 
