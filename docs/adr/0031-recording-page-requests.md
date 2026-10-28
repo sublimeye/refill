@@ -75,6 +75,19 @@ enable work (upsert, reconcile, inject).
 - Stopped tombstones are per origin and an unchanged page is not rewritten (ruling P10, ADR 0029 and
   ADR 0030 amended).
 
+### The popup's controls (Task 9)
+`SiteView` carries `hasProfile` and the `record-state` answer (`recording`), both read when the view
+loads. Record buttons show only for a site that is on or off and an unlocked vault; a locked vault
+says "Unlock to record this site." instead. "Record again" shows only for an enabled site with a saved
+form. A session of this tab is shown whatever the site's state: `Recording · n field(s)` with
+Finish and Cancel recording, or, once finished, `Recording finished · n field(s)` with Open review,
+which sends `record-finish` (it reopens the review page, ruling P11). A session of another tab shows
+"Refill is recording in another tab. Starting here stops it."; a finished session of another tab shows
+that a finished recording is waiting for review and that starting here discards it (a start replaces
+a finished session). `record-state` and `site-status` are read together; if either fails the view is
+the generic error. Outcome copy: `denied` reuses "Access to this site wasn't granted", `locked` and
+`tab-moved` each get one calm line, and `granted-pending` shows nothing.
+
 ## Consequences
 - Only an extension page can start, finish from the popup, or cancel a recording; a web page cannot
   reach any of it.

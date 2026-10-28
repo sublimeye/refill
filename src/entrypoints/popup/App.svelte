@@ -4,8 +4,11 @@
   import { sendToSw } from "../../lib/messaging/protocol";
   import type { VaultStatus } from "../../lib/vault/types";
   import {
+    cancelRecordingFor,
     enableSite,
+    finishRecordingFor,
     loadSiteView,
+    recordSite,
     removeSiteFor,
     resolveTarget,
     type SiteView,
@@ -31,6 +34,8 @@
   let siteMessage: HTMLElement | undefined = $state();
   let confirmText: HTMLElement | undefined = $state();
   let removeButton: HTMLElement | undefined = $state();
+
+  const fields = (n: number) => `${n} ${n === 1 ? "field" : "fields"}`;
 
   const DAMAGED = "Refill's vault data is damaged";
   const GENERIC = "Something went wrong — try again";
@@ -94,6 +99,78 @@
       } else {
         await tick();
         siteStatus?.focus();
+      }
+    } finally {
+      siteBusy = false;
+    }
+  }
+
+  // Click handler for "Record this site" / "Record again". Same rule as enable(): recordSite() must
+  // be the FIRST statement, nothing awaited before it (user activation, ADR 0018).
+  function record(s: Active) {
+    const flow = recordSite(s);
+    siteBusy = true;
+    siteError = "";
+    void settleRecord(flow);
+  }
+
+  async function settleRecord(flow: ReturnType<typeof recordSite>) {
+    try {
+      const res = await flow;
+      site = res.view;
+      switch (res.outcome) {
+        case "recording":
+          await tick();
+          siteStatus?.focus();
+          break;
+        case "denied":
+          await announceSite("Access to this site wasn't granted");
+          break;
+        case "locked":
+          await refresh(); // the vault locked meanwhile: show the unlock form
+          await announceSite("Refill locked — unlock, then record again.");
+          break;
+        case "tab-moved":
+          await announceSite(
+            "This tab moved to another site — open the form and try again.",
+          );
+          break;
+        default:
+          break; // granted-pending: the grant path finishes it
+      }
+    } finally {
+      siteBusy = false;
+    }
+  }
+
+  // "Finish" and "Open review": the worker opens the review page; this popup is done.
+  async function finishRecording(s: Active) {
+    if (siteBusy) return;
+    siteBusy = true;
+    siteError = "";
+    try {
+      if (await finishRecordingFor(s)) {
+        window.close();
+        return;
+      }
+      await announceSite(GENERIC);
+    } finally {
+      siteBusy = false;
+    }
+  }
+
+  async function cancelRecording(s: Active) {
+    if (siteBusy) return;
+    siteBusy = true;
+    siteError = "";
+    try {
+      const res = await cancelRecordingFor(s);
+      site = res.view;
+      if (res.ok) {
+        await tick();
+        siteStatus?.focus();
+      } else {
+        await announceSite(GENERIC);
       }
     } finally {
       siteBusy = false;
@@ -207,6 +284,30 @@
   }
 </script>
 
+{#snippet recordControls(s: Active)}
+  {#if view === "locked"}
+    <p>Unlock to record this site.</p>
+  {:else}
+    {#if s.recording.state === "review"}
+      <p>
+        A finished recording is waiting for review. Starting here discards it.
+      </p>
+    {:else if s.recording.state !== "off"}
+      <p>Refill is recording in another tab. Starting here stops it.</p>
+    {:else if s.kind === "off"}
+      <p>
+        Refill will ask Chrome for access to this site only, then remember what
+        you type.
+      </p>
+    {:else if s.hasProfile}
+      <p>Your saved form fills in as you go; change what's different.</p>
+    {/if}
+    <button type="button" onclick={() => record(s)} disabled={siteBusy}>
+      {s.kind === "on" && s.hasProfile ? "Record again" : "Record this site"}
+    </button>
+  {/if}
+{/snippet}
+
 {#snippet siteSection()}
   {#if site && site.kind !== "error"}
     <section aria-labelledby="site-title">
@@ -217,13 +318,44 @@
         </p>
       {:else}
         {@const s = site}
-        {#if s.kind === "off"}
+        {@const rec = s.recording}
+        {#if rec.state === "review" && rec.here}
+          <p bind:this={siteStatus} tabindex="-1">
+            Recording finished · {fields(rec.count)}
+          </p>
+          <button
+            type="button"
+            onclick={() => finishRecording(s)}
+            disabled={siteBusy}
+          >
+            Open review
+          </button>
+        {:else if rec.state !== "off" && rec.state !== "review" && rec.here}
+          <p bind:this={siteStatus} tabindex="-1">
+            Recording · {fields(rec.count)}
+          </p>
+          <button
+            type="button"
+            onclick={() => finishRecording(s)}
+            disabled={siteBusy}
+          >
+            Finish
+          </button>
+          <button
+            type="button"
+            onclick={() => cancelRecording(s)}
+            disabled={siteBusy}
+          >
+            Cancel recording
+          </button>
+        {:else if s.kind === "off"}
           <p bind:this={siteStatus} tabindex="-1">
             Refill will ask Chrome for access to this site only.
           </p>
           <button type="button" onclick={() => enable(s)} disabled={siteBusy}>
             Enable Refill on this site
           </button>
+          {@render recordControls(s)}
         {:else if s.kind === "revoked"}
           <p bind:this={siteStatus} tabindex="-1">
             Access to {s.host} was turned off in Chrome. Enable again to use Refill
@@ -248,6 +380,7 @@
           </button>
         {:else}
           <p bind:this={siteStatus} tabindex="-1">Enabled on {s.host}</p>
+          {@render recordControls(s)}
           <button
             type="button"
             bind:this={removeButton}

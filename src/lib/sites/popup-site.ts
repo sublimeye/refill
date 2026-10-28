@@ -1,7 +1,11 @@
 // Popup-side logic for the "This site" section (spec §3.1). Kept out of the Svelte component so
 // the parts that matter (the synchronous call order, the status mapping) are unit-testable.
 import { browser } from "wxt/browser";
-import { sendToSw, type SiteStatus } from "../messaging/protocol";
+import {
+  sendToSw,
+  type RecordPageState,
+  type SiteStatus,
+} from "../messaging/protocol";
 import { normalizeOrigin } from "./origin";
 import { requestSiteEnable, type EnableOutcome } from "./popup-flow";
 
@@ -13,6 +17,14 @@ export interface Target {
 
 export type SiteState = "off" | "on" | "revoked";
 
+/**
+ * The one recording session, as this tab sees it (ADR 0031). `review` is a finished session still
+ * waiting on the review page (ruling P11); `here` says whether it is this tab's.
+ */
+export type RecordingView =
+  | { state: "off" }
+  | { state: "on" | "full" | "review"; count: number; here: boolean };
+
 export type SiteView =
   | { kind: "unsupported" }
   | { kind: "error" }
@@ -22,7 +34,17 @@ export type SiteView =
       origin: string;
       /** `host[:port]`, for display. */
       host: string;
+      /** The origin has a saved form (Record again starts from it). */
+      hasProfile: boolean;
+      recording: RecordingView;
     };
+
+const RECORDING_OFF: RecordingView = { state: "off" };
+
+function recordingOf(state: RecordPageState): RecordingView {
+  if (state.state === "off") return RECORDING_OFF;
+  return { state: state.state, count: state.count, here: state.here };
+}
 
 function targetOf(tabId: number, url: string | undefined): Target {
   return { tabId, origin: url ? normalizeOrigin(url) : null };
@@ -55,7 +77,11 @@ export async function resolveTarget(
 }
 
 /** Maps the service worker's answer to what the popup shows. */
-export function viewOf(target: Target, status: SiteStatus): SiteView {
+export function viewOf(
+  target: Target,
+  status: SiteStatus,
+  recording: RecordPageState,
+): SiteView {
   if (target.origin === null || status.origin === null) {
     return { kind: "unsupported" };
   }
@@ -69,6 +95,8 @@ export function viewOf(target: Target, status: SiteStatus): SiteView {
     tabId: target.tabId,
     origin: status.origin,
     host: new URL(status.origin).host,
+    hasProfile: status.hasProfile,
+    recording: recordingOf(recording),
   };
 }
 
@@ -76,10 +104,11 @@ export function viewOf(target: Target, status: SiteStatus): SiteView {
 export async function loadSiteView(target: Target): Promise<SiteView> {
   if (target.origin === null) return { kind: "unsupported" };
   try {
-    return viewOf(
-      target,
-      await sendToSw({ type: "site-status", origin: target.origin }),
-    );
+    const [status, recording] = await Promise.all([
+      sendToSw({ type: "site-status", origin: target.origin }),
+      sendToSw({ type: "record-state", tabId: target.tabId }),
+    ]);
+    return viewOf(target, status, recording);
   } catch {
     return { kind: "error" };
   }
@@ -103,6 +132,45 @@ export function enableSite(target: Target & { origin: string }) {
     outcome: o,
     view: await loadSiteView(target),
   }));
+}
+
+/**
+ * Click handler body for "Record this site" / "Record again". Same rule as `enableSite`:
+ * `requestSiteEnable` MUST be the first thing this does, with nothing awaited before it. The
+ * `record` intent makes the worker (or, with the popup gone, its `onAdded` handler) start the
+ * session once the grant is in; the outcome says why no session started, if so.
+ */
+export function recordSite(target: Target & { origin: string }) {
+  const outcome = requestSiteEnable(target.tabId, target.origin, "record");
+  return outcome.then(async (o): Promise<EnableResult> => ({
+    outcome: o,
+    view: await loadSiteView(target),
+  }));
+}
+
+/**
+ * "Finish" and "Open review": finishes the tab's session, or re-opens the review page for one that
+ * is already finished (ADR 0031). The caller closes the popup on `ok`. Never throws.
+ */
+export async function finishRecordingFor(target: Target): Promise<boolean> {
+  try {
+    return (await sendToSw({ type: "record-finish", tabId: target.tabId })).ok;
+  } catch {
+    return false;
+  }
+}
+
+/** "Cancel recording": discards the tab's unfinished session and returns the fresh view. */
+export async function cancelRecordingFor(
+  target: Target,
+): Promise<{ ok: boolean; view: SiteView }> {
+  let ok = true;
+  try {
+    await sendToSw({ type: "record-cancel", tabId: target.tabId });
+  } catch {
+    ok = false;
+  }
+  return { ok, view: await loadSiteView(target) };
 }
 
 /** Removes the site (record, saved form, access) and returns the fresh view. Never throws. */
