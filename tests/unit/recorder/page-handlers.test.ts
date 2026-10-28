@@ -21,8 +21,12 @@ import type {
 } from "../../../src/lib/messaging/protocol";
 import { createRouter } from "../../../src/lib/messaging/router";
 import { saveProfile } from "../../../src/lib/profiles/store";
-import { createRecorderPageHandlers } from "../../../src/lib/recorder/handlers";
 import {
+  createRecorderPageHandlers,
+  finishSession,
+} from "../../../src/lib/recorder/handlers";
+import {
+  FLUSH_TIMEOUT_MS,
   RECORDING_TTL_MS,
   installRecorderListeners,
   cancelUnfinished,
@@ -425,6 +429,87 @@ describe("record-finish", () => {
     expect(got.meta.expiresAt).toBe(clock + RECORDING_TTL_MS);
   });
 
+  it("asks the tab to flush its pending captures and finishes only after the ack", async () => {
+    ready();
+    await start();
+    sendMessage.mockClear();
+    const seen: unknown[] = [];
+    sendMessage.mockImplementation(
+      async (_tab: number, msg: { type: string }) => {
+        if (msg.type !== "refill-flush") return undefined;
+        // A capture still on its way lands now: the session must not be finished yet.
+        const got = await peek();
+        seen.push(got === "off" ? "off" : got.meta.finished);
+        return { ok: true };
+      },
+    );
+    expect(await finish()).toEqual({ ok: true });
+    expect(sendMessage).toHaveBeenCalledWith(
+      TAB,
+      { type: "refill-flush" },
+      { frameId: 0 },
+    );
+    expect(seen).toEqual([false]);
+    expect((await state()).state).toBe("review");
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("a flush that never answers delays the finish by at most FLUSH_TIMEOUT_MS", async () => {
+    ready();
+    await start();
+    sendMessage.mockImplementation((_tab: number, msg: { type: string }) =>
+      msg.type === "refill-flush"
+        ? new Promise(() => undefined)
+        : Promise.resolve(undefined),
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const done = finish();
+      await vi.advanceTimersByTimeAsync(FLUSH_TIMEOUT_MS - 1);
+      expect(create).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await done).toEqual({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(create).toHaveBeenCalledOnce();
+    expect(vi.mocked(console.error)).toHaveBeenCalledWith(
+      "[refill] flush failed:",
+      "timeout",
+    );
+  });
+
+  it("no content script to flush: still finishes, logging the error name only", async () => {
+    ready();
+    await start();
+    sendMessage.mockImplementation((_tab: number, msg: { type: string }) =>
+      msg.type === "refill-flush"
+        ? Promise.reject(new TypeError("Could not establish connection"))
+        : Promise.resolve(undefined),
+    );
+    expect(await finish()).toEqual({ ok: true });
+    expect(vi.mocked(console.error)).toHaveBeenCalledWith(
+      "[refill] flush failed:",
+      "TypeError",
+    );
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain(
+      "connection",
+    );
+  });
+
+  it("reopening a finished session sends no flush", async () => {
+    ready();
+    await start();
+    await finish();
+    sendMessage.mockClear();
+    expect(await finish()).toEqual({ ok: true });
+    expect(sendMessage).not.toHaveBeenCalledWith(
+      TAB,
+      { type: "refill-flush" },
+      { frameId: 0 },
+    );
+  });
+
   it("a failing tabs.create is an internal error, and the session stays finished", async () => {
     ready();
     await start();
@@ -467,11 +552,24 @@ describe("record-cancel", () => {
   it("a cancel and a finish racing in the chain: whichever runs second respects the first", async () => {
     ready();
     await start();
-    const [a, b] = await Promise.all([finish(), cancel()]);
-    expect(a).toEqual({ ok: true });
+    const [a, b] = await Promise.all([
+      finishSession({ tab: TAB }, clock, true),
+      cancel(),
+    ]);
+    expect(a).toBe(true);
     expect(b).toEqual({ ok: true });
     // Finish queued first: the cancel found it finished and left it.
     expect((await state()).state).toBe("review");
+  });
+
+  it("a cancel that lands while a popup Finish waits for the tab's flush wins: nothing opens", async () => {
+    ready();
+    await start();
+    const [a, b] = await Promise.all([finish(), cancel()]);
+    expect(a).toEqual({ ok: false });
+    expect(b).toEqual({ ok: true });
+    expect(create).not.toHaveBeenCalled();
+    expect(await peek()).toBe("off");
   });
 
   it("is ok with nothing to cancel", async () => {

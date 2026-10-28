@@ -46,6 +46,8 @@ interface Harness {
   status: { value: RecordState };
   /** Delivers a worker nudge. */
   nudge(): void;
+  /** Delivers a worker `refill-flush`; resolves when the content script would reply. */
+  flush(): Promise<void>;
 }
 
 /**
@@ -60,9 +62,13 @@ function harness(
   const status: { value: RecordState } = { value: { state: "on", count: 0 } };
   let count = 0;
   const nudges: (() => void)[] = [];
+  const flushes: (() => Promise<void>)[] = [];
   const env: ContentEnv = {
     onNudge: (cb) => {
       nudges.push(cb);
+    },
+    onFlush: (cb) => {
+      flushes.push(cb);
     },
     win: window,
     doc: document,
@@ -109,6 +115,9 @@ function harness(
     status,
     nudge: () => {
       for (const cb of nudges) cb();
+    },
+    flush: async () => {
+      await Promise.all(flushes.map((cb) => cb()));
     },
     captures: () =>
       sent.filter((m): m is Capture => m.type === "record-capture"),
@@ -611,6 +620,61 @@ describe("shadow roots and ordering", () => {
     await vi.waitFor(() => expect(h.captures()).toHaveLength(1), {
       timeout: CAPTURE_DEBOUNCE_MS / 2,
     });
+  });
+});
+
+describe("refill-flush (a popup Finish)", () => {
+  it("sends pending edits now and resolves only once their reply is in", async () => {
+    mount(`<input name="a"><input name="b">`);
+    const h = harness();
+    const send = h.env.send;
+    let release: () => void = () => undefined;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      const answer = await send(msg); // logged in `sent` now
+      if (msg.type === "record-capture" && msg.sig.name === "b") {
+        await new Promise<void>((r) => (release = r)); // the worker is still filing it
+      }
+      return answer;
+    });
+    start(h);
+    await started(h);
+    type(input("a"), "typed a", "input"); // both still in their quiet period
+    type(input("b"), "typed b", "input");
+    let settled = false;
+    const done = h.flush().then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(h.captures()).toHaveLength(2), {
+      timeout: CAPTURE_DEBOUNCE_MS / 2,
+    });
+    await sleep(20);
+    expect(settled).toBe(false);
+    release();
+    await done;
+    expect(h.captures().map((c) => [c.sig.name, c.value])).toEqual([
+      ["a", "typed a"],
+      ["b", "typed b"],
+    ]);
+  });
+
+  it("resolves at once with nothing pending, and while off", async () => {
+    mount(`<input name="a">`);
+    const on = harness();
+    start(on);
+    await started(on);
+    await on.flush();
+    expect(on.captures()).toEqual([]);
+    runs.splice(0).forEach((r) => r.stop());
+
+    const off = harness();
+    off.status.value = { state: "off" };
+    start(off);
+    await vi.waitFor(() =>
+      expect(off.sent.some((m) => m.type === "record-status")).toBe(true),
+    );
+    type(input("a"), "x", "input");
+    await off.flush();
+    expect(off.captures()).toEqual([]);
   });
 });
 

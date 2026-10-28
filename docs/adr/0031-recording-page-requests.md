@@ -84,7 +84,9 @@ Finish and Cancel recording, or, once finished, `Recording finished · n field(s
 which sends `record-finish` (it reopens the review page, ruling P11). A session of another tab shows
 "Refill is recording in another tab. Starting here stops it."; a finished session of another tab shows
 that a finished recording is waiting for review and that starting here discards it (a start replaces
-a finished session). `record-state` and `site-status` are read together; if either fails the view is
+a finished session). In both, the button reads **Record this site** even on a site with a saved form:
+"Record again" (and its "fills in as you go" line) is shown only when no session exists (Task 11
+fix of a Task 9 review minor; e2e in `record.spec.ts`). `record-state` and `site-status` are read together; if either fails the view is
 the generic error. Outcome copy: `denied` reuses "Access to this site wasn't granted", `locked` and
 `tab-moved` each get one calm line, and `granted-pending` shows nothing.
 

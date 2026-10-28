@@ -399,8 +399,8 @@ test("page markup named `browser` cannot switch Refill off; `chrome` markup fail
   await browserPage.goto(`${FIXTURE_A}/billpay/clobber-browser`);
   await expectTwinsFilled(browserPage);
 
+  const since = await logMark(context);
   for (const name of ["clobber-chrome", "clobber-chrome-form"]) {
-    const since = await logMark(context);
     const fresh = await context.newPage();
     await fresh.goto(`${FIXTURE_A}/billpay/${name}`);
     await fresh.waitForTimeout(1_000);
@@ -409,11 +409,12 @@ test("page markup named `browser` cannot switch Refill off; `chrome` markup fail
       "1",
     );
     await expectTwinsEmpty(fresh);
-    // Only this page's messages: the other open tabs may still ask the recording state after their
-    // fill (ADR 0032), which can land after the mark.
+    // No message from either clobbered page, a late one from the first included. The other open
+    // tabs may still ask the recording state after their fill (ADR 0032), which can land after
+    // the mark, so their paths are left out.
     expect(
-      (await entriesSince(context, since)).filter(
-        (e) => e.pathname === `/billpay/${name}`,
+      (await entriesSince(context, since)).filter((e) =>
+        e.pathname.startsWith("/billpay/clobber-chrome"),
       ),
     ).toEqual([]);
   }

@@ -31,7 +31,9 @@ import {
   RECORDING_TTL_MS,
   clearBadge,
   cancelUnfinished,
+  flushTab,
   nudge,
+  peekMeta,
   stoppedReason,
   withSession,
   type SessionMatch,
@@ -252,9 +254,14 @@ export function createRecorderPageHandlers(
       return state === "off" ? OFF : state;
     },
 
-    "record-finish": async ({ tabId }) => ({
-      ok: await finishSession({ tab: tabId }, now(), true),
-    }),
+    "record-finish": async ({ tabId }) => {
+      // The tab's edits still in the content script's debounce go out first (ADR 0032): a capture
+      // that arrives after the finish is dropped. Outside any session job, since those captures
+      // queue on the session chain. A finished session (reopen) has nothing pending.
+      const meta = await peekMeta({ tab: tabId }, now());
+      if (meta !== null && !meta.finished) await flushTab(tabId);
+      return { ok: await finishSession({ tab: tabId }, now(), true) };
+    },
 
     "record-cancel": async ({ tabId }) => {
       // Only the tab's own, unfinished session: a finished one belongs to its review page. One job,

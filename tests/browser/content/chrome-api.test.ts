@@ -193,3 +193,87 @@ describe("captureChrome onNudge", () => {
     ).not.toThrow();
   });
 });
+
+describe("captureChrome onFlush", () => {
+  const ID = "abcdefghijklmnop";
+  const FLUSH = { type: "refill-flush" };
+
+  it("runs the callback and sends the data-free ack only once its promise settles", async () => {
+    const chrome = fakeChrome(ID);
+    let release: () => void = () => undefined;
+    const cb = vi.fn(() => new Promise<void>((r) => (release = r)));
+    captureChrome(chrome)!.onFlush(cb);
+    const reply = vi.fn();
+    const returned = chrome.deliver(FLUSH, { id: ID }, reply);
+    expect(returned).toEqual([true]); // keeps the channel open for the async answer
+    expect(cb).toHaveBeenCalledTimes(1);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(reply).not.toHaveBeenCalled();
+    release();
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledWith({ ok: true }));
+    expect(reply).toHaveBeenCalledTimes(1);
+  });
+
+  it("still acks when the callback throws or rejects", async () => {
+    for (const cb of [
+      () => {
+        throw new Error("boom");
+      },
+      () => Promise.reject(new Error("boom")),
+    ]) {
+      const chrome = fakeChrome(ID);
+      captureChrome(chrome)!.onFlush(cb);
+      const reply = vi.fn();
+      expect(chrome.deliver(FLUSH, { id: ID }, reply)).toEqual([true]);
+      await vi.waitFor(() => expect(reply).toHaveBeenCalledWith({ ok: true }));
+    }
+  });
+
+  it("answers nothing from a tab, another extension, with any other shape, or a nudge", async () => {
+    const chrome = fakeChrome(ID);
+    const cb = vi.fn(async () => undefined);
+    captureChrome(chrome)!.onFlush(cb);
+    const reply = vi.fn();
+    const cases: [unknown, unknown][] = [
+      [FLUSH, { id: ID, tab: { id: 3 }, url: "https://x.example/" }],
+      [FLUSH, { id: "otherextensionid" }],
+      [FLUSH, {}],
+      [FLUSH, null],
+      [{ type: "refill-flush", extra: 1 }, { id: ID }],
+      [{ type: "refill-nudge" }, { id: ID }],
+      ["refill-flush", { id: ID }],
+      [[FLUSH], { id: ID }],
+      [Object.create({ type: "refill-flush" }), { id: ID }],
+    ];
+    for (const [msg, sender] of cases) {
+      expect(chrome.deliver(msg, sender, reply)).toEqual([undefined]);
+    }
+    await new Promise((r) => setTimeout(r, 10));
+    expect(cb).not.toHaveBeenCalled();
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it("the nudge listener never answers a flush, and the flush listener ignores a nudge", () => {
+    const chrome = fakeChrome(ID);
+    const nudged = vi.fn();
+    const flushed = vi.fn(async () => undefined);
+    const api = captureChrome(chrome)!;
+    api.onNudge(nudged);
+    api.onFlush(flushed);
+    expect(chrome.deliver({ type: "refill-nudge" }, { id: ID })).toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(chrome.deliver(FLUSH, { id: ID })).toEqual([undefined, true]);
+    expect(nudged).toHaveBeenCalledTimes(1);
+    expect(flushed).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a no-op when onMessage is missing", () => {
+    const { runtime } = fakeChrome(ID);
+    delete runtime.onMessage;
+    expect(() =>
+      captureChrome({ runtime })!.onFlush(async () => undefined),
+    ).not.toThrow();
+  });
+});

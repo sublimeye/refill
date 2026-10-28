@@ -52,6 +52,8 @@ export interface ContentEnv {
   isTrusted?: (e: Event) => boolean;
   /** Registers a callback for the worker's data-free `refill-nudge` (recording state changed). */
   onNudge?: ((cb: () => void) => void) | undefined;
+  /** Registers the answer to the worker's `refill-flush` (a popup Finish waits for the captures). */
+  onFlush?: ((cb: () => Promise<void>) => void) | undefined;
 }
 
 export interface ContentRun {
@@ -451,6 +453,11 @@ function run(env: ContentEnv): ContentRun {
       env.onNudge?.(sync);
     } catch {
       // no nudges: the recording state is still read after each scan start and restore
+    }
+    try {
+      env.onFlush?.(() => recording.flushed());
+    } catch {
+      // no flushes: a popup Finish waits at most its timeout
     }
     void scan().then(sync);
   }

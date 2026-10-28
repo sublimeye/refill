@@ -203,6 +203,33 @@ export async function nudge(tabId: number): Promise<void> {
   }
 }
 
+/** How long a popup Finish waits for the tab's pending captures (ADR 0032). */
+export const FLUSH_TIMEOUT_MS = 1_000;
+
+/**
+ * Asks the tab's top-frame content script to send its pending (debounced) captures and waits for
+ * its data-free ack, at most `FLUSH_TIMEOUT_MS`. Never inside a chain job: the captures it waits
+ * for queue on that chain. A failure (no content script, a closed tab) or a timeout only ends the
+ * wait, logged by error name only.
+ */
+export async function flushTab(tabId: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), FLUSH_TIMEOUT_MS);
+  });
+  try {
+    const out = await Promise.race([
+      browser.tabs.sendMessage(tabId, { type: "refill-flush" }, { frameId: 0 }),
+      timeout,
+    ]);
+    if (out === "timeout") console.error("[refill] flush failed:", "timeout");
+  } catch (err) {
+    console.error("[refill] flush failed:", errName(err));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // One chain for every job that reads or writes the record, so concurrent captures cannot lose
 // each other's writes. A job must never wait on another job (it would wait on itself).
 let chain: Promise<unknown> = Promise.resolve();
@@ -392,6 +419,14 @@ export function peekSession(
   id: string,
   now: number,
 ): Promise<SessionMeta | null> {
+  return peekMeta({ id }, now);
+}
+
+/** As `peekSession`, for the session `match` names (no DEK, no decryption). */
+export function peekMeta(
+  match: SessionMatch,
+  now: number,
+): Promise<SessionMeta | null> {
   return serialized(async () => {
     const rec = await load();
     if (rec === null) return null;
@@ -403,7 +438,7 @@ export function peekSession(
       await drop(rec.meta, "expired", now);
       return null;
     }
-    return rec.meta.id === id ? { ...rec.meta } : null;
+    return matches(rec.meta, match) ? { ...rec.meta } : null;
   });
 }
 

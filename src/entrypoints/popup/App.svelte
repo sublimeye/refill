@@ -303,7 +303,9 @@
       <p>Your saved form fills in as you go; change what's different.</p>
     {/if}
     <button type="button" onclick={() => record(s)} disabled={siteBusy}>
-      {s.kind === "on" && s.hasProfile ? "Record again" : "Record this site"}
+      {s.recording.state === "off" && s.kind === "on" && s.hasProfile
+        ? "Record again"
+        : "Record this site"}
     </button>
   {/if}
 {/snippet}

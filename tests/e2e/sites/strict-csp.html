@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="style-src 'none'; script-src 'none'"
+    />
+    <title>Strict CSP</title>
+  </head>
+  <body>
+    <h1>Strict CSP</h1>
+    <!-- No styles or scripts may run here: the recording pill must still show (CSSOM only). -->
+    <form action="/billpay/strict-csp" method="post">
+      <p>
+        <label>Nickname <input name="nickname" /></label>
+      </p>
+    </form>
+  </body>
+</html>

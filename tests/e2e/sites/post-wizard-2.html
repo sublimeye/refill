@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>POST wizard, step 2</title>
+  </head>
+  <body>
+    <h1>Pay your water bill</h1>
+    <!-- Step 2: the fixture server redirects a valid step-1 POST here (303, a new document). -->
+    <h2>Receipt</h2>
+    <form action="/billpay/post-wizard-2" method="post">
+      <p>
+        <label>Receipt email <input name="receiptEmail" type="email" /></label>
+      </p>
+      <p>
+        <label>Memo <input name="memo" /></label>
+      </p>
+    </form>
+  </body>
+</html>
