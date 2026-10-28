@@ -1,19 +1,19 @@
-// Pure never-capture rules (spec 5.3): string and signature predicates with no DOM access and no
-// runtime imports, so the service worker can use them. The DOM-bound classifier (`isSensitive`,
+// Pure never-capture rules (spec 5.3, secrets only): string and signature predicates with no DOM
+// access and no runtime imports, so the service worker can use them. The DOM-bound classifier (`isSensitive`,
 // `PasswordHistory`) stays in ./sensitive. Page content is hostile, so every check is bounded.
 
 import type { Sig } from "./signature";
 
 const FIELD_MAX = 256;
-const CARD_VALUE_MAX = 64;
 
 const AUTOCOMPLETE_SENSITIVE = new Set([
   "current-password",
   "new-password",
   "one-time-code",
+  "cc-csc",
 ]);
 
-// Word semantics: the haystack has camelCase and leading-acronym boundaries split (`cardNumber`,
+// Word semantics: the haystack has camelCase and leading-acronym boundaries split (`cardCode`,
 // `PINCode` -> `PIN Code`, `txtCVVCode`), is lowercased, and every non-alphanumeric run (including
 // `_`, `$`, `-`, `[`) becomes one space, so `\b` means "word edge" in `csrf_token`,
 // `authenticity_token` and `__RequestVerificationToken`.
@@ -23,24 +23,29 @@ const AUTOCOMPLETE_SENSITIVE = new Set([
 //   - `token` / `tokens` may be the end of a word (`accesstoken`) but not the start of one, so
 //     "tokenized" does not hit. `otp` may start a word (`otpcode`).
 //   - `code` is sensitive only after an allow-listed qualifier (an OTP or CVV code), as the bare name
-//     `code` / `otc`, or in the labels "6-digit code" / "code we sent" / "we sent a code" / "enter (your) code". `zip`, `postal`, `promo`,
-//     `coupon`, `area`, `country`, `discount`, `referral` codes stay capturable. `confirmation code`
-//     is included: it is the emailed sign-up code; `confirm code` is not (ambiguous).
+//     `code` / `otc`, or in the labels "6-digit code" / "code we sent" / "we sent a code" / "enter (your)
+//     code". `card` and `cc` are in that qualifier list on purpose: `card code`, `cc code`, `x_card_code`
+//     and `security code` are card security codes (CVV). `zip`, `postal`, `promo`, `coupon`, `area`,
+//     `country`, `discount`, `referral` codes stay capturable. `confirmation code` is included: it is
+//     the emailed sign-up code; `confirm code` is not (ambiguous).
+//   - Card numbers and SSNs are NOT secrets here (spec 5.3 as amended 2026-10-27): `card number`,
+//     `cc num`, `ssn`, `social security` and the `cc-number` / `cc-exp` / `cc-name` autocomplete tokens
+//     are capturable. Only the card security code (`cc-csc`, CVV words) stays excluded.
 // All patterns are alternations of literals and bounded classes: linear on a <= 256 char input.
 const CODE_QUALIFIER =
   "sms|text|verify|verification|auth|authentication|authenticator|one ?time|onetime|otc|2fa|twofa|two ?factor|mfa|login|security|card|cc|access|confirmation";
 const WORD_RE = new RegExp(
-  "\\b(?:pass|pwd|pin|2fa|twofa|mfa|cvv2?|cvc2?|csc|ssn|seed|nonce)\\b" +
+  "\\b(?:pass|pwd|pin|2fa|twofa|mfa|cvv2?|cvc2?|csc|seed|nonce)\\b" +
     "|\\botp|tokens?\\b" +
-    "|\\b(?:social security|recovery phrase|card ?(?:number|num|no)|cc ?num(?:ber)?)\\b" +
+    "|\\brecovery phrase\\b" +
     `|\\b(?:${CODE_QUALIFIER}) ?code\\b` +
     "|\\b\\d ?digits? code\\b|\\bcode (?:we )?sent\\b|\\b(?:we )?sent (?:you )?a code\\b|\\benter (?:your |the )?code\\b",
 );
 const BARE_CODE_RE = /^(?:code|otc)$/;
-// Unambiguous long forms are also matched in the separator-free form, so `confirmpassword`,
-// `__VIEWSTATE` and `cardnumber` hit.
+// Unambiguous long forms are also matched in the separator-free form, so `confirmpassword`
+// and `__VIEWSTATE` hit.
 const COMPACT_RE =
-  /password|passwd|passcode|passphrase|mnemonic|viewstate|eventvalidation|csrf|xsrf|totp|cardnumber/;
+  /password|passwd|passcode|passphrase|mnemonic|viewstate|eventvalidation|csrf|xsrf|totp/;
 
 function wordForm(raw: string): string {
   return raw
@@ -74,7 +79,7 @@ export function sensitiveAutocomplete(raw: string | null): boolean {
     .slice(0, FIELD_MAX)
     .toLowerCase()
     .split(/\s+/)
-    .some((t) => AUTOCOMPLETE_SENSITIVE.has(t) || t.startsWith("cc-"));
+    .some((t) => AUTOCOMPLETE_SENSITIVE.has(t));
 }
 
 /**
@@ -82,61 +87,11 @@ export function sensitiveAutocomplete(raw: string | null): boolean {
  * sensitive autocomplete token, or a secret/captcha name, stable id or label.
  */
 export function sigLooksSensitive(sig: Sig): boolean {
-  if (sig.type === "password" || sig.type === "hidden" || sig.type === "file") {
-    return true;
-  }
+  const type = sig.type.toLowerCase();
+  if (type === "password" || type === "hidden" || type === "file") return true;
   if (sensitiveAutocomplete(sig.autocomplete)) return true;
   for (const text of [sig.name, sig.idStable, sig.labelText]) {
     if (nameMatchesSensitive(text) || captchaLike(text)) return true;
   }
   return false;
-}
-
-function luhn(digits: string): boolean {
-  let sum = 0;
-  let double = false;
-  for (let i = digits.length - 1; i >= 0; i--) {
-    let d = digits.charCodeAt(i) - 48;
-    if (double) {
-      d *= 2;
-      if (d > 9) d -= 9;
-    }
-    sum += d;
-    double = !double;
-  }
-  return sum % 10 === 0;
-}
-
-function cardIin(digits: string): boolean {
-  if (digits.startsWith("4")) return true;
-  const two = Number(digits.slice(0, 2));
-  if ((two >= 51 && two <= 55) || two === 34 || two === 37 || two === 65) {
-    return true;
-  }
-  if (digits.startsWith("6011")) return true;
-  const four = Number(digits.slice(0, 4));
-  return four >= 2221 && four <= 2720;
-}
-
-const CARD_HINT_RE = /card|credit|debit|ccnum|(?:^|[^a-z])cc(?:[^a-z]|$)/;
-
-function cardHint(sig: Sig): boolean {
-  const haystack = [sig.name, sig.idStable, sig.labelText, sig.autocomplete]
-    .filter((s): s is string => s !== null)
-    .join(" ")
-    .slice(0, FIELD_MAX * 4)
-    .toLowerCase();
-  return CARD_HINT_RE.test(haystack);
-}
-
-/**
- * Luhn-valid 13 to 19 digits (spaces and dashes stripped) AND (a card hint in the signature OR a card
- * IIN prefix: 4, 51-55, 2221-2720, 34, 37, 6011, 65). The value is capped at 64 characters before
- * stripping, so a hostile megabyte value costs nothing.
- */
-export function looksLikeCardNumber(value: string, sig: Sig): boolean {
-  const digits = value.slice(0, CARD_VALUE_MAX).replace(/[\s-]/g, "");
-  if (!/^\d{13,19}$/.test(digits)) return false;
-  if (!luhn(digits)) return false;
-  return cardHint(sig) || cardIin(digits);
 }

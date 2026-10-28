@@ -25,6 +25,13 @@ describe("sigLooksSensitive", () => {
     );
   });
 
+  it("compares the type case-insensitively", () => {
+    expect(sigLooksSensitive(sig({ type: "PASSWORD" }))).toBe(true);
+    expect(sigLooksSensitive(sig({ type: "Hidden" }))).toBe(true);
+    expect(sigLooksSensitive(sig({ type: "FILE" }))).toBe(true);
+    expect(sigLooksSensitive(sig({ type: "TEXT", name: "email" }))).toBe(false);
+  });
+
   it("is true for the name confirmPassword", () => {
     expect(sigLooksSensitive(sig({ name: "confirmPassword" }))).toBe(true);
   });
@@ -46,5 +53,36 @@ describe("sigLooksSensitive", () => {
     );
     expect(sigLooksSensitive(sig({ labelText: "zip code" }))).toBe(false);
     expect(sigLooksSensitive(sig({ name: "pinnacle" }))).toBe(false);
+  });
+
+  it.each([
+    sig({ name: "cvv" }),
+    sig({ name: "x_card_code" }),
+    sig({ labelText: "Security code" }),
+    sig({ autocomplete: "cc-csc" }),
+    sig({ autocomplete: "section-pay cc-csc" }),
+    sig({ name: "card_pin" }),
+    sig({ labelText: "Seed phrase" }),
+    sig({ name: "seed_phrase" }),
+    sig({ labelText: "Recovery phrase" }),
+    sig({ autocomplete: "one-time-code" }),
+    sig({ name: "password" }),
+    sig({ autocomplete: "new-password" }),
+  ])("is true for the secret %j", (s) => {
+    expect(sigLooksSensitive(s)).toBe(true);
+  });
+
+  it.each([
+    sig({ name: "card_number" }),
+    sig({ name: "cardNumber" }),
+    sig({ name: "ssn" }),
+    sig({ labelText: "Card number" }),
+    sig({ labelText: "Social Security Number" }),
+    sig({ autocomplete: "cc-number" }),
+    sig({ autocomplete: "cc-exp" }),
+    sig({ autocomplete: "cc-name" }),
+    sig({ name: "cc_num", autocomplete: "cc-number" }),
+  ])("is false for the capturable card or SSN field %j", (s) => {
+    expect(sigLooksSensitive(s)).toBe(false);
   });
 });

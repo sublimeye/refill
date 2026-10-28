@@ -346,6 +346,25 @@ describe("fill rules (canFill)", () => {
     expect(can(item(q("[name=ok]"), "x"))).toBe(true);
   });
 
+  it("allows card number and SSN fields, still refuses the card security code", () => {
+    mount(
+      `<input name="card_number" autocomplete="cc-number">` +
+        `<label>Social Security Number <input name="s"></label>` +
+        `<input name="cvv" autocomplete="cc-csc"><input name="x_card_code">`,
+    );
+    const i = item(q("[name=card_number]"), "4111 1111 1111 1111");
+    expect(can(i)).toBe(true);
+    expect(fill(i)).toBe("filled");
+    expect(q<HTMLInputElement>("[name=card_number]").value).toBe(
+      "4111 1111 1111 1111",
+    );
+    expect(can(item(q("[name=s]"), "123-45-6789"))).toBe(true);
+    expect(can(item(q("[name=cvv]"), "123"))).toBe(false);
+    expect(fill(item(q("[name=x_card_code]"), "123"))).toBe(
+      "skipped-ineligible",
+    );
+  });
+
   it("refuses an input that was once a password", () => {
     mount(`<input name="p" type="password">`);
     const hist = history();
@@ -1051,7 +1070,7 @@ describe("fillControl re-checks the control rules right before writing", () => {
     const i = item(a, "SECRET");
     const hist = history();
     expect(canFill(i, hist, origin, top)).toBe(true);
-    a.setAttribute("autocomplete", "cc-number");
+    a.setAttribute("autocomplete", "cc-csc");
     expect(fillControl(i, hist, origin, top)).toBe("skipped-ineligible");
     expect(a.value).toBe("");
   });

@@ -113,9 +113,22 @@ describe("scanDocument exclusions", () => {
         `<input name="ro" readonly>` +
         `<input name="gone" style="display:none">` +
         `<input name="otp_code">` +
-        `<input name="x" autocomplete="cc-number">`,
+        `<input name="x" autocomplete="cc-csc">` +
+        `<input name="cvv">` +
+        `<input name="seed_phrase">`,
     );
     expect(names(scan())).toEqual(["ok"]);
+  });
+
+  it("scans card number, expiry, name on card and SSN inputs (only secrets are excluded)", () => {
+    mount(
+      `<form><label>Card number <input name="card_number" autocomplete="cc-number"></label>` +
+        `<input name="exp" autocomplete="cc-exp">` +
+        `<input name="holder" autocomplete="cc-name">` +
+        `<label>Social Security Number <input name="ssn"></label>` +
+        `<input name="cvv" autocomplete="cc-csc"></form>`,
+    );
+    expect(names(scan())).toEqual(["card_number", "exp", "holder", "ssn"]);
   });
 
   it("a password turned into text before the scan stays excluded", async () => {
