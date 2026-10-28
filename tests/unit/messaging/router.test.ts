@@ -56,6 +56,10 @@ function spyHandlers() {
     "site-enable": vi.fn(async () => ({ ok: true })),
     "site-remove": vi.fn(async () => ({ ok: true })),
     "site-intent": vi.fn(async () => ({ ok: true })),
+    "record-start": vi.fn(async () => ({ ok: true })),
+    "record-state": vi.fn(async () => ({ state: "off" })),
+    "record-finish": vi.fn(async () => ({ ok: false })),
+    "record-cancel": vi.fn(async () => ({ ok: true })),
   };
   const c = {
     "scan-report": vi.fn(async () => ({ state: "none" })),
@@ -255,8 +259,13 @@ describe("site requests", () => {
       parsePageRequest({ type: "site-enable", tabId: 3, origin: SITE }),
     ).toEqual({ type: "site-enable", tabId: 3, origin: SITE });
     expect(
-      parsePageRequest({ type: "site-intent", tabId: 0, origin: SITE }),
-    ).toEqual({ type: "site-intent", tabId: 0, origin: SITE });
+      parsePageRequest({
+        type: "site-intent",
+        tabId: 0,
+        origin: SITE,
+        kind: "enable",
+      }),
+    ).toEqual({ type: "site-intent", tabId: 0, origin: SITE, kind: "enable" });
   });
 
   it("accepts a 256-char origin string and rejects 257", () => {
@@ -266,11 +275,14 @@ describe("site requests", () => {
       expect(parsePageRequest({ type, origin: exact })).not.toBeNull();
       expect(parsePageRequest({ type, origin: long })).toBeNull();
     }
-    for (const type of ["site-enable", "site-intent"]) {
+    for (const type of ["site-enable", "site-intent", "record-start"]) {
+      const kind = type === "site-intent" ? { kind: "record" } : {};
       expect(
-        parsePageRequest({ type, tabId: 1, origin: exact }),
+        parsePageRequest({ type, tabId: 1, origin: exact, ...kind }),
       ).not.toBeNull();
-      expect(parsePageRequest({ type, tabId: 1, origin: long })).toBeNull();
+      expect(
+        parsePageRequest({ type, tabId: 1, origin: long, ...kind }),
+      ).toBeNull();
     }
   });
 
@@ -284,13 +296,32 @@ describe("site requests", () => {
       "enable with a timestamp",
       { type: "site-enable", tabId: 1, origin: SITE, ts: 1 },
     ],
-    ["intent without origin", { type: "site-intent", tabId: 1 }],
+    [
+      "intent without origin",
+      { type: "site-intent", tabId: 1, kind: "enable" },
+    ],
+    ["intent without kind", { type: "site-intent", tabId: 1, origin: SITE }],
     ["negative tabId", { type: "site-enable", tabId: -1, origin: SITE }],
-    ["fractional tabId", { type: "site-intent", tabId: 1.5, origin: SITE }],
-    ["NaN tabId", { type: "site-intent", tabId: NaN, origin: SITE }],
-    ["Infinity tabId", { type: "site-intent", tabId: Infinity, origin: SITE }],
-    ["unsafe tabId", { type: "site-intent", tabId: 2 ** 53, origin: SITE }],
-    ["string tabId", { type: "site-intent", tabId: "1", origin: SITE }],
+    [
+      "fractional tabId",
+      { type: "site-intent", tabId: 1.5, origin: SITE, kind: "enable" },
+    ],
+    [
+      "NaN tabId",
+      { type: "site-intent", tabId: NaN, origin: SITE, kind: "enable" },
+    ],
+    [
+      "Infinity tabId",
+      { type: "site-intent", tabId: Infinity, origin: SITE, kind: "enable" },
+    ],
+    [
+      "unsafe tabId",
+      { type: "site-intent", tabId: 2 ** 53, origin: SITE, kind: "enable" },
+    ],
+    [
+      "string tabId",
+      { type: "site-intent", tabId: "1", origin: SITE, kind: "enable" },
+    ],
   ])("rejects %s", (_name, raw) => {
     expect(parsePageRequest(raw)).toBeNull();
   });
@@ -302,7 +333,7 @@ describe("site requests", () => {
       { type: "site-status", origin: SITE },
       { type: "site-enable", tabId: 1, origin: SITE },
       { type: "site-remove", origin: SITE },
-      { type: "site-intent", tabId: 1, origin: SITE },
+      { type: "site-intent", tabId: 1, origin: SITE, kind: "enable" },
     ];
     for (const m of msgs) expect(await router(m, content)).toEqual(REJECTED);
     for (const spy of Object.values(h)) expect(spy).not.toHaveBeenCalled();

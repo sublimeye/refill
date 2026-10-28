@@ -3,7 +3,7 @@
 import { browser } from "wxt/browser";
 import { sendToSw, type SiteStatus } from "../messaging/protocol";
 import { normalizeOrigin } from "./origin";
-import { requestSiteEnable } from "./popup-flow";
+import { requestSiteEnable, type EnableOutcome } from "./popup-flow";
 
 /** The tab the popup acts on. `origin` is null when it is not a plain https page. */
 export interface Target {
@@ -86,7 +86,7 @@ export async function loadSiteView(target: Target): Promise<SiteView> {
 }
 
 export interface EnableResult {
-  outcome: "enabled" | "granted-pending" | "denied";
+  outcome: EnableOutcome;
   view: SiteView;
 }
 

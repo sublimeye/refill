@@ -41,7 +41,12 @@ export type StopReason = "locked" | "expired";
 export type DiscardReason =
   StopReason | "cancelled" | "replaced" | "saved" | "tab-closed";
 
-export type SessionMatch = { tabId: number; origin: string } | { id: string };
+/**
+ * Which session a job means: a tab (and, when given, an origin), an id, or whichever session there
+ * is. Content handlers always give the tab and the sender's origin; extension pages know the tab only.
+ */
+export type SessionMatch =
+  { tabId: number; origin?: string } | { id: string } | { any: true };
 
 export interface SessionUpdate<T> {
   body?: RecBody;
@@ -56,6 +61,7 @@ interface Stored {
 
 interface Tombstone {
   tabId: number;
+  origin: string;
   reason: StopReason;
   at: number;
 }
@@ -210,7 +216,12 @@ async function drop(
 ): Promise<void> {
   await removeRecord();
   if (reason === "locked" || reason === "expired") {
-    const t: Tombstone = { tabId: meta.tabId, reason, at };
+    const t: Tombstone = {
+      tabId: meta.tabId,
+      origin: meta.origin,
+      reason,
+      at,
+    };
     await browser.storage.session.set({ [TOMBSTONE_KEY]: t });
   }
   // A closed tab has neither a badge nor a content script left.
@@ -259,9 +270,12 @@ export function startSession(
 }
 
 function matches(meta: SessionMeta, m: SessionMatch): boolean {
-  return "id" in m
-    ? meta.id === m.id
-    : meta.tabId === m.tabId && meta.origin === m.origin;
+  if ("id" in m) return meta.id === m.id;
+  if ("any" in m) return true;
+  return (
+    meta.tabId === m.tabId &&
+    (m.origin === undefined || meta.origin === m.origin)
+  );
 }
 
 /**
@@ -365,29 +379,41 @@ export function discardSession(
 }
 
 function parseTombstone(x: unknown): Tombstone | null {
-  if (!plainWithKeys(x, ["tabId", "reason", "at"])) return null;
-  const { tabId, reason, at } = x;
+  if (!plainWithKeys(x, ["tabId", "origin", "reason", "at"])) return null;
+  const { tabId, origin, reason, at } = x;
   if (
     !isTabId(tabId) ||
+    !isOrigin(origin) ||
     (reason !== "locked" && reason !== "expired") ||
     typeof at !== "number" ||
     !Number.isFinite(at)
   ) {
     return null;
   }
-  return { tabId, reason, at };
+  return { tabId, origin, reason, at };
 }
 
-/** Why the session of `tabId` stopped, for 30 min after a lock or an expiry; else null. */
+/**
+ * Why the session of `tabId` on `origin` stopped, for 30 min after a lock or an expiry; else null.
+ * Another origin in the same tab learns nothing.
+ */
 export async function stoppedReason(
   tabId: number,
+  origin: string,
   now: number,
 ): Promise<StopReason | null> {
   const raw = (await browser.storage.session.get(TOMBSTONE_KEY))[
     TOMBSTONE_KEY
   ] as unknown;
   const t = parseTombstone(raw);
-  if (!t || t.tabId !== tabId || now - t.at >= TOMBSTONE_TTL_MS) return null;
+  if (
+    !t ||
+    t.tabId !== tabId ||
+    t.origin !== origin ||
+    now - t.at >= TOMBSTONE_TTL_MS
+  ) {
+    return null;
+  }
   return t.reason;
 }
 

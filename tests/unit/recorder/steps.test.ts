@@ -28,6 +28,21 @@ describe("observePage", () => {
     expect(b.lastDocument).toBe("doc-1");
   });
 
+  it("returns the same body when the page changed nothing", () => {
+    const one = keys(page("acct", "zip"));
+    const first = observePage(emptyBody(), one, "d1", "/one");
+    if (first === "full") throw new Error("full");
+    expect(observePage(first, one, "d1", "/one")).toBe(first);
+    expect(observePage(first, [one[0]!], "d1", "/one")).toBe(first); // a subset adds no key
+    // A new document, or a new key, is a change.
+    expect(observePage(first, one, "d2", "/one")).not.toBe(first);
+    expect(observePage(first, [...one, "extra"], "d1", "/one")).not.toBe(first);
+    // A control-less page twice.
+    const none = observePage(first, [], "d1", "/one");
+    if (none === "full") throw new Error("full");
+    expect(observePage(none, [], "d1", "/one")).toBe(none);
+  });
+
   it("does not mutate its input", () => {
     const b0 = observe(emptyBody(), STEP1, "doc-1");
     const snapshot = structuredClone(b0);

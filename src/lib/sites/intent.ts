@@ -1,6 +1,6 @@
 import { browser } from "wxt/browser";
 
-export type IntentKind = "enable";
+export type IntentKind = "enable" | "record";
 
 export interface PendingIntent {
   tabId: number;
@@ -20,7 +20,7 @@ function isIntent(v: unknown): v is PendingIntent {
   return (
     typeof i.tabId === "number" &&
     typeof i.origin === "string" &&
-    i.kind === "enable" &&
+    (i.kind === "enable" || i.kind === "record") &&
     typeof i.ts === "number" &&
     Number.isFinite(i.ts)
   );

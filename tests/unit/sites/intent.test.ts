@@ -24,6 +24,18 @@ describe("pending intent", () => {
     expect(INTENT_TTL_MS).toBe(120_000);
   });
 
+  it("keeps the kind: enable and record both round-trip, any other is garbage", async () => {
+    await writeIntent({ ...intent, kind: "record" });
+    expect(await takeIntent(A, intent.ts)).toEqual({
+      ...intent,
+      kind: "record",
+    });
+    await fakeBrowser.storage.session.set({
+      "sites:intent": { ...intent, kind: "other" },
+    });
+    expect(await takeIntent(A, intent.ts)).toBeNull();
+  });
+
   it("is taken once", async () => {
     await writeIntent(intent);
     expect(await takeIntent(A, intent.ts + 1000)).toEqual(intent);

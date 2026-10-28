@@ -2,6 +2,7 @@
 // value from a message into the vault except the passphrase (ADR 0012 / 0014).
 import type { KdfParams } from "../crypto/kdf";
 import { meetsMinLength } from "../passphrase/rules";
+import { createRecorderPageHandlers } from "../recorder/handlers";
 import { createSiteHandlers } from "../sites/handlers";
 import {
   createVault,
@@ -17,6 +18,7 @@ export function createPageHandlers(
 ): PageHandlers {
   return {
     ...createSiteHandlers(),
+    ...createRecorderPageHandlers(),
     "vault-status": () => status(),
     "vault-create": async ({ passphrase }) => {
       // Cheap checks first: an invalid create must not burn seconds of Argon2 calibration.

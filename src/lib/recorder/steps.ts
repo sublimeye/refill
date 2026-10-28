@@ -1,5 +1,6 @@
 // Step boundaries while recording (spec 6.2). Runs once per scan-report with the page's `sigKey`
-// keys, the sender's document id and pathname. Pure; returns a new body. Decisions: ADR 0028.
+// keys, the sender's document id and pathname. Pure; returns a new body, or the same object when the
+// page changed nothing. Decisions: ADR 0028, ADR 0029.
 import { jaccard, MIN_JACCARD } from "../match/match";
 import { LIMITS } from "../profiles/types";
 import type { RecBody, RecStep } from "./types";
@@ -72,6 +73,10 @@ function stepFor(
   return best;
 }
 
+/**
+ * The body after the page was filed. The same object when nothing changed (same step, same
+ * fingerprint, same document), so the caller can skip the write.
+ */
 export function observePage(
   body: RecBody,
   rawKeys: string[],
@@ -82,15 +87,23 @@ export function observePage(
   // A page with no eligible controls is no step: nothing on it can be captured or filled. Plan 2's
   // runner never reports an empty scan, so only a direct caller gets here.
   if (keys.length === 0) {
-    return { ...body, current: null, lastDocument: documentId };
+    return body.current === null && body.lastDocument === documentId
+      ? body
+      : { ...body, current: null, lastDocument: documentId };
   }
   const join = stepFor(body, keys, documentId);
   if (join !== null) {
+    const fingerprint = union(join.fingerprint, keys);
+    if (
+      fingerprint.length === join.fingerprint.length &&
+      body.current === join.index &&
+      body.lastDocument === documentId
+    ) {
+      return body; // union only appends, so equal length means no new key
+    }
     return {
       ...body,
-      steps: body.steps.map((s) =>
-        s === join ? { ...s, fingerprint: union(s.fingerprint, keys) } : s,
-      ),
+      steps: body.steps.map((s) => (s === join ? { ...s, fingerprint } : s)),
       current: join.index,
       lastDocument: documentId,
     };

@@ -24,9 +24,8 @@ ADR 0028 and the store is ADR 0029; this ADR covers the messages and the worker 
 ### Scope
 Every handler uses the session that matches `{ tabId, origin }` from the router's sender context.
 A finished session is `off` for the content script: it belongs to its review page. When no session
-matches, the answer is `stopped` if this tab has a tombstone (ADR 0029), else `off`. The tombstone
-holds no origin, so another origin in the same tab can see `stopped` for up to 30 min; the pill
-text is the only effect.
+matches, the answer is `stopped` if this tab and origin have a tombstone (ADR 0029), else `off`. The tombstone
+holds the origin it ended on (Task 7, ruling P10), so only that origin in that tab sees `stopped`.
 
 ### `full` (the plan left this open)
 `recordState(body)` answers `full` when nothing more can be captured on this page:
@@ -43,7 +42,9 @@ Otherwise it answers `on`. Back on a known step after an eleventh page, the answ
      `ctx.pathname`;
    - on `"full"`, stores the body with `current: null` and `lastDocument` set to this document
      (Plan 3 ruling P4), so captures on that page get `"no-step"` and answer `full`;
-   - returns `recordingPlan` over the body it stores. A new step has no fields yet, and the matcher's
+   - returns `recordingPlan` over the body it stores; when `observePage` returns the body unchanged
+     (the same page again: same step, no new key, same document), the job returns no body, so
+     nothing is sealed or written (Task 7, ruling P10). The reply is the same. A new step has no fields yet, and the matcher's
      step gate keeps other steps' fields off it.
 3. With a plan, it re-checks `lockEpoch()` synchronously and then answers `{ state: "fill", items }`,
    or `none` when there are no items.
@@ -85,4 +86,5 @@ state. For a finish, the state is `finished` or `off`. It never logs a capture r
   profile will fill (ADR 0028).
 
 ## Status
-Accepted (2026-10-27).
+Accepted (2026-10-27). Amended by Task 7 (2026-10-27): the tombstone is per origin, and an unchanged
+page is not written again. `finishSession` takes `reopen` for the extension page (ADR 0031).
