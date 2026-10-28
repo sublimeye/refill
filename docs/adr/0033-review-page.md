@@ -49,7 +49,12 @@ re-checks the epoch).
    `newId()` and the worker's `now` are used when the site has none. Record again therefore keeps the
    profile id, and so does a plain recording on a site that already has a form: the site has one form.
 4. `buildProfile` (ADR 0028) checks the policies against the fields, the trimmed name and the prefix
-   coverage → `invalid` when it returns null. An invalid save writes nothing and keeps the session, so
+   coverage → `invalid` when it returns null. A field set to "Don't save" (`skip`) is kept with its
+   signature, step and kind, so it still claims its control and no other field takes it (ADR 0025),
+   but with `value: ""` and `pageDefault: ""`: nothing the user typed or the page showed is stored
+   (Plan 3 final review, C1). Record again seeds that field empty; the review shows it empty and
+   "Don't save". If the user switches it back to "Fill it in" without typing it again, an empty
+   value is saved, which fills nothing (text) or is refused as `unsupported` (toggles). An invalid save writes nothing and keeps the session, so
    the user can correct it and save again.
 5. **At save time** the session is opened again: it must still be there and finished, and
    `lockEpoch()` must not have changed since step 1, else `gone`. A lock discards the session
@@ -77,6 +82,22 @@ opens no body and uses no DEK; an expired session is discarded as in `withSessio
 page drops the model, the form and every shown value, and shows the gone copy. A messaging failure
 reveals nothing and keeps the page. Hide needs no check. The page never listens to
 `storage.session`: pages must not read the DEK mirror (spec §4.3).
+
+### The worker's "recording ended" signal (Plan 3 final review, I3)
+A value already revealed used to stay on screen after a lock until the page was used again. Now
+every session discard (lock, expiry, save, cancel, replace, site removal; ADR 0029) sends extension
+pages a data-free `{ type: "refill-recording-ended" }` through `runtime.sendMessage`, which content
+scripts never receive. The review page accepts exactly that message from its own extension id
+(`onRecordingEnded`) and answers it with the same `review-check` as on a return to the page, so a
+lock in another window ends the review at once and hides every value, with no action on the page.
+The message proves nothing: a forged one costs one check. While a save or discard is in flight the
+check waits for it, so the page's own save does not flash the gone copy. The listener is removed on
+destroy.
+
+The final review asked for a `storage.onChanged` listener on the `session` area instead. That event
+delivers every change of the area, the DEK mirror (`vault:session`, raw key bytes as `newValue` on
+every unlock) included, to the page's listener, which spec §4.3 and the rule above exclude. The
+signal gives the same outcome without that (deviation, recorded in the final-fix report).
 
 ### The page (`src/entrypoints/review/`, logic in `src/lib/recorder/review-flow.ts`)
 - Values are masked as `••••••`. Each row has a **Show**/**Hide** button that, after the check
@@ -125,9 +146,10 @@ a record is missing.
 ## Consequences
 - A captured value reaches a page only for a finished session, on that page's request, and is put
   into the DOM only when the user presses Show.
-- A value already revealed stays on screen after a lock until the page is used again: the next
-  Show, a return to the page (`visibilitychange`), Save or Discard ends the review and drops it.
-  A page left visible and untouched is not polled.
+- A value already revealed is hidden as soon as the worker discards the session (a lock, Lock now
+  in the popup, a new recording, a removed site), through the signal above. An expiry is noticed
+  only when the session is next read (the TTL is checked lazily), so a page left open past it keeps
+  its values until the next Show, return to the page, Save or Discard. The page is not polled.
 - `review-save` needs one more session open than a plain save (the re-check at save time); each open
   is one `storage.session` read and one AES-GCM open. `review-check` costs one `storage.session`
   read and the vault status, and opens nothing.
@@ -135,5 +157,6 @@ a record is missing.
 ## Status
 Accepted (2026-10-27). Fix round 1 (2026-10-27): `review-check` before every reveal and on return to
 the page (ruling P15), no `aria-pressed` (ruling P16), the seed-id rule for the model, words for
-checkbox and radio values. Amends ADR 0022: `loadProfileForOrigin` follows a moved pointer when the
+checkbox and radio values. Amended by the Plan 3 final review (2026-10-28): a `skip` field is saved
+without its value (C1), and the page ends on the worker's data-free "recording ended" signal (I3). Amends ADR 0022: `loadProfileForOrigin` follows a moved pointer when the
 record is missing (M9).

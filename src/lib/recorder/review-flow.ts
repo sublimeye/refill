@@ -1,6 +1,7 @@
 // Review-page logic (spec §6.2), kept out of the Svelte component so it is unit-testable: the
 // session id from the page URL, loading, the page state and the reveal check, the form checks the
 // page can make itself, the save request and what the worker's answers mean. Decisions: ADR 0033.
+import { browser } from "wxt/browser";
 import { sendToSw, type ReviewLoadResult } from "../messaging/protocol";
 import { ID_RE, type FieldPolicy } from "../profiles/types";
 import type { ReviewModel } from "./profile";
@@ -208,4 +209,29 @@ export async function recheckReview(
   }
   endReview(page, "gone");
   return true;
+}
+
+/**
+ * Calls `onSignal` for each `{ type: "refill-recording-ended" }` from this extension: the worker's
+ * data-free word that a recording ended (a lock, an expiry, a save, a cancel, a replace). It proves
+ * nothing, so the page answers it with `review-check`, as on a return to the page; a forged one
+ * costs one check. The page does not watch `storage.session` instead: its change events would hand
+ * the page the DEK mirror on every unlock (spec §4.3, ADR 0033). Returns the unsubscribe.
+ */
+export function onRecordingEnded(onSignal: () => void): () => void {
+  const listener = (msg: unknown, sender: { id?: string }): undefined => {
+    if (
+      typeof sender.id === "string" &&
+      sender.id === browser.runtime.id &&
+      typeof msg === "object" &&
+      msg !== null &&
+      Object.keys(msg).length === 1 &&
+      (msg as Record<string, unknown>)["type"] === "refill-recording-ended"
+    ) {
+      onSignal();
+    }
+    return undefined; // never answers: the worker does not wait for pages
+  };
+  browser.runtime.onMessage.addListener(listener);
+  return () => browser.runtime.onMessage.removeListener(listener);
 }

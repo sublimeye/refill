@@ -17,6 +17,7 @@ import {
   sessionIdFrom,
   stepNumber,
   toggleValue,
+  onRecordingEnded,
   type ReviewPage,
 } from "../../../src/lib/recorder/review-flow";
 
@@ -269,5 +270,40 @@ describe("the page state", () => {
     sent = [];
     expect(await recheckReview(page, ID)).toBe(false);
     expect(sent).toEqual([]);
+  });
+});
+
+describe("onRecordingEnded (I3)", () => {
+  const ENDED = { type: "refill-recording-ended" };
+  const self = () => ({ id: fakeBrowser.runtime.id });
+  const noReply = () => undefined;
+
+  it("calls back for the worker's data-free signal", async () => {
+    const signal = vi.fn();
+    onRecordingEnded(signal);
+    await fakeBrowser.runtime.onMessage.trigger(ENDED, self(), noReply);
+    expect(signal).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["another extension", ENDED, { id: "another-extension" }],
+    ["no sender id", ENDED, {}],
+    ["another type", { type: "refill-nudge" }, undefined],
+    ["an extra key", { ...ENDED, sessionId: ID }, undefined],
+    ["not an object", "refill-recording-ended", undefined],
+    ["null", null, undefined],
+  ])("ignores %s", async (_n, msg, sender) => {
+    const signal = vi.fn();
+    onRecordingEnded(signal);
+    await fakeBrowser.runtime.onMessage.trigger(msg, sender ?? self(), noReply);
+    expect(signal).not.toHaveBeenCalled();
+  });
+
+  it("stops listening once unsubscribed", async () => {
+    const signal = vi.fn();
+    const stop = onRecordingEnded(signal);
+    stop();
+    await fakeBrowser.runtime.onMessage.trigger(ENDED, self(), noReply);
+    expect(signal).not.toHaveBeenCalled();
   });
 });

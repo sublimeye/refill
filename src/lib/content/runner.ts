@@ -141,7 +141,8 @@ function invalidated(err: unknown): boolean {
  * Flow: wait until the document is not prerendering; watch password type flips; scan, and if the
  * page fingerprint changed since the last report send a `scan-report`; apply a `fill` plan (every
  * item vetted with `canFill` before any write, then `fillControl`, each field id filled at most
- * once per document) and send a `fill-result`. Re-scan after DOM changes (also inside shadow roots
+ * once per document, or while recording at most once per element, ruling P20) and send a
+ * `fill-result`. Re-scan after DOM changes (also inside shadow roots
  * the scan entered) and after `scrollend` (window and, in the capture phase, any scroll container),
  * debounced. A bfcache restore reports again but keeps the filled ids. When the extension context
  * goes away everything stops, silently.
@@ -164,7 +165,14 @@ function run(env: ContentEnv): ContentRun {
   const history = new PasswordHistory();
   const observer = new MutationObserver(() => schedule());
   const watched = new WeakSet<ShadowRoot>();
+  /** Field ids written (or refused by the page) in this document: Plan 2's once-only rule. */
   const filled = new Set<string>();
+  /**
+   * The same per element: while recording a field id is written at most once into each element, so
+   * an SPA's Back, which renders the step again as new elements, shows the recorded values every
+   * time (ruling P20). Outside recording `filled` alone decides (ADR 0026).
+   */
+  const filledEls = new WeakMap<Element, Set<string>>();
   /**
    * Element -> the field id Refill filled into it and the signature it had then: a capture there
    * updates that field (ADR 0028), but only while the element still means that field. A framework
@@ -268,6 +276,13 @@ function run(env: ContentEnv): ContentRun {
     }
   }
 
+  function markFilled(fieldId: string, el: Element): void {
+    filled.add(fieldId);
+    const ids = filledEls.get(el);
+    if (ids === undefined) filledEls.set(el, new Set([fieldId]));
+    else ids.add(fieldId);
+  }
+
   function apply(
     items: FillItem[],
     controls: ScannedControl[],
@@ -278,11 +293,17 @@ function run(env: ContentEnv): ContentRun {
       // during one fill must not make another field look empty.
       const ready: { fieldId: string; item: ControlItem; sig: Sig }[] = [];
       const named = new Set<string>();
+      const perElement = recording.active();
       for (const { fieldId, i, kind, value, pageDefault } of items) {
-        // Filled earlier in this document, or named twice in this plan: never written again.
-        if (filled.has(fieldId) || named.has(fieldId)) continue;
-        named.add(fieldId);
         const control = controls[i];
+        // Filled earlier in this document (into this element, while recording), or named twice in
+        // this plan: never written again.
+        const done = perElement
+          ? control !== undefined &&
+            filledEls.get(control.el)?.has(fieldId) === true
+          : filled.has(fieldId);
+        if (done || named.has(fieldId)) continue;
+        named.add(fieldId);
         if (control === undefined || control.kind !== kind) {
           counts.skipped++;
           continue;
@@ -309,14 +330,14 @@ function run(env: ContentEnv): ContentRun {
         }
         switch (fillControl(item, history, origin, isTopWindow)) {
           case "filled":
-            filled.add(fieldId);
+            markFilled(fieldId, item.el);
             filledInto.set(item.el, { fieldId, sig });
             counts.filled++;
             break;
           case "unsupported":
           case "rejected-by-page":
             // Not retried: a custom widget or a refusing page will refuse again.
-            filled.add(fieldId);
+            markFilled(fieldId, item.el);
             counts.unsupported++;
             break;
           default:

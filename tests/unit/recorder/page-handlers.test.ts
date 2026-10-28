@@ -416,6 +416,31 @@ describe("record-finish", () => {
     );
   });
 
+  it("nudges the tab once the session is finished, so its pill goes away (I1)", async () => {
+    ready();
+    await start();
+    sendMessage.mockClear();
+    const seen: unknown[] = [];
+    sendMessage.mockImplementation(
+      async (_tab: number, msg: { type: string }) => {
+        if (msg.type !== "refill-nudge") return undefined;
+        // The content script answers a nudge with record-status: it must hear "finished".
+        const got = await peek();
+        seen.push(got === "off" ? "off" : got.meta.finished);
+        return undefined;
+      },
+    );
+    expect(await finish()).toEqual({ ok: true });
+    await vi.waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith(
+        TAB,
+        { type: "refill-nudge" },
+        { frameId: 0 },
+      ),
+    );
+    await vi.waitFor(() => expect(seen).toEqual([true]));
+  });
+
   it("on an already finished session it opens the review page again (idempotent)", async () => {
     ready();
     await start();
@@ -495,6 +520,24 @@ describe("record-finish", () => {
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain(
       "connection",
     );
+  });
+
+  it("a pill Finish that lands while the popup Finish waits for the flush opens one review tab (M9)", async () => {
+    ready();
+    await start();
+    sendMessage.mockImplementation(
+      async (_tab: number, msg: { type: string }) => {
+        if (msg.type !== "refill-flush") return undefined;
+        // The user clicked Finish on the pill meanwhile: the content script's own record-finish.
+        expect(await finishSession({ tabId: TAB, origin: ORIGIN }, clock)).toBe(
+          true,
+        );
+        return { ok: true };
+      },
+    );
+    expect(await finish()).toEqual({ ok: false });
+    expect(create).toHaveBeenCalledOnce();
+    expect((await state()).state).toBe("review");
   });
 
   it("reopening a finished session sends no flush", async () => {

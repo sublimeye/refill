@@ -132,14 +132,20 @@ export function buildProfile(input: {
       pathHint: s.pathHint,
       fingerprint: [...s.fingerprint],
     })),
-    fields: body.fields.map((f) => ({
-      id: f.id,
-      sig: { ...f.sig },
-      step: f.step,
-      kind: f.kind,
-      value: f.value,
-      pageDefault: f.pageDefault,
-      policy: policies[f.id],
-    })),
+    fields: body.fields.map((f) => {
+      const policy = policies[f.id];
+      // "Don't save" keeps no value: the field stays (its sig, step and kind still claim the control,
+      // ADR 0025), but nothing the user typed or the page showed is stored (C1, ADR 0033).
+      const keep = policy !== "skip";
+      return {
+        id: f.id,
+        sig: { ...f.sig },
+        step: f.step,
+        kind: f.kind,
+        value: keep ? f.value : "",
+        pageDefault: keep ? f.pageDefault : "",
+        policy,
+      };
+    }),
   });
 }

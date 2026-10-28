@@ -298,8 +298,17 @@ test("a form in a cross-origin iframe is never filled", async ({
   const { page } = await setUp(context, extensionId, [FIXTURE_A, FIXTURE_B]);
   // FIXTURE_B has a twins profile, and fills it as a top-level page.
   await seedTwins(context, page, FIXTURE_B);
+  const sinceTop = await logMark(context);
   await page.reload();
   await expectTwinsFilled(page);
+  // The top-level B page's last message (its recording-state question, after the fill-result) is
+  // in before the mark below, so only what the frame might send is counted.
+  await waitForEntry(
+    context,
+    sinceTop,
+    "record-status",
+    (e) => e.origin === FIXTURE_B,
+  );
 
   // The same B page framed by A: no content script in the frame, nothing filled.
   const sinceFrame = await logMark(context);

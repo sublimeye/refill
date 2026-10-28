@@ -3,7 +3,8 @@
   // user asks, a policy per field, the form's name, fill mode and path prefix, then Save or
   // Discard. Values are rendered as text only. Every reveal, and every return to the page, is
   // re-confirmed with the worker first (ruling P15): after a lock, an expiry or a cancel the page
-  // drops the recording and shows the gone copy.
+  // drops the recording and shows the gone copy. The worker's data-free "recording ended" message
+  // triggers the same check, so a lock elsewhere hides a revealed value with no action here (I3).
   import { onMount, tick } from "svelte";
   import {
     applyLoad,
@@ -17,6 +18,7 @@
     sessionIdFrom,
     stepNumber,
     toggleValue,
+    onRecordingEnded,
     type FormProblem,
   } from "../../lib/recorder/review-flow";
 
@@ -33,6 +35,8 @@
 
   const page = $state(newPage());
   let busy = $state(false);
+  /** A check was asked for while a save or discard was in flight (see `recheck`). */
+  let recheckWhenIdle = false;
   let problem = $state<FormProblem | null>(null);
   let failed = $state(false);
 
@@ -52,17 +56,42 @@
     if (page.view !== "ready") await focusMessage();
   }
 
+  /**
+   * Asks the worker whether the recording is still there and ends the review if not (ruling P15).
+   * While a save or discard is in flight its own answer settles the page; the check runs after it.
+   */
+  function recheck() {
+    if (sessionId === null) return;
+    if (busy) {
+      recheckWhenIdle = true;
+      return;
+    }
+    void recheckReview(page, sessionId).then((ended) =>
+      ended ? focusMessage() : undefined,
+    );
+  }
+
+  /** After a save or discard: a check asked for meanwhile runs now (a no-op once the page ended). */
+  function idle() {
+    if (!recheckWhenIdle) return;
+    recheckWhenIdle = false;
+    recheck();
+  }
+
   onMount(() => {
     void load();
+    // A recording ended somewhere (a lock in another window, an expiry, a new recording): check
+    // now, so a revealed value does not stay on screen (I3).
+    const stop = onRecordingEnded(recheck);
     // Back to the page (another tab, the screen unlocked): drop the recording if it is gone.
     const onVisible = () => {
-      if (document.visibilityState !== "visible" || sessionId === null) return;
-      void recheckReview(page, sessionId).then((ended) =>
-        ended ? focusMessage() : undefined,
-      );
+      if (document.visibilityState === "visible") recheck();
     };
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   });
 
   async function retry() {
@@ -107,6 +136,7 @@
         await tick();
         (out === "name" ? nameInput : prefixInput)?.focus();
     }
+    idle();
   }
 
   async function discard() {
@@ -122,6 +152,7 @@
     } else {
       await announceFailure();
     }
+    idle();
   }
 </script>
 

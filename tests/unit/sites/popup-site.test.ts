@@ -9,6 +9,7 @@ import {
   finishRecordingFor,
   loadSiteView,
   recordSite,
+  recordingLine,
   removeSiteFor,
   resolveTarget,
   viewOf,
@@ -378,5 +379,34 @@ describe("removeSiteFor", () => {
     const res = await removeSiteFor({ tabId: 3, origin: A });
     expect(res.ok).toBe(false);
     expect(res.view.kind).not.toBe("error");
+  });
+});
+
+describe("recordingLine (M5)", () => {
+  it("says the recording is full, as the pill does", () => {
+    expect(recordingLine({ state: "full", count: 200 })).toBe(
+      "Recording is full · 200 fields",
+    );
+    expect(recordingLine({ state: "full", count: 1 })).toBe(
+      "Recording is full · 1 field",
+    );
+  });
+
+  it("says Recording while on, and finished while in review", () => {
+    expect(recordingLine({ state: "on", count: 0 })).toBe(
+      "Recording · 0 fields",
+    );
+    expect(recordingLine({ state: "on", count: 1 })).toBe(
+      "Recording · 1 field",
+    );
+    expect(recordingLine({ state: "review", count: 3 })).toBe(
+      "Recording finished · 3 fields",
+    );
+  });
+
+  it("is what the popup shows for a recording on this tab", () => {
+    const src = readFileSync("src/entrypoints/popup/App.svelte", "utf8");
+    expect(src.match(/\{recordingLine\(rec\)\}/g)).toHaveLength(2);
+    expect(src).not.toMatch(/Recording · \{/);
   });
 });

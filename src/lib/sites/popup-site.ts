@@ -41,6 +41,22 @@ export type SiteView =
 
 const RECORDING_OFF: RecordingView = { state: "off" };
 
+const fields = (n: number): string => `${n} ${n === 1 ? "field" : "fields"}`;
+
+/** The popup's status line for a recording on this tab; `full` reads as the pill does (M5). */
+export function recordingLine(
+  rec: Pick<Extract<RecordingView, { count: number }>, "state" | "count">,
+): string {
+  switch (rec.state) {
+    case "full":
+      return `Recording is full · ${fields(rec.count)}`;
+    case "review":
+      return `Recording finished · ${fields(rec.count)}`;
+    case "on":
+      return `Recording · ${fields(rec.count)}`;
+  }
+}
+
 function recordingOf(state: RecordPageState): RecordingView {
   if (state.state === "off") return RECORDING_OFF;
   return { state: state.state, count: state.count, here: state.here };

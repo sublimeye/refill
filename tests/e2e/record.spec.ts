@@ -1,5 +1,6 @@
 import type { BrowserContext, Page } from "@playwright/test";
 import {
+  loadSavedProfile,
   lockVault,
   logMark,
   type LogMark,
@@ -198,11 +199,18 @@ test.describe("popup: recording", () => {
       ).toBeVisible({ timeout: 1_000 });
     }).toPass({ timeout: 15_000 });
 
+    // The page shows the recording pill (a top-layer popover; its root is closed).
+    const pillOpen = () =>
+      page.evaluate(() => document.querySelector(":popover-open") !== null);
+    await expect.poll(pillOpen).toBe(true);
+
     // Finish opens the review page in a new tab.
     const opened = context.waitForEvent("page");
     await popup.getByRole("button", { name: "Finish" }).click();
     const review = await opened;
     await review.waitForLoadState();
+    // A popup Finish nudges the tab: its pill goes away without any action on the page (I1).
+    await expect.poll(pillOpen).toBe(false);
     expect(review.url()).toMatch(
       new RegExp(`^chrome-extension://${extensionId}/review\\.html\\?session=`),
     );
@@ -295,23 +303,37 @@ test.describe("popup: recording", () => {
     return { review, ext, tabId };
   }
 
-  test("a lock while the review page is open: Save says the recording is gone", async ({
+  test("a lock while the review page is open: the page ends, and a save is refused with nothing written (Review Focus 4)", async ({
     context,
     extensionId,
     sites,
   }) => {
     void sites;
     const { review, ext } = await finishedReview(context, extensionId);
+    const sessionId = new URL(review.url()).searchParams.get("session");
+    expect(sessionId).not.toBeNull();
     await lockVault(ext);
-    await review.getByRole("button", { name: "Save" }).click();
-    await expect(review.getByText(GONE)).toBeFocused();
+    // The page ends by itself (I3): its Save is gone with it.
+    await expect(review.getByText(GONE)).toBeVisible();
     await expect(review.getByRole("rowheader")).toHaveCount(0);
+    await expect(review.getByRole("button", { name: "Save" })).toHaveCount(0);
+    // The worker refuses the save the page would have sent, and writes nothing.
+    expect(
+      await sendFromPage(ext, {
+        type: "review-save",
+        sessionId,
+        name: "Twins",
+        fillMode: "auto",
+        pathPrefix: "/billpay/twins",
+        policies: [{ fieldId: "f1", policy: "save" }],
+      }),
+    ).toEqual({ ok: false, error: "gone" });
     expect(
       await sendFromPage(ext, { type: "site-status", origin: FIXTURE_A }),
     ).toMatchObject({ hasProfile: false });
   });
 
-  test("Lock now in the popup, then Show on the review page: gone, and no value appears (ruling P15)", async ({
+  test("Lock now in the popup: the review page ends, and no value appears (ruling P15, I3)", async ({
     context,
     extensionId,
     sites,
@@ -323,12 +345,36 @@ test.describe("popup: recording", () => {
     await expect(popup.getByLabel("Passphrase")).toBeVisible();
 
     await review.bringToFront();
-    await review.getByRole("button", { name: "Show city" }).click();
     await expect(review.getByText(GONE)).toBeFocused();
     await expect(review.getByRole("rowheader")).toHaveCount(0);
+    await expect(review.getByRole("button", { name: "Show city" })).toHaveCount(
+      0,
+    );
     expect(await review.locator("body").innerText()).not.toContain(
       "Springfield",
     );
+  });
+
+  test("Lock now in the popup hides a revealed value on the review page with no action there (I3)", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { review, tabId } = await finishedReview(context, extensionId);
+    await review.getByRole("button", { name: "Show city" }).click();
+    await expect(review.getByText("Springfield")).toBeVisible();
+
+    const popup = await openPopup(context, extensionId, tabId, TWINS);
+    await popup.getByRole("button", { name: "Lock now" }).click();
+    await expect(popup.getByLabel("Passphrase")).toBeVisible();
+
+    // The review tab is not touched: no click, no bringToFront (no visibilitychange either).
+    await expect
+      .poll(() => review.locator("body").innerText())
+      .not.toContain("Springfield");
+    await expect(review.getByText(GONE)).toBeVisible();
+    await expect(review.getByRole("rowheader")).toHaveCount(0);
   });
 
   test("a locked vault offers no record button", async ({
@@ -393,7 +439,9 @@ test.describe("record, review and fill", () => {
     since: LogMark,
     tabId: number,
     pathname?: string,
-  ) {
+    /** A document that must not count: the one the same URL showed before a re-render. */
+    notDocument?: string,
+  ): Promise<string | undefined> {
     const on = await waitForEntry(
       context,
       since,
@@ -401,7 +449,8 @@ test.describe("record, review and fill", () => {
       (e) =>
         e.tabId === tabId &&
         e.state === "on" &&
-        (pathname === undefined || e.pathname === pathname),
+        (pathname === undefined || e.pathname === pathname) &&
+        (notDocument === undefined || e.documentId !== notDocument),
     );
     await waitForEntry(
       context,
@@ -409,6 +458,7 @@ test.describe("record, review and fill", () => {
       "scan-report",
       (e) => e.tabId === tabId && e.documentId === on.documentId,
     );
+    return on.documentId;
   }
 
   /** Reopens the popup until it counts `n` captured fields (captures are debounced). */
@@ -519,6 +569,18 @@ test.describe("record, review and fill", () => {
     await expect(page.getByLabel("State")).toHaveValue("NY");
     await expect(page.getByLabel("Paperless billing")).toBeChecked();
 
+    // Back again, in the same document: step 1's new inputs are pre-filled again (ruling P20),
+    // and so is step 2 on the next Next.
+    await page.getByRole("button", { name: "Back" }).click();
+    await expect(page.getByText("Step 1 of 2")).toBeVisible();
+    await expect(page.getByLabel("Full name")).toHaveValue("Ada Lovelace");
+    await expect(page.getByLabel("Email")).toHaveValue("ada@example.test");
+    await page.getByRole("button", { name: "Next" }).click();
+    await expect(page.getByLabel("Street address")).toHaveValue(
+      "1 Analytical Way",
+    );
+    await expect(page.getByLabel("Paperless billing")).toBeChecked();
+
     // Two steps, no duplicate: going back and forth added none.
     const review = await finish(context, popup);
     expect(await reviewRows(review)).toEqual([
@@ -546,6 +608,56 @@ test.describe("record, review and fill", () => {
     await expect(page.getByLabel("City")).toHaveValue("London");
     await expect(page.getByLabel("State")).toHaveValue("NY");
     await expect(page.getByLabel("Paperless billing")).toBeChecked();
+  });
+
+  test("SPA wizard, Record again: the seeded values fill on arrival, and again after Next and Back (ruling P20)", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { page } = await setUp(context, extensionId, [FIXTURE_A]);
+    const scan = await recordScan(context, page, SPA);
+    // Saved as "fill only when I click": a plain visit fills nothing, so what fills below comes
+    // from the recording, which Record again seeds from the saved form.
+    await saveProfile(context, {
+      ...profileFrom(FIXTURE_A, [
+        {
+          scan,
+          values: { "full name": "Ada Lovelace", email: "ada@example.test" },
+        },
+      ]),
+      fillMode: "gesture",
+    });
+    await page.reload();
+    await expect(page.getByText("Step 1 of 2")).toBeVisible();
+    await expect(page.getByLabel("Full name")).toHaveValue("");
+
+    const { tabId } = await startRecording(
+      context,
+      extensionId,
+      page,
+      "Record again",
+    );
+    await expect(page.getByLabel("Full name")).toHaveValue("Ada Lovelace");
+    await expect(page.getByLabel("Email")).toHaveValue("ada@example.test");
+    const toStep2 = await logMark(context);
+    await page.getByRole("button", { name: "Next" }).click();
+    await expect(page.getByText("Step 2 of 2")).toBeVisible();
+    // Step 2 is on file before Back, as when a user looks at it (a Next and Back inside one
+    // re-scan debounce show the page unchanged, so nothing is reported).
+    await waitForEntry(
+      context,
+      toStep2,
+      "scan-report",
+      (e) =>
+        e.tabId === tabId &&
+        e.controls.some((c) => c.sig.labelText === "street address"),
+    );
+    await page.getByRole("button", { name: "Back" }).click();
+    await expect(page.getByText("Step 1 of 2")).toBeVisible();
+    await expect(page.getByLabel("Full name")).toHaveValue("Ada Lovelace");
+    await expect(page.getByLabel("Email")).toHaveValue("ada@example.test");
   });
 
   test("POST wizard: browser Back pre-fills step 1, a failed validation keeps one step 1, and a later visit fills", async ({
@@ -588,11 +700,17 @@ test.describe("record, review and fill", () => {
           context,
           since,
           "fill-result",
-          (e) => e.tabId === tabId,
+          (e) => e.tabId === tabId && e.pathname === "/billpay/post-wizard",
         )
       ).filled,
     ).toBe(4);
-    await recordingReady(context, since, tabId, "/billpay/post-wizard");
+    const backDoc = await recordingReady(
+      context,
+      since,
+      tabId,
+      "/billpay/post-wizard",
+    );
+    expect(backDoc).toBeDefined();
 
     // A failed validation: unchecking puts the box back to its default (a revert, so the field is
     // dropped), and the server re-renders step 1 as a new document with the posted values.
@@ -605,7 +723,14 @@ test.describe("record, review and fill", () => {
       "Please authorize the payment.",
     );
     await expect(page.getByLabel("Amount")).toHaveValue("55.00");
-    await recordingReady(context, since, tabId, "/billpay/post-wizard");
+    // The re-render is a new document at the same URL: the old one's answers must not count.
+    await recordingReady(
+      context,
+      since,
+      tabId,
+      "/billpay/post-wizard",
+      backDoc,
+    );
     await page.getByLabel("I authorize this payment").check();
     await page.getByRole("button", { name: "Pay" }).click();
     await expect(page.getByRole("heading", { name: "Receipt" })).toBeVisible();
@@ -711,6 +836,42 @@ test.describe("record, review and fill", () => {
     await expect(later.getByLabel("Security code")).toHaveValue("");
     await expect(later.getByLabel("Password")).toHaveValue("");
     await expect(later.getByLabel("One-time code")).toHaveValue("");
+  });
+
+  test("Don't save keeps no value: the card number is not in the saved form, and a later visit leaves it empty (C1)", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const CARD = "4111111111111111";
+    const { page } = await setUp(context, extensionId, [FIXTURE_A]);
+    await page.goto(NEVER);
+    const { popup } = await startRecording(context, extensionId, page);
+    await page.getByLabel("Email").pressSequentially("ada@example.test");
+    await page.getByLabel("Card number").pressSequentially(CARD);
+    await expectCount(popup, 2);
+
+    const review = await finish(context, popup);
+    expect(await reviewRows(review)).toEqual(["1 email", "1 card number"]);
+    await policyOf(review, "card number").selectOption("skip");
+    await save(review);
+
+    const saved = await loadSavedProfile(context, FIXTURE_A);
+    expect(saved).not.toBeNull();
+    expect(JSON.stringify(saved)).not.toContain(CARD);
+    // The field stays, so it still claims its control, with no value.
+    expect(
+      saved!.fields.map((f) => [f.sig.labelText, f.value, f.policy]),
+    ).toEqual([
+      ["email", "ada@example.test", "save"],
+      ["card number", "", "skip"],
+    ]);
+
+    const later = await context.newPage();
+    await later.goto(NEVER);
+    await expect(later.getByLabel("Email")).toHaveValue("ada@example.test");
+    await expect(later.getByLabel("Card number")).toHaveValue("");
   });
 
   test("Record again: the saved values fill while recording, and one change keeps the rest (Review Focus 5)", async ({

@@ -411,6 +411,24 @@ describe("re-scans", () => {
     ]);
   });
 
+  it("outside recording, a new element for a filled field id is not filled (Plan 2 rule, ADR 0026)", async () => {
+    const root = mount(`<div id="step"><input name="a"></div>`);
+    const step = root.querySelector("#step")!;
+    const h = harness(byName({ a: "A" }));
+    start(h);
+    await vi.waitFor(() => expect(input("a").value).toBe("A"));
+    // An SPA Back: step 1 re-rendered with a new, empty input for the same field.
+    const fresh = document.createElement("input");
+    fresh.name = "a";
+    const other = document.createElement("input");
+    other.name = "b";
+    step.replaceChildren(fresh, other);
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2));
+    await sleep(20);
+    expect(input("a")).toBe(fresh);
+    expect(fresh.value).toBe("");
+  });
+
   it("a bfcache restore reports again but does not fill again", async () => {
     mount(`<input name="a">`);
     // A real bfcache restore cannot be produced here: the test trusts its synthetic events.

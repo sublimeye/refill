@@ -87,9 +87,18 @@ always fits a profile.
   both drop, and a revert would leave a value the user cleared (Review Focus 1). The brief did not
   cover this case.
 - **Reverts:** a capture whose value equals its page default removes the target field, a seeded
-  field included. Clearing a value or setting it back means "don't save it" (Review Focus 1). The
-  content script never refills an element the user edited in that document (Task 8), so the old value
-  does not come back.
+  field included. Setting a field back to its page default means "don't save it", which for a field
+  the page left empty means clearing it (Review Focus 1). The content script never refills an element
+  the user edited in that document (Task 8), so the old value does not come back.
+  - **Unless the field already holds it (Plan 3 final review, M3).** On a re-rendered or restored
+    page (a failed-validation POST, a form the browser restored) the page default is the user's own
+    earlier value. A capture equal to both its page default and the target's stored value changes
+    nothing, and the field stays as it is. For a named radio group, whose value is always `"true"`,
+    the chosen option (its signature and ordinal) must also be the one stored. A real revert, a value
+    equal to the page default but not to the stored one, still removes the field.
+  - Known limit: a checkbox toggled off and then on is two captures. The first stores `"false"`, so
+    the second (`"true"`, equal to a restored page default of `"true"`) is a real revert by this rule
+    and removes the field. The worker cannot tell a restored default from the page's own.
 - **New fields** get `f<nextId>` (skipping any id in use) and policy `save`. A 201st field answers
   `"full"` with the body unchanged; updates and reverts of existing fields still apply.
 
@@ -152,4 +161,4 @@ always fits a profile.
   same label at two ordinals, which identity keeps apart on purpose and which is already accepted.
 
 ## Status
-Accepted (2026-10-27). Plan 3 Task 12 (2026-10-28): the ordinal-only duplicate claimant noted under Consequences.
+Accepted (2026-10-27). Plan 3 Task 12 (2026-10-28): the ordinal-only duplicate claimant noted under Consequences. Plan 3 final review (2026-10-28): a capture equal to the value a field already holds is no revert (M3); `buildProfile` stores no value for a `skip` field (C1, ADR 0033).

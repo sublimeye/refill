@@ -39,7 +39,12 @@ export interface SessionMeta {
 
 export type StopReason = "locked" | "expired";
 export type DiscardReason =
-  StopReason | "cancelled" | "replaced" | "saved" | "tab-closed";
+  | StopReason
+  | "cancelled"
+  | "replaced"
+  | "saved"
+  | "tab-closed"
+  | "site-removed";
 
 /**
  * Which session a job means. Content handlers always give the tab and the sender's origin
@@ -203,6 +208,22 @@ export async function nudge(tabId: number): Promise<void> {
   }
 }
 
+/**
+ * Tells open extension pages that a recording ended, with a data-free runtime message (content
+ * scripts do not get runtime messages). The review page answers it with `review-check` and ends if
+ * its recording is gone, so a revealed value does not stay on screen after a lock (I3, ADR 0033).
+ * Not awaited; with no page listening the send fails, which is the usual case and not logged.
+ */
+function announceEnded(): void {
+  try {
+    browser.runtime
+      .sendMessage({ type: "refill-recording-ended" })
+      .catch(() => undefined);
+  } catch {
+    // no runtime messaging here: nothing to tell
+  }
+}
+
 /** How long a popup Finish waits for the tab's pending captures (ADR 0032). */
 export const FLUSH_TIMEOUT_MS = 1_000;
 
@@ -240,14 +261,19 @@ function serialized<T>(job: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** Inside a chain job: removes the record, leaves a tombstone for a lock or expiry, clears the badge and nudges the tab. */
+/**
+ * Inside a chain job: removes the record, tells open extension pages, leaves a tombstone for a lock
+ * or expiry of an unfinished session, clears the badge and nudges the tab.
+ */
 async function drop(
   meta: SessionMeta,
   reason: DiscardReason,
   at: number,
 ): Promise<void> {
   await removeRecord();
-  if (reason === "locked" || reason === "expired") {
+  announceEnded();
+  // A finished session ended on the user's own Finish: its tab must not say "Recording stopped".
+  if ((reason === "locked" || reason === "expired") && !meta.finished) {
     const t: Tombstone = {
       tabId: meta.tabId,
       origin: meta.origin,
@@ -456,6 +482,21 @@ export function discardSession(
     if (rec === "malformed") await removeRecord();
     else if (rec && (id === undefined || rec.meta.id === id)) {
       await drop(rec.meta, reason, Date.now());
+    }
+  });
+}
+
+/**
+ * Discards the session of `origin`, finished or not (`"site-removed"`: no tombstone, badge cleared,
+ * tab nudged). The user removed the site and its saved form: a recording or a review open there
+ * must not go on, nor save the form back (ADR 0029, M7).
+ */
+export function discardOrigin(origin: string): Promise<void> {
+  return serialized(async () => {
+    const rec = await load();
+    if (rec === "malformed") await removeRecord();
+    else if (rec && rec.meta.origin === origin) {
+      await drop(rec.meta, "site-removed", Date.now());
     }
   });
 }

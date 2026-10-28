@@ -249,12 +249,34 @@ describe("recording session", { timeout: 30_000 }, () => {
     expect(await stoppedReason(TAB, ORIGIN, end + 30 * 60_000)).toBeNull();
   });
 
-  it("discards on lock with a locked tombstone, also a finished session", async () => {
-    const meta = await startSession(TAB, ORIGIN, Date.now(), null);
+  it("a finished session is discarded on a lock or an expiry without a tombstone (M1)", async () => {
+    // The user already finished: the tab must not say "Recording stopped".
+    await startSession(TAB, ORIGIN, Date.now(), null);
     await withSession(at, Date.now(), () => ({
       meta: { finished: true },
       result: null,
     }));
+    await lock();
+    await vi.waitFor(async () =>
+      expect((await sessionStore())[KEY]).toBeUndefined(),
+    );
+    expect((await sessionStore())[TOMB]).toBeUndefined();
+    expect(await stoppedReason(TAB, ORIGIN, Date.now())).toBeNull();
+
+    expect((await unlockWithPassphrase(P)).ok).toBe(true);
+    await startSession(TAB, ORIGIN, T0, null);
+    await withSession(at, T0, () => ({
+      meta: { finished: true, expiresAt: T0 + 1000 },
+      result: null,
+    }));
+    expect(await read(at, T0 + 1000)).toBe("off");
+    expect((await sessionStore())[KEY]).toBeUndefined();
+    expect((await sessionStore())[TOMB]).toBeUndefined();
+    expect(await stoppedReason(TAB, ORIGIN, T0 + 1000)).toBeNull();
+  });
+
+  it("discards an unfinished session on lock with a locked tombstone", async () => {
+    const meta = await startSession(TAB, ORIGIN, Date.now(), null);
     await captureOn(meta, SECRET, Date.now());
     await lock();
     await vi.waitFor(async () =>
@@ -411,12 +433,52 @@ describe("recording session", { timeout: 30_000 }, () => {
     );
   });
 
+  it("tells open extension pages, data-free, that the recording ended (I3)", async () => {
+    const pages = vi
+      .spyOn(fakeBrowser.runtime, "sendMessage")
+      .mockImplementation((async () => undefined) as never);
+    for (const end of [() => discardSession("cancelled"), () => lock()]) {
+      await startSession(TAB, ORIGIN, Date.now(), null);
+      pages.mockClear();
+      await end();
+      await vi.waitFor(() =>
+        expect(pages).toHaveBeenCalledWith({ type: "refill-recording-ended" }),
+      );
+      expect((await unlockWithPassphrase(P)).ok).toBe(true);
+    }
+    // An expiry and a replace too.
+    await startSession(TAB, ORIGIN, T0, null);
+    pages.mockClear();
+    await startSession(TAB + 1, ORIGIN, T0, null);
+    expect(pages).toHaveBeenCalledWith({ type: "refill-recording-ended" });
+    pages.mockClear();
+    expect(await read({ any: true }, T0 + RECORDING_TTL_MS)).toBe("off");
+    expect(pages).toHaveBeenCalledWith({ type: "refill-recording-ended" });
+  });
+
+  it("no extension page to tell is not an error, and nothing is logged", async () => {
+    vi.spyOn(fakeBrowser.runtime, "sendMessage").mockImplementation(
+      (async () => {
+        throw new Error(
+          "Could not establish connection. Receiving end does not exist.",
+        );
+      }) as never,
+    );
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await startSession(TAB, ORIGIN, T0, null);
+    await discardSession("cancelled");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(log).not.toHaveBeenCalled();
+    expect((await sessionStore())[KEY]).toBeUndefined();
+  });
+
   it("only locked and expired leave a tombstone", async () => {
     for (const reason of [
       "cancelled",
       "replaced",
       "saved",
       "tab-closed",
+      "site-removed",
     ] as const) {
       await startSession(TAB, ORIGIN, T0, null);
       await discardSession(reason);

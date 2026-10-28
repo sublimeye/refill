@@ -9,6 +9,7 @@
     finishRecordingFor,
     loadSiteView,
     recordSite,
+    recordingLine,
     removeSiteFor,
     resolveTarget,
     type SiteView,
@@ -34,8 +35,6 @@
   let siteMessage: HTMLElement | undefined = $state();
   let confirmText: HTMLElement | undefined = $state();
   let removeButton: HTMLElement | undefined = $state();
-
-  const fields = (n: number) => `${n} ${n === 1 ? "field" : "fields"}`;
 
   const DAMAGED = "Refill's vault data is damaged";
   const GENERIC = "Something went wrong — try again";
@@ -323,7 +322,7 @@
         {@const rec = s.recording}
         {#if rec.state === "review" && rec.here}
           <p bind:this={siteStatus} tabindex="-1">
-            Recording finished · {fields(rec.count)}
+            {recordingLine(rec)}
           </p>
           <button
             type="button"
@@ -334,7 +333,7 @@
           </button>
         {:else if rec.state !== "off" && rec.state !== "review" && rec.here}
           <p bind:this={siteStatus} tabindex="-1">
-            Recording · {fields(rec.count)}
+            {recordingLine(rec)}
           </p>
           <button
             type="button"

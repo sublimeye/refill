@@ -399,6 +399,108 @@ describe("in-recording fill", () => {
     await vi.waitFor(() => expect(input("city").value).toBe("Lyon"));
   });
 
+  /** Replaces the children of `step` with fresh inputs named `names` (an SPA step change). */
+  function render(step: Element, ...names: string[]): void {
+    step.replaceChildren(
+      ...names.map((n) => {
+        const el = document.createElement("input");
+        el.name = n;
+        return el;
+      }),
+    );
+  }
+
+  it("SPA Back, twice: a new element for a filled field id is filled again (ruling P20)", async () => {
+    const root = mount(`<div id="step"><input name="a"></div>`);
+    const step = root.querySelector("#step")!;
+    const h = harness({ a: "A" });
+    start(h);
+    await started(h);
+    expect(input("a").value).toBe("A");
+    for (let round = 0; round < 2; round++) {
+      // Next: step 2 replaces step 1. Back: step 1's input is a new, empty element.
+      render(step, "b");
+      await vi.waitFor(() => expect(input("b")).not.toBeNull());
+      const before = h.reports().length;
+      await vi.waitFor(() => expect(h.reports().length).toBe(before + 1), {
+        timeout: RESCAN_DEBOUNCE_MS + 1500,
+      });
+      render(step, "a");
+      await vi.waitFor(() => expect(input("a").value).toBe("A"), {
+        timeout: RESCAN_DEBOUNCE_MS + 1500,
+      });
+    }
+  });
+
+  it("fills a field id into the same element at most once per document (ruling P20)", async () => {
+    const root = mount(`<input name="a"><div id="more"></div>`);
+    const h = harness({ a: "A" });
+    start(h);
+    await started(h);
+    expect(input("a").value).toBe("A");
+    input("a").value = ""; // the page empties it, not the user
+    const before = h.reports().length;
+    const extra = document.createElement("input");
+    extra.name = "zip";
+    root.querySelector("#more")!.append(extra);
+    await vi.waitFor(() => expect(h.reports().length).toBe(before + 1), {
+      timeout: RESCAN_DEBOUNCE_MS + 1500,
+    });
+    await sleep(20);
+    expect(input("a").value).toBe("");
+  });
+
+  it("a new element with a value of its own is not filled: the fill rules still apply (ruling P20)", async () => {
+    const root = mount(`<div id="step"><input name="a"></div>`);
+    const step = root.querySelector("#step")!;
+    const h = harness({ a: "A" });
+    start(h);
+    await started(h);
+    render(step, "b");
+    await vi.waitFor(() => expect(input("b")).not.toBeNull());
+    const before = h.reports().length;
+    await vi.waitFor(() => expect(h.reports().length).toBe(before + 1), {
+      timeout: RESCAN_DEBOUNCE_MS + 1500,
+    });
+    // Back, but the new element shows a value of the page's: not empty, not the page default.
+    step.replaceChildren();
+    const fresh = document.createElement("input");
+    fresh.name = "a";
+    fresh.value = "Mine";
+    fresh.defaultValue = "";
+    step.append(fresh);
+    const n = h.reports().length;
+    await vi.waitFor(() => expect(h.reports().length).toBe(n + 1), {
+      timeout: RESCAN_DEBOUNCE_MS + 1500,
+    });
+    await sleep(20);
+    expect(input("a").value).toBe("Mine");
+  });
+
+  it("a new element the user edited, then cleared, is never filled (ruling P20, Review Focus 1)", async () => {
+    const root = mount(`<div id="step"><input name="a"></div>`);
+    const step = root.querySelector("#step")!;
+    const h = harness({ a: "A" });
+    start(h);
+    await started(h);
+    render(step, "b");
+    await vi.waitFor(() => expect(input("b")).not.toBeNull());
+    const before = h.reports().length;
+    await vi.waitFor(() => expect(h.reports().length).toBe(before + 1), {
+      timeout: RESCAN_DEBOUNCE_MS + 1500,
+    });
+    // Back; the user types into the new input and clears it before the re-scan runs.
+    render(step, "a");
+    type(input("a"), "x");
+    type(input("a"), "");
+    const n = h.reports().length;
+    await vi.waitFor(() => expect(h.reports().length).toBe(n + 1), {
+      timeout: RESCAN_DEBOUNCE_MS + 1500,
+    });
+    await sleep(20);
+    expect(input("a").value).toBe("");
+  });
+
   it("a capture on a Refill-filled element carries its field id (Review Focus 5)", async () => {
     mount(`<input name="city"><input name="zip">`);
     const h = harness({ city: "Lyon" });

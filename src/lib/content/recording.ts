@@ -58,6 +58,8 @@ export interface Recording {
   observeRoot(root: ShadowRoot): void;
   /** Called with every scan, before its fill plan is applied. */
   noteScan(r: ScanResult): void;
+  /** True while this tab records (`on` or `full`): fills are once per element (ruling P20). */
+  active(): boolean;
   /** True while recording when the user edited `el` in this document: Refill never fills it. */
   edited(el: Element): boolean;
   /** True for the pill's own host element, which the runner leaves out of its scans. */
@@ -406,6 +408,7 @@ export function createRecording(env: RecordingEnv): Recording {
     noteScan(r) {
       defaults.note(r.controls);
     },
+    active: () => state !== null,
     edited: (el) => {
       if (state === null || !editedEls.has(el)) return false;
       const sig = editedEls.get(el) ?? null;
