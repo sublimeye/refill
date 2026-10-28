@@ -10,14 +10,11 @@ import {
   MAX_CONTROLS,
   pageFingerprint,
   scanDocument,
+  type ScanResult,
   type ScannedControl,
 } from "../fields/scan";
 import { PasswordHistory } from "../fields/sensitive";
-import {
-  buildSignature,
-  type FormControl,
-  type Sig,
-} from "../fields/signature";
+import type { Sig } from "../fields/signature";
 import {
   canFill,
   fillControl,
@@ -27,6 +24,8 @@ import {
 // Types only: the protocol module's runtime imports reach `wxt/browser`, whose `globalThis.browser`
 // lookup page markup can answer (ADR 0026). Nothing of it may load in the content script.
 import type { ContentRequest, FillItem } from "../messaging/content-protocol";
+import { createRecording } from "./recording";
+import { stillMeans } from "./still-means";
 
 /** Quiet period after the last DOM change or scroll before a re-scan (spec 5.4). */
 export const RESCAN_DEBOUNCE_MS = 250;
@@ -48,12 +47,17 @@ export interface ContentEnv {
   isTopWindow?: (win: Window) => boolean;
   /** Tests only: defaults to the captured `Document.prototype.prerendering` getter. */
   isPrerendering?: () => boolean;
-  /** Tests only: defaults to `event.isTrusted` (a synthetic `pageshow` must not force a report). */
+  /** Tests only: defaults to `event.isTrusted` (a synthetic `pageshow` must not force a report, a
+   *  synthetic `input` must not be captured). */
   isTrusted?: (e: Event) => boolean;
+  /** Registers a callback for the worker's data-free `refill-nudge` (recording state changed). */
+  onNudge?: ((cb: () => void) => void) | undefined;
 }
 
 export interface ContentRun {
-  /** Disconnects every observer and listener; idempotent. */
+  /** Scans now; resolves with the scan once its report (if the page changed) was delivered. */
+  rescan(): Promise<ScanResult | null>;
+  /** Disconnects every observer and listener and removes the pill; idempotent. */
   stop(): void;
 }
 
@@ -67,34 +71,10 @@ const prerenderingGet = Object.getOwnPropertyDescriptor(
 const prerendering = (doc: Document): boolean =>
   prerenderingGet?.call(doc) === true;
 const persisted = getter<boolean>(PageTransitionEvent.prototype, "persisted");
-const isConnected = getter<boolean>(Node.prototype, "isConnected");
 const now = (): number => performance.now();
 
 /** What `send` returns when the message did not get through (it threw). */
 const FAILED: unique symbol = Symbol("send failed");
-
-/**
- * True while `el` is still the control the worker matched: connected, and the parts of its
- * signature that do not depend on its position (name, id, autocomplete, type, label) are the
- * scanned ones. A framework that re-uses one `<input>` for the next step renames and relabels it
- * in place; the plan's value for the old step must not land in it.
- */
-function stillMeans(el: FormControl, scanned: Sig): boolean {
-  try {
-    if (!isConnected(el)) return false;
-    const sig = buildSignature(el, scanned.ordinal, scanned.formAction);
-    return (
-      sig.name === scanned.name &&
-      sig.idStable === scanned.idStable &&
-      sig.autocomplete === scanned.autocomplete &&
-      sig.type === scanned.type &&
-      sig.labelText === scanned.labelText &&
-      sig.nameIdDerived === scanned.nameIdDerived
-    );
-  } catch {
-    return false;
-  }
-}
 
 const KINDS: readonly string[] = ["text", "select", "checkbox", "radio"];
 
@@ -183,6 +163,9 @@ function run(env: ContentEnv): ContentRun {
   const observer = new MutationObserver(() => schedule());
   const watched = new WeakSet<ShadowRoot>();
   const filled = new Set<string>();
+  /** Element -> the field id Refill filled into it: a capture there updates that field (ADR 0028). */
+  const filledInto = new WeakMap<Element, string>();
+  let latest: ScanResult | null = null;
   let stopped = false;
   let started = false;
   let lastFingerprint: string | null = null;
@@ -190,7 +173,7 @@ function run(env: ContentEnv): ContentRun {
   let resets = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let firstPending: number | undefined;
-  let scanning = false;
+  let scanning: Promise<void> | null = null;
   let again = false;
 
   const listeners: [EventTarget, string, EventListener, boolean][] = [];
@@ -204,11 +187,23 @@ function run(env: ContentEnv): ContentRun {
     listeners.push([target, type, fn, capture]);
   };
 
+  const recording = createRecording({
+    doc,
+    send: (msg) => send(msg),
+    latest: () => latest,
+    rescan,
+    filledField: (el) => filledInto.get(el) ?? null,
+    history,
+    isTrusted,
+    isTopWindow,
+  });
+
   function stop(): void {
     if (stopped) return;
     stopped = true;
     clearTimeout(timer);
     observer.disconnect();
+    recording.stop();
     history.disconnect();
     for (const [target, type, fn, capture] of listeners.splice(0)) {
       try {
@@ -223,12 +218,15 @@ function run(env: ContentEnv): ContentRun {
   function shadowRootOf(el: Element): ShadowRoot | null {
     let root: ShadowRoot | null;
     try {
+      if (recording.ownsHost(el)) return null; // the pill: no controls, and its updates are no change
+
       root = env.openOrClosedShadowRoot?.(el) ?? ownShadowRoot(el);
     } catch {
       return null;
     }
     if (root !== null && !watched.has(root)) {
       watched.add(root);
+      recording.observeRoot(root);
       try {
         observer.observe(root, OBSERVE);
       } catch {
@@ -279,6 +277,11 @@ function run(env: ContentEnv): ContentRun {
           counts.skipped++;
           continue;
         }
+        // While recording, what the user typed in this document stays as typed (Review Focus 1).
+        if (recording.edited(control.el)) {
+          counts.skipped++;
+          continue;
+        }
         const item = { el: control.el, kind, value, pageDefault };
         if (canFill(item, history, origin, isTopWindow)) {
           ready.push({ fieldId, item, sig: control.sig });
@@ -297,6 +300,7 @@ function run(env: ContentEnv): ContentRun {
         switch (fillControl(item, history, origin, isTopWindow)) {
           case "filled":
             filled.add(fieldId);
+            filledInto.set(item.el, fieldId);
             counts.filled++;
             break;
           case "unsupported":
@@ -315,6 +319,9 @@ function run(env: ContentEnv): ContentRun {
 
   async function cycle(): Promise<void> {
     const result = scanDocument(doc, history, shadowRootOf, isTopWindow);
+    latest = result;
+    // Page defaults are noted before this scan's plan writes anything.
+    recording.noteScan(result);
     const fingerprint = JSON.stringify(pageFingerprint(result));
     if (fingerprint === lastFingerprint) return;
     if (result.controls.length === 0) {
@@ -338,26 +345,49 @@ function run(env: ContentEnv): ContentRun {
     await send({ type: "fill-result", ...counts });
   }
 
-  /** One scan at a time; a request during a scan runs one more scan right after it. */
-  async function scan(): Promise<void> {
-    if (stopped) return;
-    if (scanning) {
+  /**
+   * One scan at a time; a request during a scan runs one more scan right after it. The promise
+   * settles once every requested scan is done, including that extra one.
+   */
+  function scan(): Promise<void> {
+    if (stopped) return Promise.resolve();
+    if (scanning !== null) {
       again = true;
-      return;
+      return scanning;
     }
-    scanning = true;
-    try {
-      do {
-        again = false;
-        try {
-          await cycle();
-        } catch {
-          // A page getter threw somewhere the field modules do not guard: try again next change.
-        }
-      } while (again && !stopped);
-    } finally {
-      scanning = false;
-    }
+    scanning = (async () => {
+      try {
+        do {
+          again = false;
+          try {
+            await cycle();
+          } catch {
+            // A page getter threw somewhere the field modules do not guard: try again next change.
+          }
+        } while (again && !stopped);
+      } finally {
+        scanning = null;
+      }
+    })();
+    return scanning;
+  }
+
+  /** Forget the delivered page, so the next scan reports it again (a report in flight included). */
+  function forget(): void {
+    lastFingerprint = null;
+    resets++;
+  }
+
+  async function rescan(force = false): Promise<ScanResult | null> {
+    if (stopped || !started) return null;
+    if (force) forget();
+    await scan();
+    return latest;
+  }
+
+  function sync(): void {
+    if (stopped) return;
+    void recording.sync().catch(() => undefined);
   }
 
   function schedule(): void {
@@ -403,13 +433,18 @@ function run(env: ContentEnv): ContentRun {
           return;
         }
         if (!restored) return;
-        lastFingerprint = null;
-        resets++;
+        forget();
         schedule();
+        sync();
       },
       false,
     );
-    void scan();
+    try {
+      env.onNudge?.(sync);
+    } catch {
+      // no nudges: the recording state is still read after each scan start and restore
+    }
+    void scan().then(sync);
   }
 
   if (isPrerendering()) {
@@ -421,5 +456,5 @@ function run(env: ContentEnv): ContentRun {
   } else {
     begin();
   }
-  return { stop };
+  return { rescan: () => rescan(), stop };
 }
