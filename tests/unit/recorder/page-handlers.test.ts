@@ -25,9 +25,11 @@ import { createRecorderPageHandlers } from "../../../src/lib/recorder/handlers";
 import {
   RECORDING_TTL_MS,
   installRecorderListeners,
+  cancelUnfinished,
   startSession,
   withSession,
 } from "../../../src/lib/recorder/session";
+import * as startModule from "../../../src/lib/recorder/start";
 import { readSites } from "../../../src/lib/sites";
 import { takeIntent, writeIntent } from "../../../src/lib/sites/intent";
 import {
@@ -250,6 +252,58 @@ describe("record-start", () => {
     expect(got.meta.tabId).toBe(TAB);
   });
 
+  it("an ungranted tab that also navigated is not-granted (permission before tab)", async () => {
+    shims.setTab(TAB, OTHER + "/");
+    expect(await start()).toEqual({ ok: false, error: "not-granted" });
+  });
+
+  it("a lock after the checks answers locked, but the enabled site still gets its script", async () => {
+    ready();
+    vi.spyOn(startModule, "beginRecording").mockResolvedValue(false);
+    expect(await start()).toEqual({ ok: false, error: "locked" });
+    expect(Object.keys(await readSites())).toEqual([ORIGIN]);
+    expect(shims.scripting.executeScript).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled(); // no session to ask about
+    expect(await peek()).toBe("off");
+  });
+
+  it("a second start on the same tab and origin keeps the first session", async () => {
+    ready();
+    await start();
+    const first = await peek();
+    if (first === "off") throw new Error("no session");
+    expect(await start()).toEqual({ ok: true });
+    const second = await peek();
+    if (second === "off") throw new Error("no session");
+    expect(second.meta.id).toBe(first.meta.id);
+    expect(second.meta.startedAt).toBe(first.meta.startedAt);
+    // Still injects and nudges.
+    expect(shims.scripting.executeScript).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("a finished or expired session of the same tab is replaced", async () => {
+    ready();
+    await start();
+    await finish();
+    const done = await peek();
+    if (done === "off") throw new Error("no session");
+    await start();
+    const next = await peek();
+    if (next === "off") throw new Error("no session");
+    expect(next.meta.id).not.toBe(done.meta.id);
+    expect(next.meta.finished).toBe(false);
+  });
+
+  it("a session of the same tab on another origin is replaced", async () => {
+    ready();
+    await startSession(TAB, OTHER, T0, null);
+    await start();
+    const got = await peek();
+    if (got === "off") throw new Error("no session");
+    expect(got.meta.origin).toBe(ORIGIN);
+  });
+
   it("an executeScript failure does not fail the start", async () => {
     ready();
     shims.scripting.executeScript.mockRejectedValue(new Error("no tab"));
@@ -399,6 +453,25 @@ describe("record-cancel", () => {
         "recorder:stopped"
       ],
     ).toBeUndefined();
+  });
+
+  it("does not discard a session that was finished before the cancel ran (one job)", async () => {
+    ready();
+    await start();
+    // A finish lands first; the guarded discard sees a finished session and leaves it.
+    await finish();
+    await cancelUnfinished({ tab: TAB });
+    expect((await state()).state).toBe("review");
+  });
+
+  it("a cancel and a finish racing in the chain: whichever runs second respects the first", async () => {
+    ready();
+    await start();
+    const [a, b] = await Promise.all([finish(), cancel()]);
+    expect(a).toEqual({ ok: true });
+    expect(b).toEqual({ ok: true });
+    // Finish queued first: the cancel found it finished and left it.
+    expect((await state()).state).toBe("review");
   });
 
   it("is ok with nothing to cancel", async () => {
@@ -562,6 +635,83 @@ describe("a record intent on a permission grant", () => {
     await grant();
     expect(Object.keys(await readSites())).toEqual([ORIGIN]);
     expect(await peek()).toBe("off");
+  });
+
+  it("a failing recording start does not stop the enable work", async () => {
+    shims.setTab(TAB, ORIGIN + "/");
+    vi.spyOn(startModule, "beginRecording").mockRejectedValue(
+      new TypeError("boom https://secret.example/"),
+    );
+    await writeIntent({
+      tabId: TAB,
+      origin: ORIGIN,
+      kind: "record",
+      ts: Date.now(),
+    });
+    await grant();
+    expect(Object.keys(await readSites())).toEqual([ORIGIN]);
+    expect(shims.scripts.size).toBe(1);
+    expect(shims.scripting.executeScript).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled();
+    const logged = JSON.stringify(vi.mocked(console.error).mock.calls);
+    expect(logged).toContain("TypeError");
+    expect(logged).not.toContain("secret.example");
+  });
+
+  it("grant, then the page is filed, then the popup's record-start: the step and captures survive", async () => {
+    shims.setTab(TAB, ORIGIN + "/billpay/one");
+    await writeIntent({
+      tabId: TAB,
+      origin: ORIGIN,
+      kind: "record",
+      ts: Date.now(),
+    });
+    await grant();
+    const w = createContentHandlers();
+    const one = page("acct", "zip");
+    const c = {
+      origin: ORIGIN,
+      pathname: "/billpay/one",
+      tabId: TAB,
+      documentId: "d1",
+    };
+    await w["scan-report"](
+      { type: "scan-report", controls: one, truncated: false },
+      c,
+    );
+    await w["record-capture"](
+      {
+        type: "record-capture",
+        kind: "text",
+        sig: one[0]!.sig,
+        value: "12345",
+        pageDefault: "",
+        fieldId: null,
+      },
+      c,
+    );
+    // The popup was alive: its record-start arrives after the grant path started the session.
+    expect(await start()).toEqual({ ok: true });
+    const got = await withSession({ any: true }, Date.now(), (meta, body) => ({
+      result: { meta, body },
+    }));
+    if (got === "off") throw new Error("no session");
+    expect(got.body.current).toBe(0);
+    expect(got.body.fields.map((f) => f.value)).toEqual(["12345"]);
+    // A capture after the second start still lands in the step.
+    expect(
+      await w["record-capture"](
+        {
+          type: "record-capture",
+          kind: "text",
+          sig: one[1]!.sig,
+          value: "90210",
+          pageDefault: "",
+          fieldId: null,
+        },
+        c,
+      ),
+    ).toEqual({ state: "on", count: 2 });
   });
 
   it("an enable intent never starts a session", async () => {

@@ -7,8 +7,9 @@ import { startSession } from "./session";
 
 /**
  * Starts a session for `tabId` on `origin`, seeded from the origin's saved form when it has one
- * (Record again). `false` when the vault is locked, before or during the start; nothing changes
- * then. The caller has checked that the tab still shows `origin`.
+ * (Record again), unless an unfinished one for that tab and origin already runs: that one is kept
+ * (ADR 0031). `false` when the vault is locked, before or during the start; nothing changes then.
+ * The caller has checked that the tab still shows `origin`.
  */
 export async function beginRecording(
   tabId: number,
@@ -18,7 +19,7 @@ export async function beginRecording(
   if ((await status()).state !== "unlocked") return false;
   try {
     const profile = await loadProfileForOrigin(origin);
-    await startSession(tabId, origin, now, profile);
+    await startSession(tabId, origin, now, profile, true);
     return true;
   } catch (err) {
     if (err instanceof LockedError) return false;

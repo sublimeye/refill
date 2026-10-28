@@ -30,7 +30,7 @@ import { recordingPlan } from "./plan";
 import {
   RECORDING_TTL_MS,
   clearBadge,
-  discardSession,
+  cancelUnfinished,
   nudge,
   stoppedReason,
   withSession,
@@ -214,10 +214,10 @@ export function createRecorderPageHandlers(
       await takeIntent(origin, now());
       await upsertSite(origin, { accessRevoked: false });
       await reconcile();
-      if (!(await beginRecording(tabId, origin, now()))) {
-        return { ok: false, error: "locked" };
-      }
+      const started = await beginRecording(tabId, origin, now());
+      // The site is enabled either way: a vault that locked meanwhile still gets its script.
       await injectContentScript(tabId, origin);
+      if (!started) return { ok: false, error: "locked" };
       // A script that is already running ignores a second injection: tell it to ask for the state.
       await nudge(tabId);
       return { ok: true };
@@ -254,15 +254,13 @@ export function createRecorderPageHandlers(
     },
 
     "record-finish": async ({ tabId }) => ({
-      ok: await finishSession({ tabId }, now(), true),
+      ok: await finishSession({ tab: tabId }, now(), true),
     }),
 
     "record-cancel": async ({ tabId }) => {
-      // Only the tab's own, unfinished session: a finished one belongs to its review page.
-      const id = await withSession({ tabId }, now(), (meta) => ({
-        result: meta.finished ? null : meta.id,
-      }));
-      if (id !== "off" && id !== null) await discardSession("cancelled", id);
+      // Only the tab's own, unfinished session: a finished one belongs to its review page. One job,
+      // so a Finish that lands first is kept.
+      await cancelUnfinished({ tab: tabId });
       return { ok: true };
     },
   };

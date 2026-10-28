@@ -8,14 +8,22 @@ import type { IntentKind } from "./intent";
 import { normalizeOrigin, originPattern } from "./origin";
 
 export type EnableOutcome =
-  "granted-pending" | "enabled" | "recording" | "denied" | "locked";
+  | "granted-pending"
+  | "enabled"
+  | "recording"
+  | "tab-moved"
+  | "denied"
+  | "locked";
 
 /**
  * - `enabled`: the origin is granted and the service worker enabled it and injected the script.
  * - `recording` (kind `record`): the above, and a recording session started on the tab.
- * - `locked` (kind `record`): granted, but the vault is locked, so nothing started.
- * - `granted-pending`: granted, but the service worker did not confirm (not granted yet, or the tab
- *   moved on); its `permissions.onAdded` handler (with the pending intent) completes the work.
+ * - `locked` (kind `record`): granted and the site is enabled (script injected), but the vault is
+ *   locked, so no session started.
+ * - `tab-moved` (kind `record`): the tab no longer shows the origin, so no session started and
+ *   none will start later; the user has to start again on the page.
+ * - `granted-pending`: granted, but the service worker did not confirm (not granted yet); its
+ *   `permissions.onAdded` handler (with the pending intent) completes the work.
  * - `denied`: the user declined, the origin is invalid, or something failed. Never throws.
  *
  * In the caller's synchronous turn this starts the `site-intent` write (not awaited) and calls
@@ -27,7 +35,7 @@ export type EnableOutcome =
 export function requestSiteEnable(
   tabId: number,
   origin: string,
-  kind: IntentKind = "enable",
+  kind: IntentKind,
 ): Promise<EnableOutcome> {
   if (normalizeOrigin(origin) !== origin) return Promise.resolve("denied");
   // Both calls are made before this function returns, i.e. inside the user gesture.
@@ -56,7 +64,16 @@ async function finish(
     if (kind === "record") {
       const started = await sendToSw({ type: "record-start", tabId, origin });
       if (started.ok) return "recording";
-      return started.error === "locked" ? "locked" : "granted-pending";
+      switch (started.error) {
+        case "locked":
+          return "locked";
+        case "tab-moved":
+          return "tab-moved";
+        case "not-granted":
+          return "granted-pending";
+        default:
+          return "denied"; // invalid-origin: checked above, so not expected
+      }
     }
     const res = await sendToSw({ type: "site-enable", tabId, origin });
     return res.ok ? "enabled" : "granted-pending";

@@ -148,10 +148,17 @@ async function onAdded(permissions: { origins?: string[] }): Promise<void> {
         await reconcile();
         // A record intent also starts the session, but only for a tab that still shows the origin
         // and an unlocked vault: otherwise the site is just enabled (ADR 0031).
-        const recording =
-          intent.kind === "record" &&
-          (await tabShowsOrigin(intent.tabId, origin)) &&
-          (await beginRecording(intent.tabId, origin, Date.now()));
+        let recording = false;
+        if (intent.kind === "record") {
+          try {
+            recording =
+              (await tabShowsOrigin(intent.tabId, origin)) &&
+              (await beginRecording(intent.tabId, origin, Date.now()));
+          } catch (err) {
+            // The enable work below must still complete.
+            logFailure("recording start", err);
+          }
+        }
         await injectContentScript(intent.tabId, origin);
         if (recording) await nudge(intent.tabId);
       } catch (err) {

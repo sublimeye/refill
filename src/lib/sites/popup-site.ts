@@ -98,7 +98,7 @@ export interface EnableResult {
  * `await` and no other call before it. Everything after it (the status re-query) runs later.
  */
 export function enableSite(target: Target & { origin: string }) {
-  const outcome = requestSiteEnable(target.tabId, target.origin);
+  const outcome = requestSiteEnable(target.tabId, target.origin, "enable");
   return outcome.then(async (o): Promise<EnableResult> => ({
     outcome: o,
     view: await loadSiteView(target),

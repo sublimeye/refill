@@ -24,8 +24,9 @@ ADR 0028 and the store is ADR 0029; this ADR covers the messages and the worker 
 ### Scope
 Every handler uses the session that matches `{ tabId, origin }` from the router's sender context.
 A finished session is `off` for the content script: it belongs to its review page. When no session
-matches, the answer is `stopped` if this tab and origin have a tombstone (ADR 0029), else `off`. The tombstone
-holds the origin it ended on (Task 7, ruling P10), so only that origin in that tab sees `stopped`.
+matches, the answer is `stopped` if this tab and origin have a tombstone (ADR 0029), else `off`.
+The tombstone holds the origin it ended on (Task 7, ruling P10), so only that origin in that tab
+sees `stopped`.
 
 ### `full` (the plan left this open)
 `recordState(body)` answers `full` when nothing more can be captured on this page:

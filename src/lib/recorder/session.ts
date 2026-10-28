@@ -42,11 +42,16 @@ export type DiscardReason =
   StopReason | "cancelled" | "replaced" | "saved" | "tab-closed";
 
 /**
- * Which session a job means: a tab (and, when given, an origin), an id, or whichever session there
- * is. Content handlers always give the tab and the sender's origin; extension pages know the tab only.
+ * Which session a job means. Content handlers always give the tab and the sender's origin
+ * (`{ tabId, origin }`); extension pages know the tab only (`{ tab }`, any origin), and
+ * `record-state` asks about whichever session there is. The variants are distinct, so a content
+ * handler cannot match every origin in a tab by leaving the origin out.
  */
 export type SessionMatch =
-  { tabId: number; origin?: string } | { id: string } | { any: true };
+  | { tabId: number; origin: string }
+  | { tab: number }
+  | { id: string }
+  | { any: true };
 
 export interface SessionUpdate<T> {
   body?: RecBody;
@@ -237,17 +242,36 @@ async function drop(
  * replacing any previous one. Sets the recording badge and clears the tombstone. Throws
  * `LockedError` when locked (nothing changes then) and `TypeError` for a bad tab id or an origin
  * that is not a canonical https origin.
+ *
+ * With `reuse`, an unfinished, unexpired session of the same tab and origin is kept as it is and
+ * its metadata returned: the check and the start are one chain job, so a second start (the popup's
+ * `record-start` after the grant path's, a double click) never drops a session whose page is
+ * already filed (ADR 0031).
  */
 export function startSession(
   tabId: number,
   origin: string,
   now: number,
   seed: Profile | null,
+  reuse = false,
 ): Promise<SessionMeta> {
   if (!isTabId(tabId)) return Promise.reject(new TypeError("bad tab id"));
   if (!isOrigin(origin)) return Promise.reject(new TypeError("bad origin"));
   return serialized(async () => {
     const dek = await getDek();
+    if (reuse) {
+      const cur = await load();
+      if (
+        cur !== null &&
+        cur !== "malformed" &&
+        !cur.meta.finished &&
+        now < cur.meta.expiresAt &&
+        cur.meta.tabId === tabId &&
+        cur.meta.origin === origin
+      ) {
+        return { ...cur.meta };
+      }
+    }
     const meta: SessionMeta = {
       v: 1,
       id: newId(),
@@ -272,10 +296,8 @@ export function startSession(
 function matches(meta: SessionMeta, m: SessionMatch): boolean {
   if ("id" in m) return meta.id === m.id;
   if ("any" in m) return true;
-  return (
-    meta.tabId === m.tabId &&
-    (m.origin === undefined || meta.origin === m.origin)
-  );
+  if ("tab" in m) return meta.tabId === m.tab;
+  return meta.tabId === m.tabId && meta.origin === m.origin;
 }
 
 /**
@@ -375,6 +397,20 @@ export function discardSession(
     else if (rec && (id === undefined || rec.meta.id === id)) {
       await drop(rec.meta, reason, Date.now());
     }
+  });
+}
+
+/**
+ * Discards the session `match` names, only while it is still unfinished: one chain job, so a
+ * Finish that lands between a lookup and this call is never undone. No tombstone, badge cleared,
+ * tab nudged (reason `"cancelled"`).
+ */
+export function cancelUnfinished(match: SessionMatch): Promise<void> {
+  return serialized(async () => {
+    const rec = await load();
+    if (rec === null || rec === "malformed") return;
+    if (rec.meta.finished || !matches(rec.meta, match)) return;
+    await drop(rec.meta, "cancelled", Date.now());
   });
 }
 

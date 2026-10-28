@@ -24,9 +24,14 @@ and how a body is kept.
   chain: start, `withSession`, discard and the tab-close check. A failed job does not break the
   chain. A job never awaits another job, and the nudge is fired without being awaited: the content
   script answers a nudge by messaging the worker, and that handler queues behind the current job.
-- **`SessionMatch`.** A tab and, when given, an origin (content handlers always give both);
-  `{ id }`; or `{ any: true }`. Extension pages know the tab only (`record-finish`, `record-cancel`)
-  or ask about whichever session there is (`record-state`).
+- **`SessionMatch`.** `{ tabId, origin }` (content handlers; the origin is required), `{ tab }` (an
+  extension page that knows the tab only: `record-finish`, `record-cancel`), `{ id }`, or
+  `{ any: true }` (`record-state`). The variants are distinct, so a content handler cannot match
+  every origin of a tab by omitting the origin.
+- **`startSession(..., reuse)`.** With `reuse`, an unfinished, unexpired session of the same tab and
+  origin is kept and its metadata returned, as one chain job (ADR 0031).
+- **`cancelUnfinished(match)`.** Discards as `"cancelled"` only while the session is unfinished, in
+  one chain job.
 - **`withSession(match, now, fn)`.** `fn` is synchronous and returns an optional new body, an optional
   `finished`/`expiresAt` patch and a result.
   - A changed body is re-sealed with a fresh IV. A meta-only change keeps the sealed body. With
