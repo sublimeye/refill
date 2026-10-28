@@ -23,6 +23,16 @@ export default ts.config(
     },
   },
   {
+    // Vendored CommonJS replacements for transitive build-time dependencies (pnpm.overrides).
+    files: ["vendor/**/*.cjs"],
+    languageOptions: {
+      sourceType: "commonjs",
+      globals: { module: "writable" },
+    },
+    // Crashes on CommonJS scopes (reads `isStrict` of a null scope); not Svelte code anyway.
+    rules: { "svelte/no-inner-declarations": "off" },
+  },
+  {
     files: ["scripts/**/*.mjs"],
     languageOptions: {
       globals: { console: "readonly", process: "readonly" },
