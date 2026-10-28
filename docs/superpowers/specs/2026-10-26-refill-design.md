@@ -315,7 +315,9 @@ Card number, expiry, name on card and SSN fields are saved like any field.
   profile or other steps' values.
 - SPA wizards: a debounced (250 ms, at most 1 s after the first change) MutationObserver re-scans,
   also on `scrollend` (eligibility depends on scroll position); a scan is reported only when the
-  page fingerprint changed; each saved field is filled **at most once per document** (ADR 0026).
+  page fingerprint changed; each saved field is filled **at most once per document** (ADR 0026);
+  while recording, at most once per element, so a Back that renders the step again fills it again
+  (§6.2, ruling P20).
 
 ### 5.5 Fill rules (security mitigations, §8)
 Fill a control only if: vault unlocked; profile `fillMode` allows (auto, or user pressed Fill now);
@@ -358,8 +360,10 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
    (ADR 0029, ADR 0031).
 3. Content script shows pill: `● Recording · N fields · Finish` (no inputs). Captures, on trusted
    `change`/`input` events, the final value of each eligible, non-excluded control whose value the
-   user changed, plus that control's `pageDefault` (its value when the page loaded). Clearing a
-   field or setting it back to its `pageDefault` means "don't save it": the field is removed.
+   user changed, plus that control's `pageDefault` (its value when the page loaded). Setting a
+   field back to its `pageDefault` means "don't save it": the field is removed (for a field the page
+   left empty, that means clearing it). Typing again the value the field already holds is no change,
+   even when a re-rendered or restored page shows it as its own default (ADR 0028).
    Captured values are stored only sealed under the DEK (never plaintext in `storage.session`). If
    the vault locks mid-recording, the session and captures are discarded and the pill says
    "Recording stopped — vault locked".
@@ -373,16 +377,17 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
      added (edits of recorded ones still apply). The pill then says the recording is full.
    - **Filling while recording.** Refill fills only from the session, never from the stored profile,
      and only fields with policy `save`, under all of the fill rules (§5.5), and never into an element
-     the user edited in that document. So going back on a wizard, even after a reload, pre-fills what
-     was recorded there. **Record again** seeds the session from the saved profile (its steps,
+     the user edited in that document. A field is filled at most once per element (not once per
+     document as on a return visit), so going back on a wizard pre-fills what was recorded there
+     every time, in an SPA as after a reload (ADR 0026). **Record again** seeds the session from the saved profile (its steps,
      fields, ids, policies and values), so the saved values fill the same way as the user walks
      through, and the user changes only what differs (ADR 0028, ADR 0030).
 4. **Finish** (pill or popup) → SW marks the session finished, resets its expiry to 30 min from
    Finish and opens `review.html?session=<id>` in a new tab. A popup Finish first asks the tab to
    send its pending edits (at most 1 s).
 5. Review: table (step, label, masked value with reveal, policy dropdown), profile name,
-   fill mode, path prefix. Every field defaults to Fill it in; the user can set any to Don't save.
-   Save → encrypted profile; Record again keeps the profile's id, and fields the user did not reach
+   fill mode, path prefix. Every field defaults to Fill it in; the user can set any to Don't save,
+   which keeps the field (so it still claims its control) but not its value. Save → encrypted profile; Record again keeps the profile's id, and fields the user did not reach
    stay as saved (ADR 0033).
 
 ### 6.3 Return visit
@@ -499,7 +504,8 @@ are treated as hints while locked.
   same-origin form action) to roughly the exposure of typing it yourself. Users can set a profile
   to One gesture.
 - Card numbers and SSNs are captured and stored, encrypted, by the user's choice (§5.3 as amended
-  2026-10-27); the user can set either to Don't save on the review screen. Once filled they are
+  2026-10-27); the user can set either to Don't save on the review screen, and then its value is not
+  stored. Once filled they are
   readable by same-origin script like any filled value (previous bullet). The card security code
   (CVV) is never captured, stored or filled.
 - DEK raw bytes in `storage.session` RAM may be paged to disk; any Refill extension page can read

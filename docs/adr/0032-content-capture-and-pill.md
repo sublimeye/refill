@@ -156,13 +156,13 @@ not reach the debounce.
 - A frozen or busy page delays a popup Finish by at most 1 s (`FLUSH_TIMEOUT_MS`); its pending
   edits are then lost, as before this decision.
 - A pill Finish that arrives while a popup Finish waits for the flush ack finishes the session
-  first; the popup's Finish then finds it finished and, with `reopen` (ADR 0031), opens the review
-  page again: a second review tab, and the TTL reset to 30 min from then. The race existed before
-  the flush (the two Finish clicks a moment apart); the wait widens its window to at most 1 s. Both
-  tabs show the same finished session, and saving in one makes the other answer `gone`.
+  first and opens the review tab. The popup's Finish then reopens nothing: `reopen` is set only when
+  its peek before the wait saw the session finished (ADR 0031, Plan 3 final review M9), so it
+  answers `{ ok: false }` and no second review tab opens. The popup shows its generic error then;
+  the review tab the pill opened is the one to use.
 - An input whose label changes only in wording (a validation message inside the label) looks like a
   re-use: it loses its edited mark, its page default and its `fieldId`, and its next capture is
   matched by signature.
 
 ## Status
-Accepted (2026-10-27). Amended by the Task 8 review (fix round 1): meaning-bound edited marks, page defaults and `fieldId` link; over-cap reverts; captures wait for the P12 report. Amended by Task 11 (ruling P17): `refill-flush` before a popup Finish. Task 12 (2026-10-28): the pill-Finish race during the flush wait noted under Consequences.
+Accepted (2026-10-27). Amended by the Task 8 review (fix round 1): meaning-bound edited marks, page defaults and `fieldId` link; over-cap reverts; captures wait for the P12 report. Amended by Task 11 (ruling P17): `refill-flush` before a popup Finish. Task 12 (2026-10-28): the pill-Finish race during the flush wait noted under Consequences. Plan 3 final review (2026-10-28): that race opens one review tab (M9); while recording the runner fills a field id once per element (ruling P20, ADR 0026).

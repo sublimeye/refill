@@ -63,12 +63,22 @@ and how a body is kept.
   - `tabs.onRemoved` discards the session only when it belongs to that tab and is unfinished. A
     finished session belongs to its review tab.
   - Calling the installer again replaces its vault listener instead of adding a second one.
-- **Tombstones.** `"locked"` and `"expired"` write `storage.session["recorder:stopped"]` =
-  `{ tabId, origin, reason, at }`, which holds no page data. `stoppedReason(tabId, origin, now)`
+- **Tombstones.** `"locked"` and `"expired"` of an **unfinished** session write
+  `storage.session["recorder:stopped"]` = `{ tabId, origin, reason, at }`, which holds no page data.
+  A finished session ended on the user's own Finish: a lock or an expiry while its review is open
+  writes no tombstone, so the tab never says "Recording stopped" (Plan 3 final review, M1). `stoppedReason(tabId, origin, now)`
   answers that reason for 30 min and only for that tab and origin, so the content handlers can
   answer `stopped` and another origin in the same tab learns nothing. A new start clears it.
 - **Badge and nudge.** A start sets the tab's badge to `●`. A discard clears the badge and sends
-  `{ type: "refill-nudge" }` to frame 0 of the tab. Finish clears the badge through the exported
+  `{ type: "refill-nudge" }` to frame 0 of the tab. Every discard also sends extension pages a
+  data-free `{ type: "refill-recording-ended" }` (`runtime.sendMessage`, which content scripts do not
+  receive), not awaited; with no page listening it fails, which is not logged. The review page
+  answers it with `review-check` (ADR 0033, I3).
+- **Site removal (Plan 3 final review, M7).** `site-remove` first discards the session of that
+  origin, finished or not, with the reason `"site-removed"` (`discardOrigin(origin)`): no tombstone,
+  badge cleared, tab nudged. The user removed the site and its form on purpose, so no "vault locked"
+  copy fits, a recording there must not go on capturing, and an open review must not save the form
+  back. Finish clears the badge through the exported
   `clearBadge(tabId)` (ADR 0030). Badge and nudge failures are logged by error name
   only and never fail the job.
 - **Untrusted read-back.** `storage.session` is writable by every trusted extension context, so the
@@ -100,7 +110,9 @@ and how a body is kept.
 - The store runs in the worker and imports no DOM module, so `check:sw-no-dom` still holds.
 
 ## Status
-Accepted (2026-10-27). Amended by Plan 3 Task 6 (2026-10-27): the lock-epoch check around `fn`, the
+Accepted (2026-10-27). Amended by the Plan 3 final review (2026-10-28): no tombstone for a finished
+session (M1), the `"site-removed"` reason and `discardOrigin` (M7), and the data-free
+`refill-recording-ended` message to extension pages on every discard (I3). Amended by Plan 3 Task 6 (2026-10-27): the lock-epoch check around `fn`, the
 `expiresAt` ceiling, discard by id, a copy of the metadata for `fn`, and `clearBadge`. Amended by
 Task 7 (2026-10-27): the tombstone carries `origin` and `stoppedReason` takes it (ruling P10), and
 `SessionMatch` gains a tab-only and an any-session form. A job whose `fn` returns no `body` writes

@@ -42,6 +42,12 @@ content sender. Exact keys, `tabId` a non-negative safe integer, `origin` at mos
   origin. With `reopen`, a session that is already finished opens the review page again and resets
   its TTL to 30 min from now (ruling P11): a closed or failed review tab can be reopened from the
   popup, and a second Finish is not an error. The content script's finish never reopens.
+  `reopen` is set only when the popup's peek, before the flush wait, saw the session finished (Plan 3
+  final review, M9): a pill Finish that lands during that wait has opened its review tab, so the
+  popup's Finish then answers `{ ok: false }` and opens no second one.
+- Finish nudges the tab after clearing its badge (both paths): the content script asks for the
+  state, hears `off` and hides the pill. A popup Finish otherwise left "● Recording" on the page
+  (Plan 3 final review, I1).
 - Cancel discards the asked tab's session with reason `cancelled` (badge cleared, tab nudged, no
   tombstone), in one chain job (`cancelUnfinished`) that checks `finished` itself, so a Finish that
   lands first is kept. A **finished** session is not cancelled from the popup, and another tab's session is
@@ -99,4 +105,5 @@ the generic error. Outcome copy: `denied` reuses "Access to this site wasn't gra
   `recorder/handlers.ts` (which imports `reconcile`).
 
 ## Status
-Accepted (2026-10-27).
+Accepted (2026-10-27). Amended by the Plan 3 final review (2026-10-28): Finish nudges the tab (I1),
+and a popup Finish reopens only a session it saw finished before the flush wait (M9).
