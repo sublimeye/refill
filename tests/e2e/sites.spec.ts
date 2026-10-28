@@ -209,7 +209,7 @@ test.describe("popup: this site", () => {
     const tabId = await tabIdOf(context, FIXTURE_A);
     await popup.evaluate(
       (m) => (globalThis as unknown as Chrome).chrome.runtime.sendMessage(m),
-      { type: "site-intent", tabId, origin: FIXTURE_A },
+      { type: "site-intent", tabId, origin: FIXTURE_A, kind: "enable" },
     );
     expect(await pendingIntent(context)).toMatchObject({ origin: FIXTURE_A });
     await popup.evaluate(
