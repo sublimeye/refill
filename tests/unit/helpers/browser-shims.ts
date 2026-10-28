@@ -72,6 +72,15 @@ export function installShims() {
     onRemoved,
   };
 
+  // `tabs.get` as Chrome answers it: a closed tab rejects; `url` is whatever the test sets
+  // (`undefined` models a tab whose URL the extension may not read).
+  const tabUrls = new Map<number, string | undefined>();
+  const tabsGet = vi.fn(async (id: number) => {
+    if (!tabUrls.has(id)) throw new Error(`No tab with id: ${id}.`);
+    return { id, url: tabUrls.get(id) };
+  });
+  (fakeBrowser.tabs as unknown as { get: unknown }).get = tabsGet;
+
   const fb = fakeBrowser as unknown as Record<string, unknown>;
   fb["scripting"] = scripting;
   fb["permissions"] = permissions;
@@ -81,6 +90,11 @@ export function installShims() {
     grants,
     scripting,
     permissions,
+    tabsGet,
+    /** Open (or navigate) a tab; `url` undefined models an unreadable URL. */
+    setTab: (id: number, url: string | undefined) => void tabUrls.set(id, url),
+    /** Close a tab: `tabs.get` rejects. */
+    closeTab: (id: number) => void tabUrls.delete(id),
     /** Grant without firing an event (as for a pre-granted or earlier grant). */
     grant: (pattern: string) => void grants.add(pattern),
     /** The user revokes in the browser's own UI: permission gone, `onRemoved` fires. */

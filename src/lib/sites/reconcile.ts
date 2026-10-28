@@ -5,6 +5,7 @@ import { withStoreLock } from "../store/local";
 import { normalizeOrigin, originPattern } from "./origin";
 import { readSites, upsertSite } from "./index";
 import { takeIntent } from "./intent";
+import { tabShowsOrigin } from "./tab";
 
 export const CONTENT_SCRIPT_ID = "refill-content";
 /** Built path of the unlisted script `src/entrypoints/refill-content.ts` (verified in .output/chrome-mv3). */
@@ -100,9 +101,17 @@ export function reconcile(): Promise<void> {
   return queued;
 }
 
-/** Injects the content script into a tab that was open before the grant; every failure is expected and ignored. */
-export async function injectContentScript(tabId: number): Promise<void> {
+/**
+ * Injects the content script into a tab that was open before the grant, but only while the tab
+ * still shows `origin` (the popup's tab id may be stale: `activeTab` alone would allow a tab that
+ * has navigated away). Every failure is expected and ignored.
+ */
+export async function injectContentScript(
+  tabId: number,
+  origin: string,
+): Promise<void> {
   try {
+    if (!(await tabShowsOrigin(tabId, origin))) return;
     await browser.scripting.executeScript({
       target: { tabId },
       files: [CONTENT_SCRIPT_FILE],
@@ -135,7 +144,7 @@ async function onAdded(permissions: { origins?: string[] }): Promise<void> {
         if (intent === null) continue;
         await upsertSite(origin, { accessRevoked: false });
         await reconcile();
-        await injectContentScript(intent.tabId);
+        await injectContentScript(intent.tabId, origin);
       } catch (err) {
         logFailure("permission grant handling", err);
       }

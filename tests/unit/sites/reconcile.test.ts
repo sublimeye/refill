@@ -171,6 +171,7 @@ describe("installSiteListeners", () => {
 
   it("onAdded with an intent creates the site, registers the script and injects into the intent's tab", async () => {
     installSiteListeners();
+    shims.setTab(42, A + "/form");
     await writeIntent({ tabId: 42, origin: A, kind: "enable", ts: Date.now() });
     shims.accept(PA);
     await vi.waitFor(() =>
@@ -187,6 +188,7 @@ describe("installSiteListeners", () => {
 
   it("registers before it injects", async () => {
     installSiteListeners();
+    shims.setTab(1, A + "/");
     await writeIntent({ tabId: 1, origin: A, kind: "enable", ts: Date.now() });
     shims.scripting.executeScript.mockImplementation(async () => {
       expect(shims.scripts.size).toBe(1);
@@ -203,6 +205,7 @@ describe("installSiteListeners", () => {
     shims.scripting.executeScript.mockRejectedValue(
       new Error("No tab with id: 42 https://secret.example/"),
     );
+    shims.setTab(42, A + "/");
     await writeIntent({ tabId: 42, origin: A, kind: "enable", ts: Date.now() });
     shims.accept(PA);
     await vi.waitFor(() =>
@@ -212,6 +215,27 @@ describe("installSiteListeners", () => {
     // Name only: the message (which could carry a URL) is never logged.
     const logged = JSON.stringify(vi.mocked(console.error).mock.calls);
     expect(logged).not.toContain("secret.example");
+  });
+
+  it("onAdded with an intent for a tab that navigated to another origin enables the site but does not inject", async () => {
+    installSiteListeners();
+    shims.setTab(42, B + "/");
+    await writeIntent({ tabId: 42, origin: A, kind: "enable", ts: Date.now() });
+    shims.accept(PA);
+    await vi.waitFor(() => expect(shims.scripts.size).toBe(1));
+    await vi.waitFor(() => expect(shims.tabsGet).toHaveBeenCalledWith(42));
+    expect(Object.keys(await readSites())).toEqual([A]);
+    expect(shims.scripting.executeScript).not.toHaveBeenCalled();
+  });
+
+  it("onAdded with an intent for a closed tab enables the site but does not inject", async () => {
+    installSiteListeners();
+    await writeIntent({ tabId: 42, origin: A, kind: "enable", ts: Date.now() });
+    shims.accept(PA);
+    await vi.waitFor(() => expect(shims.scripts.size).toBe(1));
+    await vi.waitFor(() => expect(shims.tabsGet).toHaveBeenCalledWith(42));
+    expect(Object.keys(await readSites())).toEqual([A]);
+    expect(shims.scripting.executeScript).not.toHaveBeenCalled();
   });
 
   it("onAdded without an intent only reconciles: no site is created, nothing is injected", async () => {
@@ -227,6 +251,7 @@ describe("installSiteListeners", () => {
 
   it("an intent for another origin is not consumed by this grant", async () => {
     installSiteListeners();
+    shims.setTab(5, B + "/");
     await writeIntent({ tabId: 5, origin: B, kind: "enable", ts: Date.now() });
     shims.accept(PA);
     await vi.waitFor(() =>
