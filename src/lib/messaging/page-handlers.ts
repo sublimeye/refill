@@ -3,6 +3,7 @@
 import type { KdfParams } from "../crypto/kdf";
 import { meetsMinLength } from "../passphrase/rules";
 import { createRecorderPageHandlers } from "../recorder/handlers";
+import { createReviewPageHandlers } from "../recorder/review-handlers";
 import { createSiteHandlers } from "../sites/handlers";
 import {
   createVault,
@@ -19,6 +20,7 @@ export function createPageHandlers(
   return {
     ...createSiteHandlers(),
     ...createRecorderPageHandlers(),
+    ...createReviewPageHandlers(),
     "vault-status": () => status(),
     "vault-create": async ({ passphrase }) => {
       // Cheap checks first: an invalid create must not burn seconds of Argon2 calibration.

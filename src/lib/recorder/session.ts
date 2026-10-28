@@ -383,6 +383,31 @@ export function withSession<T>(
 }
 
 /**
+ * The metadata of session `id` without opening its body (no DEK, no decryption): `null` when there
+ * is no session, it has another id, or it expired (then it is discarded as `"expired"`, as in
+ * `withSession`). A malformed record is removed. One chain job. The caller checks the vault itself
+ * (the review page's `review-check`, ADR 0033).
+ */
+export function peekSession(
+  id: string,
+  now: number,
+): Promise<SessionMeta | null> {
+  return serialized(async () => {
+    const rec = await load();
+    if (rec === null) return null;
+    if (rec === "malformed") {
+      await removeRecord();
+      return null;
+    }
+    if (now >= rec.meta.expiresAt) {
+      await drop(rec.meta, "expired", now);
+      return null;
+    }
+    return rec.meta.id === id ? { ...rec.meta } : null;
+  });
+}
+
+/**
  * Discards the session, if any (see `drop`). With `id`, only while the stored session still has
  * that id, so a late discard of an old session never ends a newer one. A malformed record is
  * removed either way.

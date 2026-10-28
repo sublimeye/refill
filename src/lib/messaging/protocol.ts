@@ -1,6 +1,8 @@
 // Typed message protocol between extension pages and the service worker (spec §7).
 // Decisions: ADR 0014.
 import { browser } from "wxt/browser";
+import { ID_RE, LIMITS, type FieldPolicy } from "../profiles/types";
+import type { ReviewModel } from "../recorder/profile";
 import type { IntentKind } from "../sites/intent";
 import type { UnlockResult, VaultStatus } from "../vault/types";
 
@@ -36,7 +38,29 @@ export type PageRequest =
   | { type: "record-start"; tabId: number; origin: string }
   | { type: "record-state"; tabId: number }
   | { type: "record-finish"; tabId: number }
-  | { type: "record-cancel"; tabId: number };
+  | { type: "record-cancel"; tabId: number }
+  | { type: "review-load"; sessionId: string }
+  | {
+      type: "review-save";
+      sessionId: string;
+      name: string;
+      fillMode: "auto" | "gesture";
+      pathPrefix: string;
+      policies: { fieldId: string; policy: FieldPolicy }[];
+    }
+  | { type: "review-discard"; sessionId: string }
+  | { type: "review-check"; sessionId: string };
+
+/** What the review page learns about a finished recording (ADR 0033). */
+export type ReviewLoadResult =
+  | { state: "ready"; model: ReviewModel; replacesProfile: boolean }
+  | { state: "gone" };
+
+/** Whether the page may still show the recording: unlocked, finished, same id (ruling P15). */
+export type ReviewCheckResult = { state: "ready" } | { state: "gone" };
+
+export type ReviewSaveResult =
+  { ok: true } | { ok: false; error: "gone" | "invalid" };
 
 export type {
   ContentRequest,
@@ -79,7 +103,15 @@ export type PageResponse<R extends PageRequest> = R extends {
                       ? { ok: boolean }
                       : R extends { type: "record-cancel" }
                         ? { ok: true }
-                        : never;
+                        : R extends { type: "review-load" }
+                          ? ReviewLoadResult
+                          : R extends { type: "review-save" }
+                            ? ReviewSaveResult
+                            : R extends { type: "review-discard" }
+                              ? { ok: true }
+                              : R extends { type: "review-check" }
+                                ? ReviewCheckResult
+                                : never;
 
 /** What the router resolves for a message it refuses or whose handler threw. Never carries detail. */
 export type RouterError = { ok: false; error: "rejected" | "internal" };
@@ -100,6 +132,17 @@ const KEYS_BY_TYPE: Readonly<Record<PageRequest["type"], readonly string[]>> = {
   "record-state": ["type", "tabId"],
   "record-finish": ["type", "tabId"],
   "record-cancel": ["type", "tabId"],
+  "review-load": ["type", "sessionId"],
+  "review-save": [
+    "type",
+    "sessionId",
+    "name",
+    "fillMode",
+    "pathPrefix",
+    "policies",
+  ],
+  "review-discard": ["type", "sessionId"],
+  "review-check": ["type", "sessionId"],
 };
 
 /** Origins are short: a longer string cannot be a canonical https origin worth handling. */
@@ -111,6 +154,37 @@ function parseOrigin(v: unknown): string | null {
 
 function parseTabId(v: unknown): number | null {
   return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
+}
+
+function parseId(v: unknown): string | null {
+  return typeof v === "string" && ID_RE.test(v) ? v : null;
+}
+
+const isPolicy = (v: unknown): v is FieldPolicy =>
+  v === "save" || v === "ask" || v === "skip";
+
+/** At most one policy per profile field; each `{ fieldId, policy }` with exact keys. */
+function parsePolicies(
+  v: unknown,
+): { fieldId: string; policy: FieldPolicy }[] | null {
+  if (!Array.isArray(v) || v.length > LIMITS.fields) return null;
+  const out: { fieldId: string; policy: FieldPolicy }[] = [];
+  for (const item of v as unknown[]) {
+    if (!isPlainObject(item)) return null;
+    const keys = Reflect.ownKeys(item);
+    if (
+      keys.length !== 2 ||
+      !keys.includes("fieldId") ||
+      !keys.includes("policy")
+    ) {
+      return null;
+    }
+    const fieldId = parseId(item["fieldId"]);
+    const policy = item["policy"];
+    if (fieldId === null || !isPolicy(policy)) return null;
+    out.push({ fieldId, policy });
+  }
+  return out;
 }
 
 export function isPlainObject(x: unknown): x is Record<string, unknown> {
@@ -175,6 +249,40 @@ export function parsePageRequest(raw: unknown): PageRequest | null {
       return {
         type: type as "record-state" | "record-finish" | "record-cancel",
         tabId,
+      };
+    }
+    case "review-load":
+    case "review-discard":
+    case "review-check": {
+      const sessionId = parseId(raw["sessionId"]);
+      if (sessionId === null) return null;
+      return {
+        type: type as "review-load" | "review-discard" | "review-check",
+        sessionId,
+      };
+    }
+    case "review-save": {
+      const sessionId = parseId(raw["sessionId"]);
+      const { name, fillMode, pathPrefix } = raw;
+      const policies = parsePolicies(raw["policies"]);
+      if (
+        sessionId === null ||
+        policies === null ||
+        typeof name !== "string" ||
+        name.length > LIMITS.name ||
+        (fillMode !== "auto" && fillMode !== "gesture") ||
+        typeof pathPrefix !== "string" ||
+        pathPrefix.length > LIMITS.pathPrefix
+      ) {
+        return null;
+      }
+      return {
+        type: "review-save",
+        sessionId,
+        name,
+        fillMode,
+        pathPrefix,
+        policies,
       };
     }
   }

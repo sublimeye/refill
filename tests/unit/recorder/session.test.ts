@@ -8,6 +8,7 @@ import {
   it,
   vi,
 } from "vitest";
+import * as aead from "../../../src/lib/crypto/aead";
 import { newKdfParams } from "../../../src/lib/crypto/kdf";
 import { applyCapture } from "../../../src/lib/recorder/fields";
 import {
@@ -15,6 +16,7 @@ import {
   clearBadge,
   discardSession,
   installRecorderListeners,
+  peekSession,
   startSession,
   stoppedReason,
   withSession,
@@ -542,5 +544,28 @@ describe("recording session", { timeout: 30_000 }, () => {
     await clearBadge(TAB);
     expect(JSON.stringify(log.mock.calls)).toContain("RangeError");
     expect(JSON.stringify(log.mock.calls)).not.toContain(SECRET);
+  });
+});
+
+describe("peekSession", () => {
+  it("answers that session's metadata only, without opening the body", async () => {
+    const meta = await startSession(TAB, ORIGIN, T0, null);
+    const before = structuredClone(await sessionStore());
+    const opened = vi.spyOn(aead, "open");
+    expect(await peekSession(meta.id, T0)).toEqual(meta);
+    expect(opened).not.toHaveBeenCalled();
+    expect(await peekSession("other", T0)).toBeNull();
+    expect(await sessionStore()).toEqual(before);
+  });
+
+  it("an expired session is discarded with its tombstone; a malformed record is removed", async () => {
+    const meta = await startSession(TAB, ORIGIN, T0, null);
+    const end = T0 + RECORDING_TTL_MS;
+    expect(await peekSession(meta.id, end)).toBeNull();
+    expect((await sessionStore())[KEY]).toBeUndefined();
+    expect(await stoppedReason(TAB, ORIGIN, end)).toBe("expired");
+    await fakeBrowser.storage.session.set({ [KEY]: { meta: 1 } });
+    expect(await peekSession(meta.id, T0)).toBeNull();
+    expect((await sessionStore())[KEY]).toBeUndefined();
   });
 });

@@ -4,7 +4,7 @@
 // origin equal the sender's (router context, never the message), and the clock is the worker's
 // own. Values leave the worker only in a scan-report fill plan built from the session itself,
 // never from the stored profile. Decisions: ADR 0030, ADR 0031.
-import { browser, type PublicPath } from "wxt/browser";
+import { browser } from "wxt/browser";
 import { sigKey } from "../match/match";
 import type {
   ContentRequest,
@@ -41,8 +41,7 @@ import { observePage } from "./steps";
 import type { RecBody } from "./types";
 
 const OFF: RecordState = { state: "off" };
-// The review entrypoint lands in Task 10; until then WXT's generated path union lacks it.
-const REVIEW_PAGE = "/review.html" as PublicPath;
+const REVIEW_PAGE = "/review.html";
 
 /**
  * `full` when nothing more can be captured here: the body holds the most fields a profile can, or
