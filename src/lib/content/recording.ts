@@ -62,6 +62,11 @@ export interface Recording {
   edited(el: Element): boolean;
   /** True for the pill's own host element, which the runner leaves out of its scans. */
   ownsHost(el: Element): boolean;
+  /**
+   * Sends every debounced edit now and resolves once the captures queued so far (and anything they
+   * wait on) are out (a popup Finish, ADR 0032). Resolves at once when not recording.
+   */
+  flushed(): Promise<void>;
   /** Detaches everything and removes the pill; idempotent. */
   stop(): void;
 }
@@ -408,6 +413,11 @@ export function createRecording(env: RecordingEnv): Recording {
       return sig === null || stillMeans(el as FormControl, sig);
     },
     ownsHost: (el) => pill !== null && pill.host === el,
+    flushed() {
+      if (stopped || state === null) return Promise.resolve();
+      flush();
+      return chain;
+    },
     stop() {
       if (stopped) return;
       deactivate();

@@ -742,17 +742,10 @@ test.describe("record, review and fill", () => {
     await expect(page.getByLabel("Address 2")).toHaveValue("Flat 2");
     await expect(page.getByLabel("City")).toHaveValue("London");
 
-    // The user replaces City. The count stays 3, so wait for the capture itself: a Finish from the
-    // popup does not wait for an edit still in the content script's debounce (report, Task 11).
-    const edit = await logMark(context);
+    // The user replaces City and finishes at once: the edit is still in the content script's
+    // debounce, and the popup's Finish waits for it (refill-flush, ADR 0032).
     await page.getByLabel("City").press("ControlOrMeta+A");
     await page.getByLabel("City").pressSequentially("Paris");
-    await waitForEntry(
-      context,
-      edit,
-      "record-capture",
-      (e) => e.tabId === rec.tabId,
-    );
     review = await finish(context, rec.popup);
     await expect(
       review.getByText("Saving replaces the form saved for localhost:4510."),
@@ -778,6 +771,25 @@ test.describe("record, review and fill", () => {
     await expect(later.getByLabel("City")).toHaveValue("Paris");
     await expect(later.getByLabel("Address 1")).toHaveValue("1 Analytical Way");
     await expect(later.getByLabel("Address 2")).toHaveValue("Flat 2");
+  });
+
+  test("Finish in the popup right after typing keeps the last edit (refill-flush)", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { page } = await setUp(context, extensionId, [FIXTURE_A]);
+    await page.goto(TWINS);
+    const { popup } = await startRecording(context, extensionId, page);
+    // No pause: the capture is still in its 400 ms debounce, and the field keeps focus (no change).
+    await page.getByLabel("City").pressSequentially("Springfield");
+    const review = await finish(context, popup);
+    expect(await reviewRows(review)).toEqual(["1 city"]);
+    await review
+      .getByRole("button", { name: "Show city", exact: true })
+      .click();
+    await expect(review.getByText("Springfield")).toBeVisible();
   });
 
   test("Lock now mid-recording: the popup offers Record this site again, and the review URL is gone", async ({

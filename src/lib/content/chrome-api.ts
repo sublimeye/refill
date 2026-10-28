@@ -19,10 +19,16 @@ export interface ChromeApi {
    * `runtime.onMessage.addListener` is not the real API.
    */
   onNudge(cb: () => void): void;
+  /**
+   * Answers the worker's `refill-flush` (a popup Finish): exactly `{ type: "refill-flush" }`, with
+   * the same sender checks as a nudge. Runs `cb` and replies the data-free `{ ok: true }` once its
+   * promise settles. Any other message gets no reply. A no-op without the real API.
+   */
+  onFlush(cb: () => Promise<void>): void;
 }
 
-/** Exactly `{ type: "refill-nudge" }`: a plain object with that one key. */
-function isNudge(msg: unknown): boolean {
+/** Exactly `{ type }`: a plain object with that one key. */
+function isOnly(msg: unknown, type: string): boolean {
   try {
     if (typeof msg !== "object" || msg === null) return false;
     if (Object.getPrototypeOf(msg) !== Object.prototype) return false;
@@ -30,7 +36,7 @@ function isNudge(msg: unknown): boolean {
     return (
       keys.length === 1 &&
       keys[0] === "type" &&
-      (msg as Record<string, unknown>)["type"] === "refill-nudge"
+      (msg as Record<string, unknown>)["type"] === type
     );
   } catch {
     return false;
@@ -134,7 +140,7 @@ export function captureChrome(chrome: unknown): ChromeApi | null {
       if (addListener === undefined) return;
       const listener = (msg: unknown, sender: unknown): undefined => {
         // Never `true` and never `sendResponse`: a nudge gets no reply.
-        if (isNudge(msg) && fromExtension(sender, id)) {
+        if (isOnly(msg, "refill-nudge") && fromExtension(sender, id)) {
           try {
             cb();
           } catch {
@@ -147,6 +153,40 @@ export function captureChrome(chrome: unknown): ChromeApi | null {
         Reflect.apply(addListener, onMessage, [listener]);
       } catch {
         // no nudges
+      }
+    },
+    onFlush: (cb) => {
+      if (addListener === undefined) return;
+      const listener = (
+        msg: unknown,
+        sender: unknown,
+        sendResponse: unknown,
+      ): true | undefined => {
+        if (!isOnly(msg, "refill-flush") || !fromExtension(sender, id)) {
+          return undefined; // not ours to answer
+        }
+        if (!apiFunction(sendResponse)) return undefined;
+        let done: Promise<void>;
+        try {
+          done = Promise.resolve(cb());
+        } catch {
+          done = Promise.resolve();
+        }
+        void done
+          .catch(() => undefined)
+          .then(() => {
+            try {
+              sendResponse({ ok: true });
+            } catch {
+              // the worker stopped waiting
+            }
+          });
+        return true; // the reply comes once the captures are out
+      };
+      try {
+        Reflect.apply(addListener, onMessage, [listener]);
+      } catch {
+        // no flushes: the worker's wait times out and it finishes anyway
       }
     },
   };

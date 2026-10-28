@@ -97,6 +97,25 @@ plain object with that one key) from `sender.id === runtime.id` with no `sender.
 content script of Refill, in any tab, cannot wake this one), and returns `undefined` without
 calling `sendResponse`: a nudge never gets a reply.
 
+### Flush before a popup Finish (ruling P17, Task 11)
+The e2e suite found that a Finish from the popup lost an edit made less than 400 ms before it: the
+capture was still in the debounce (the field kept focus, so no `change`), the worker marked the
+session finished, and the late capture got `off`. The pill's Finish flushes first; the popup could
+not reach the debounce.
+- **`refill-flush`**, a content-bound message: exactly `{ type: "refill-flush" }`, with the nudge's
+  sender checks (`sender.id === runtime.id`, no `sender.tab`). Unlike the nudge it gets a
+  **data-free ack** `{ ok: true }`. The listener calls `Recording.flushed()`, which sends every
+  debounced edit and resolves once the capture chain queued so far has settled (at once when not
+  recording), then replies; it returns `true` so the reply can be async. Any other message still
+  gets no reply, and **the nudge still never gets one**.
+- **Worker:** the popup's `record-finish` reads the tab's session metadata (`peekMeta`, no DEK);
+  for an unfinished one it sends `refill-flush` to frame 0 of the tab (`flushTab`) and awaits the
+  ack, bounded at **1 s** (`FLUSH_TIMEOUT_MS`), then runs `finishSession`. The wait is outside any
+  session job: the captures it waits for queue on that chain. A failure (no content script) or a
+  timeout only ends the wait, logged by error name only. Reopening a finished session sends no
+  flush. The pill's own Finish is unchanged.
+- A Cancel that lands while a popup Finish waits for the ack wins: the Finish answers `{ ok: false }`.
+
 ### Pill (`src/lib/content/pill.ts`)
 - A `div` host built and given its **closed** shadow root before it is attached, so page code never
   sees it without one, and a `div` cannot be upgraded by a page-defined custom element.
@@ -134,15 +153,11 @@ calling `sendResponse`: a nudge never gets a reply.
   answered in that window may still fill such a field if it is empty or at its page default. The
   nudge listener stays registered on `runtime.onMessage` after `stop()` (the captured API has no
   removal); its callback checks the stopped flag and does nothing.
-- **Open (Task 11 e2e finding):** a **Finish from the popup** does not flush the content script's
-  debounced edits. An `input` less than 400 ms old with no `change` since (the field kept focus) is
-  still pending when the worker marks the session finished, and its capture then gets `off` and is
-  dropped. The pill's Finish flushes first; the popup's cannot reach the debounce today (the nudge
-  carries no reply). Opening a real popup may blur the page and fire `change`, which sends the edit
-  at once, but that is not guaranteed. The e2e suite waits for the capture before a popup Finish.
+- A frozen or busy page delays a popup Finish by at most 1 s (`FLUSH_TIMEOUT_MS`); its pending
+  edits are then lost, as before this decision.
 - An input whose label changes only in wording (a validation message inside the label) looks like a
   re-use: it loses its edited mark, its page default and its `fieldId`, and its next capture is
   matched by signature.
 
 ## Status
-Accepted (2026-10-27). Amended by the Task 8 review (fix round 1): meaning-bound edited marks, page defaults and `fieldId` link; over-cap reverts; captures wait for the P12 report.
+Accepted (2026-10-27). Amended by the Task 8 review (fix round 1): meaning-bound edited marks, page defaults and `fieldId` link; over-cap reverts; captures wait for the P12 report. Amended by Task 11 (ruling P17): `refill-flush` before a popup Finish.

@@ -23,6 +23,7 @@ export default defineUnlistedScript(() => {
     alive: api.alive,
     openOrClosedShadowRoot: api.openOrClosedShadowRoot,
     onNudge: api.onNudge,
+    onFlush: api.onFlush,
   });
   if (run !== null && import.meta.env.MODE === "e2e") {
     const root = document.documentElement;
