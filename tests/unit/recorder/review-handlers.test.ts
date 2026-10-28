@@ -248,7 +248,8 @@ describe("review-save", () => {
     });
     expect(p!.fields.map((f) => [f.id, f.value, f.policy])).toEqual([
       ["f1", "12345", "save"],
-      ["f2", "90210", "skip"],
+      // "Don't save" keeps the field (it still claims its control) but not its value (C1).
+      ["f2", "", "skip"],
       ["f3", "45.12", "ask"],
     ]);
     expect(p!.steps.map((s) => s.pathHint)).toEqual([
@@ -258,6 +259,24 @@ describe("review-save", () => {
     expect((await readSites())[ORIGIN]!.profileId).toBe(p!.id);
     expect(await peek()).toBe("off");
     expect(await load(id)).toEqual({ state: "gone" });
+  });
+
+  it("Record again after a Don't save: the seeded review shows that field empty and Don't save (C1)", async () => {
+    const first = await session(walked());
+    expect(
+      await save(first, { policies: await policiesOf(first, { f2: "skip" }) }),
+    ).toEqual({ ok: true });
+    const saved = (await loadProfileForOrigin(ORIGIN))!;
+    // Record again, finished before the user reached step 1's zip field again.
+    const again = await session(seedBody(saved), saved);
+    const res = await load(again);
+    if (res.state !== "ready") throw new Error("not ready");
+    expect(res.model.fields.map((f) => [f.id, f.value, f.policy])).toEqual([
+      ["f1", "12345", "save"],
+      ["f2", "", "skip"],
+      ["f3", "45.12", "save"],
+    ]);
+    expect(JSON.stringify(res)).not.toContain("90210");
   });
 
   it("after a lock: gone, and no profile is written (Review Focus 4)", async () => {

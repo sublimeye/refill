@@ -178,6 +178,25 @@ describe("buildProfile", () => {
     ]);
   });
 
+  it("keeps no value for a Don't save field: empty value and page default, sig, step and kind kept (C1)", () => {
+    const body = recorded();
+    body.fields[1] = { ...body.fields[1]!, pageDefault: "0.00" };
+    const p = build({ body, policies: { f1: "save", f2: "skip" } });
+    expect(p?.fields[1]).toEqual({
+      id: "f2",
+      sig: body.fields[1]!.sig,
+      step: 1,
+      kind: "text",
+      value: "",
+      pageDefault: "",
+      policy: "skip",
+    });
+    expect(JSON.stringify(p)).not.toContain("45.12");
+    expect(JSON.stringify(p)).not.toContain("0.00");
+    // The other fields keep theirs.
+    expect(p?.fields[0]).toMatchObject({ value: "12345", policy: "save" });
+  });
+
   it("trims the name", () => {
     expect(build({ name: "  Bills  " })?.name).toBe("Bills");
   });
