@@ -27,18 +27,29 @@ brief left open.
   signature but is a secret now. The value and the page default are read **at the event**, through
   captured prototype getters, so a value a page script writes after the user's last keystroke is
   not what gets recorded.
-- **Page defaults** (`PageDefaults` in `recorder/capture.ts`): the first value each scan saw per
-  element (`String(checked)` for toggles), noted before that scan's fill plan is applied, so neither
-  Refill's fill nor the user's edits change it. An element no scan has seen falls back to the
-  markup: `defaultValue`, `defaultChecked`, the `selected` option, else the first option (what a
-  single-line select shows), else `""`.
-- **Edited elements are never refilled** (Review Focus 1). Every trusted edit outside a fill adds the
-  element to a per-document `WeakSet`; while recording, the runner's `apply` counts such an element
-  as `skipped` before `canFill`. A user who clears a field or puts its original value back keeps
-  what they typed.
-- **The `fieldId` link** (Review Focus 5). The runner keeps a `WeakMap` of element → field id for
-  each `filled` outcome; a capture on that element carries the id, so the worker updates that field
-  even when the page changed its label since.
+- **Page defaults** (`PageDefaults` in `recorder/capture.ts`): the first value a scan saw per
+  element **and meaning** (`String(checked)` for toggles), noted with the scan's signature before
+  that scan's fill plan is applied, so neither Refill's fill nor the user's edits change it. When
+  `stillMeans` fails against the noted signature (an SPA re-used the input for another field), the
+  entry is stale and the next scan notes the first value under the new meaning (ruling P13). An
+  element with no current entry at edit time falls back to the markup: `defaultValue`,
+  `defaultChecked`, the `selected` option, else the first option (what a single-line select shows),
+  else `""`; that value is then kept for the current meaning, so a scan that only runs after the
+  edit does not take the typed value for the page's own.
+- **Edited elements are never refilled** (Review Focus 1). Every trusted edit outside a fill records
+  the element with its signature at the edit; while recording, the runner's `apply` counts such an
+  element as `skipped` before `canFill`. A user who clears a field or puts its original value back
+  keeps what they typed. The mark holds only while the element still means that signature
+  (`stillMeans`, ruling P13): an input the page re-used for step 2's field is not "edited" for that
+  field, so step 2's recorded value pre-fills it.
+- **The `fieldId` link** (Review Focus 5). The runner keeps a `WeakMap` of element → `{ fieldId,
+  sig }` for each `filled` outcome. A capture on that element carries the id only while the element
+  still means the signature it was filled under. The worker trusts the link and moves the linked
+  field to the current step, so a stale id on a re-used input would carry step 1's field to step 2
+  and lose its saved value; without the id, the edit is matched by its own signature. When the page
+  relabels the field after the fill and before the edit, the id is not sent either, and the edit is
+  matched by its signature; the link covers a label changed since the field was recorded, as long as
+  the fill and the edit see the same label.
 - **Which signature, and ordering.** A capture carries the kind and signature from the runner's
   latest scan, so the worker files it under the page it last saw. When the element is not in that
   scan (added since), or no longer means its scanned signature (`stillMeans`, now shared in
@@ -47,8 +58,11 @@ brief left open.
   is dropped. Captures and Finish run on one promise chain, in the user's order.
 - **Debounce.** `input` waits 400 ms of quiet per element (`CAPTURE_DEBOUNCE_MS`); a `change`
   sends at once and replaces the element's pending send; `pagehide` and Finish flush every pending
-  send first. A value or page default over 4096 characters (the worker's cap, `LIMITS.value`) is
-  not sent: the worker would reject the whole message.
+  send first.
+- **Over the 4096-character cap** (the worker's, `LIMITS.value`, which rejects the whole message).
+  A value over the cap is sent as a revert (`value = pageDefault`, same signature and `fieldId`), so
+  the worker drops the field instead of keeping a shorter value captured earlier. A page default
+  over the cap sends nothing.
 - **State.** `sync()` sends `record-status` after the runner's first scan (also on a page with no
   controls: a wizard's last page needs Finish), on a nudge and on a bfcache restore. `on`/`full`
   attaches the listeners and shows the pill; `off` detaches and hides it; `stopped` detaches. Only
@@ -58,7 +72,9 @@ brief left open.
 - **Starting re-reports the page (P12).** When `sync` moves from not recording to `on`/`full`, it
   calls `rescan(true)`: the runner forgets the delivered fingerprint (as a bfcache restore does) and
   scans, so the worker has filed the current page before any capture (it answers a capture
-  `no-step` until then). The runner's `filled` ids keep the second plan from writing again.
+  `no-step` until then). The listeners are live from that moment, so in the same task the capture
+  chain is made to wait for that report: an edit during the report's round trip is sent after it.
+  The runner's `filled` ids keep the second plan from writing again.
 - **The "stopped" notice once per document (open choice).** The worker answers `stopped` for 30
   minutes after a lock or expiry (the tombstone, ADR 0029). Shown on every nudge or restore, the
   notice would reappear for half an hour; it is shown the first time this document hears it, and
@@ -113,6 +129,14 @@ calling `sendResponse`: a nudge never gets a reply.
   only once a scan has entered that root (its listeners are attached then).
 - The stopped notice is not repeated in the same document; a new document in the same tab and
   origin shows it once more while the tombstone lasts.
+- Known limits (accepted by the controller): edits made before the first `record-status` answer
+  arrives (well under a second after load) are neither captured nor marked edited, so a plan
+  answered in that window may still fill such a field if it is empty or at its page default. The
+  nudge listener stays registered on `runtime.onMessage` after `stop()` (the captured API has no
+  removal); its callback checks the stopped flag and does nothing.
+- An input whose label changes only in wording (a validation message inside the label) looks like a
+  re-use: it loses its edited mark, its page default and its `fieldId`, and its next capture is
+  matched by signature.
 
 ## Status
-Accepted (2026-10-27).
+Accepted (2026-10-27). Amended by the Task 8 review (fix round 1): meaning-bound edited marks, page defaults and `fieldId` link; over-cap reverts; captures wait for the P12 report.
