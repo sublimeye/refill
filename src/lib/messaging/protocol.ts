@@ -48,12 +48,16 @@ export type PageRequest =
       pathPrefix: string;
       policies: { fieldId: string; policy: FieldPolicy }[];
     }
-  | { type: "review-discard"; sessionId: string };
+  | { type: "review-discard"; sessionId: string }
+  | { type: "review-check"; sessionId: string };
 
 /** What the review page learns about a finished recording (ADR 0033). */
 export type ReviewLoadResult =
   | { state: "ready"; model: ReviewModel; replacesProfile: boolean }
   | { state: "gone" };
+
+/** Whether the page may still show the recording: unlocked, finished, same id (ruling P15). */
+export type ReviewCheckResult = { state: "ready" } | { state: "gone" };
 
 export type ReviewSaveResult =
   { ok: true } | { ok: false; error: "gone" | "invalid" };
@@ -105,7 +109,9 @@ export type PageResponse<R extends PageRequest> = R extends {
                             ? ReviewSaveResult
                             : R extends { type: "review-discard" }
                               ? { ok: true }
-                              : never;
+                              : R extends { type: "review-check" }
+                                ? ReviewCheckResult
+                                : never;
 
 /** What the router resolves for a message it refuses or whose handler threw. Never carries detail. */
 export type RouterError = { ok: false; error: "rejected" | "internal" };
@@ -136,6 +142,7 @@ const KEYS_BY_TYPE: Readonly<Record<PageRequest["type"], readonly string[]>> = {
     "policies",
   ],
   "review-discard": ["type", "sessionId"],
+  "review-check": ["type", "sessionId"],
 };
 
 /** Origins are short: a longer string cannot be a canonical https origin worth handling. */
@@ -245,10 +252,14 @@ export function parsePageRequest(raw: unknown): PageRequest | null {
       };
     }
     case "review-load":
-    case "review-discard": {
+    case "review-discard":
+    case "review-check": {
       const sessionId = parseId(raw["sessionId"]);
       if (sessionId === null) return null;
-      return { type: type as "review-load" | "review-discard", sessionId };
+      return {
+        type: type as "review-load" | "review-discard" | "review-check",
+        sessionId,
+      };
     }
     case "review-save": {
       const sessionId = parseId(raw["sessionId"]);

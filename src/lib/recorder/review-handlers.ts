@@ -1,18 +1,21 @@
 // The review page's requests (spec §6.2): load a finished recording, save it as the site's profile,
-// or discard it. Only an extension page reaches these, and only a finished session is answered. A
-// save re-checks the session and the vault at save time, so a lock while the page is open ends it
-// with nothing written (Review Focus 4). Decisions: ADR 0033.
+// discard it, or check that the page may still show it. Only an extension page reaches these, and
+// only a finished session is answered. A save re-checks the session and the vault at save time, so
+// a lock while the page is open ends it with nothing written (Review Focus 4), and the page asks
+// `review-check` before every reveal (ruling P15). Decisions: ADR 0033.
 import type { PageHandlers } from "../messaging/router";
 import { loadProfileForOrigin, newId, saveProfile } from "../profiles/store";
 import type { FieldPolicy, Profile } from "../profiles/types";
 import { LockedError } from "../vault/types";
-import { lockEpoch } from "../vault/vault";
+import { lockEpoch, status } from "../vault/vault";
 import { buildProfile, reviewModel } from "./profile";
-import { discardSession, withSession } from "./session";
+import { discardSession, peekSession, withSession } from "./session";
 import type { RecBody } from "./types";
 
 const GONE = { state: "gone" } as const;
 const SAVE_GONE = { ok: false, error: "gone" } as const;
+// The page shows `invalid` as the path error: it checks the name itself, and the policies come from
+// the model. A new cause of `invalid` must update that mapping (`saveReview` in review-flow.ts).
 const INVALID = { ok: false, error: "invalid" } as const;
 
 interface Finished {
@@ -60,7 +63,7 @@ function policyMap(
 
 type ReviewPageHandlers = Pick<
   PageHandlers,
-  "review-load" | "review-save" | "review-discard"
+  "review-load" | "review-save" | "review-discard" | "review-check"
 >;
 
 /** `now` is injected for tests; it is the worker's clock and never comes from a message. */
@@ -75,11 +78,12 @@ export function createReviewPageHandlers(
       if (rec === null) return GONE;
       const current = await currentProfile(rec.origin);
       if (current === "locked") return GONE;
-      // The saved form lends its name, prefix and fill mode only to the recording it seeded.
+      // The saved form lends its name, prefix and fill mode only to the recording it seeded: a form
+      // saved under another id since then is replaced (and warned about), not borrowed from.
       const model = reviewModel(
         rec.origin,
         rec.body,
-        rec.seededFrom !== null ? current : null,
+        current !== null && current.id === rec.seededFrom ? current : null,
       );
       if (lockEpoch() !== epoch) return GONE;
       return { state: "ready", model, replacesProfile: current !== null };
@@ -90,10 +94,11 @@ export function createReviewPageHandlers(
       const epoch = lockEpoch();
       const rec = await finished(req.sessionId, t);
       if (rec === null) return SAVE_GONE;
-      // Nothing recorded is nothing to save: an empty form must never replace a saved one.
+      // Nothing recorded is nothing to save: an empty form must never replace a saved one. The page
+      // offers only Discard then, so it never shows this `invalid` (see INVALID).
       if (rec.body.fields.length === 0) return INVALID;
       const policies = policyMap(req.policies);
-      if (policies === null) return INVALID;
+      if (policies === null) return INVALID; // see INVALID
       const current = await currentProfile(rec.origin);
       if (current === "locked") return SAVE_GONE;
       // The site keeps one form: replacing it keeps its id and creation time (Record again).
@@ -108,7 +113,7 @@ export function createReviewPageHandlers(
         body: rec.body,
         policies,
       });
-      if (profile === null) return INVALID;
+      if (profile === null) return INVALID; // see INVALID
       // At save time: the same session is still there and finished, and the vault never locked
       // since it was opened. A lock discards the session (ADR 0029), so a save after one is gone.
       if ((await finished(req.sessionId, now())) === null) return SAVE_GONE;
@@ -121,6 +126,17 @@ export function createReviewPageHandlers(
       }
       await discardSession("saved", req.sessionId);
       return { ok: true };
+    },
+
+    // Before every reveal and when the page becomes visible again (ruling P15): unlocked, and the
+    // session of that id is still there and finished. No body is opened, so it costs one session
+    // read and the vault status, and no value moves.
+    "review-check": async ({ sessionId }) => {
+      const epoch = lockEpoch();
+      if ((await status()).state !== "unlocked") return GONE;
+      const meta = await peekSession(sessionId, now());
+      if (meta === null || !meta.finished || lockEpoch() !== epoch) return GONE;
+      return { state: "ready" };
     },
 
     "review-discard": async ({ sessionId }) => {

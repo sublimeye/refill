@@ -63,6 +63,7 @@ function spyHandlers() {
     "review-load": vi.fn(async () => ({ state: "gone" })),
     "review-save": vi.fn(async () => ({ ok: true })),
     "review-discard": vi.fn(async () => ({ ok: true })),
+    "review-check": vi.fn(async () => ({ state: "gone" })),
   };
   const c = {
     "scan-report": vi.fn(async () => ({ state: "none" })),
@@ -624,6 +625,7 @@ describe("content senders", () => {
       { type: "site-status", origin: SITE },
       { type: "review-load", sessionId: "abc" },
       { type: "review-discard", sessionId: "abc" },
+      { type: "review-check", sessionId: "abc" },
       {
         type: "review-save",
         sessionId: "abc",

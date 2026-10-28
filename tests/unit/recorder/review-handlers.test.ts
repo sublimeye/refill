@@ -11,6 +11,7 @@ import {
   it,
   vi,
 } from "vitest";
+import * as aead from "../../../src/lib/crypto/aead";
 import { newKdfParams } from "../../../src/lib/crypto/kdf";
 import { createPageHandlers } from "../../../src/lib/messaging/page-handlers";
 import {
@@ -29,6 +30,7 @@ import { applyCapture } from "../../../src/lib/recorder/fields";
 import { createReviewPageHandlers } from "../../../src/lib/recorder/review-handlers";
 import {
   RECORDING_TTL_MS,
+  discardSession,
   installRecorderListeners,
   startSession,
   withSession,
@@ -40,6 +42,7 @@ import {
   type RecBody,
 } from "../../../src/lib/recorder/types";
 import { readSites } from "../../../src/lib/sites";
+import * as vault from "../../../src/lib/vault/vault";
 import {
   __resetForTests,
   createVault,
@@ -195,6 +198,26 @@ describe("review-load", () => {
     });
   });
 
+  it("a form saved after the seed (another id) warns, but lends nothing to the model", async () => {
+    const seed = savedProfile();
+    await saveProfile(seed);
+    const id = await session(walked(seedBody(seed)), seed);
+    // The site's form was replaced while the recording ran.
+    await saveProfile(
+      savedProfile({ id: "p2", name: "Replaced", pathPrefix: "/" }),
+    );
+    const res = await load(id);
+    expect(res).toMatchObject({
+      state: "ready",
+      replacesProfile: true,
+      model: {
+        name: "pay.example.com",
+        pathPrefix: "/billpay/",
+        fillMode: "auto",
+      },
+    });
+  });
+
   it("a saved form that was not the seed still warns, but lends nothing to the model", async () => {
     await saveProfile(savedProfile({ name: "Elsewhere" }));
     const id = await session(walked());
@@ -268,6 +291,30 @@ describe("review-save", () => {
     expect(await save(id, { policies })).toEqual({ ok: false, error: "gone" });
     expect(await profileKeys()).toEqual([]);
   });
+
+  for (const [what, between] of [
+    ["a discard", (id: string) => discardSession("cancelled", id)],
+    [
+      "a new recording replacing it",
+      () => startSession(TAB, ORIGIN, clock, null).then(() => undefined),
+    ],
+  ] as const) {
+    it(`${what} between opening the session and the write: gone, nothing written`, async () => {
+      const id = await session(walked());
+      const policies = await policiesOf(id);
+      const real = store.loadProfileForOrigin;
+      vi.spyOn(store, "loadProfileForOrigin").mockImplementation(async (o) => {
+        const p = await real(o);
+        await between(id);
+        return p;
+      });
+      expect(await save(id, { policies })).toEqual({
+        ok: false,
+        error: "gone",
+      });
+      expect(await profileKeys()).toEqual([]);
+    });
+  }
 
   it("an unfinished session is gone and stays recording", async () => {
     const id = await session(walked(), null, false);
@@ -361,6 +408,48 @@ describe("review-save", () => {
   });
 });
 
+describe("review-check", () => {
+  const check = (sessionId: string) =>
+    h()["review-check"]({ type: "review-check", sessionId });
+
+  it("a finished session of that id is ready, and the check opens no body", async () => {
+    const id = await session(walked());
+    const opened = vi.spyOn(aead, "open");
+    const set = vi.spyOn(fakeBrowser.storage.session, "set");
+    expect(await check(id)).toEqual({ state: "ready" });
+    expect(opened).not.toHaveBeenCalled();
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it("locked, expired, unfinished, discarded or another id: gone", async () => {
+    expect(await check(ID)).toEqual({ state: "gone" });
+    const unfinished = await session(walked(), null, false);
+    expect(await check(unfinished)).toEqual({ state: "gone" });
+    const id = await session(walked());
+    expect(await check(ID)).toEqual({ state: "gone" });
+    await lock();
+    expect(await check(id)).toEqual({ state: "gone" });
+    expect((await unlockWithPassphrase(P)).ok).toBe(true);
+    expect(await check(id)).toEqual({ state: "gone" }); // the lock ended it
+    const id2 = await session(walked());
+    clock += RECORDING_TTL_MS;
+    expect(await check(id2)).toEqual({ state: "gone" });
+    clock = T0;
+    const id3 = await session(walked());
+    await discardSession("cancelled", id3);
+    expect(await check(id3)).toEqual({ state: "gone" });
+  });
+
+  it("a locked vault is gone even before the lock listener ended the session", async () => {
+    const id = await session(walked());
+    // Not through lock(): the vault state says locked while the record is still stored.
+    vi.spyOn(vault, "status").mockResolvedValue({
+      state: "locked",
+    } as Awaited<ReturnType<typeof vault.status>>);
+    expect(await check(id)).toEqual({ state: "gone" });
+  });
+});
+
 describe("review-discard", () => {
   it("ends that session only", async () => {
     const id = await session(walked());
@@ -382,6 +471,7 @@ describe("wiring and parsing", () => {
     expect(typeof handlers["review-load"]).toBe("function");
     expect(typeof handlers["review-save"]).toBe("function");
     expect(typeof handlers["review-discard"]).toBe("function");
+    expect(typeof handlers["review-check"]).toBe("function");
   });
 
   const good = {
@@ -396,6 +486,10 @@ describe("wiring and parsing", () => {
   it("parses the three messages with exact keys into fresh objects", () => {
     expect(parsePageRequest({ type: "review-load", sessionId: ID })).toEqual({
       type: "review-load",
+      sessionId: ID,
+    });
+    expect(parsePageRequest({ type: "review-check", sessionId: ID })).toEqual({
+      type: "review-check",
       sessionId: ID,
     });
     expect(parsePageRequest({ type: "review-discard", sessionId: ID })).toEqual(
@@ -416,6 +510,8 @@ describe("wiring and parsing", () => {
       { type: "review-load", sessionId: "x".repeat(65) },
       { type: "review-load", sessionId: ID, extra: 1 },
       { type: "review-discard", sessionId: 5 },
+      { type: "review-check", sessionId: "a|b" },
+      { type: "review-check", sessionId: ID, origin: "https://a.example" },
       { ...good, sessionId: "not an id" },
       { ...good, name: "n".repeat(121) },
       { ...good, name: 5 },
