@@ -1,6 +1,7 @@
 // Review-page logic (spec §6.2), kept out of the Svelte component so it is unit-testable: the
 // session id from the page URL, loading, the page state and the reveal check, the form checks the
 // page can make itself, the save request and what the worker's answers mean. Decisions: ADR 0033.
+import { browser } from "wxt/browser";
 import { sendToSw, type ReviewLoadResult } from "../messaging/protocol";
 import { ID_RE, type FieldPolicy } from "../profiles/types";
 import type { ReviewModel } from "./profile";
@@ -208,4 +209,40 @@ export async function recheckReview(
   }
   endReview(page, "gone");
   return true;
+}
+
+/** Where the worker keeps the one recording session (`session.ts`, ADR 0029). */
+const SESSION_KEY = "recorder:session";
+
+/** The plaintext metadata id of a stored session record, or null for anything else. */
+function storedSessionId(raw: unknown): string | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const meta = (raw as Record<string, unknown>)["meta"];
+  if (typeof meta !== "object" || meta === null) return null;
+  const id = (meta as Record<string, unknown>)["id"];
+  return typeof id === "string" ? id : null;
+}
+
+/**
+ * Calls `onGone` once the stored recording is no longer session `sessionId`: removed (a lock, an
+ * expiry, a save or a cancel) or replaced by another, read from `storage.session` changes. Only the
+ * plaintext metadata is read, and a record of any other shape counts as gone (the page then hides
+ * every value, which is the safe side). No messaging: a lock in another window ends the page at
+ * once, with nothing revealed left on screen (I3, ADR 0033). Returns the unsubscribe.
+ */
+export function watchReviewSession(
+  sessionId: string,
+  onGone: () => void,
+): () => void {
+  const listener = (
+    changes: Record<string, { newValue?: unknown }>,
+    area: string,
+  ): void => {
+    if (area !== "session" || !Object.hasOwn(changes, SESSION_KEY)) return;
+    if (storedSessionId(changes[SESSION_KEY]?.newValue) !== sessionId) {
+      onGone();
+    }
+  };
+  browser.storage.onChanged.addListener(listener);
+  return () => browser.storage.onChanged.removeListener(listener);
 }

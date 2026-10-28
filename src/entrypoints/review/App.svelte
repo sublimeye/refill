@@ -3,7 +3,8 @@
   // user asks, a policy per field, the form's name, fill mode and path prefix, then Save or
   // Discard. Values are rendered as text only. Every reveal, and every return to the page, is
   // re-confirmed with the worker first (ruling P15): after a lock, an expiry or a cancel the page
-  // drops the recording and shows the gone copy.
+  // drops the recording and shows the gone copy. It also watches the stored session, so a lock
+  // elsewhere hides a revealed value at once, with no action on this page (I3).
   import { onMount, tick } from "svelte";
   import {
     applyLoad,
@@ -17,6 +18,7 @@
     sessionIdFrom,
     stepNumber,
     toggleValue,
+    watchReviewSession,
     type FormProblem,
   } from "../../lib/recorder/review-flow";
 
@@ -33,6 +35,8 @@
 
   const page = $state(newPage());
   let busy = $state(false);
+  /** The recording went away while a save or discard was in flight (see `settle`). */
+  let goneWhileBusy = false;
   let problem = $state<FormProblem | null>(null);
   let failed = $state(false);
 
@@ -52,8 +56,29 @@
     if (page.view !== "ready") await focusMessage();
   }
 
+  /** The recording is gone: hide every value now, unless a save or discard will settle it. */
+  function onGone() {
+    if (busy) {
+      goneWhileBusy = true;
+      return;
+    }
+    if (page.view !== "ready") return;
+    endReview(page, "gone");
+    void focusMessage();
+  }
+
+  /** After a save or discard: whether the recording went away while it was in flight. */
+  function wentAway(): boolean {
+    const gone = goneWhileBusy;
+    goneWhileBusy = false;
+    return gone;
+  }
+
   onMount(() => {
     void load();
+    // A lock, an expiry or a new recording, even in another window: the page ends at once (I3).
+    const unwatch =
+      sessionId === null ? () => {} : watchReviewSession(sessionId, onGone);
     // Back to the page (another tab, the screen unlocked): drop the recording if it is gone.
     const onVisible = () => {
       if (document.visibilityState !== "visible" || sessionId === null) return;
@@ -62,7 +87,10 @@
       );
     };
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    return () => {
+      unwatch();
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   });
 
   async function retry() {
@@ -93,19 +121,21 @@
     // saveReview never throws. The controls are enabled again before focus moves to one of them.
     const out = await saveReview(sessionId, page.form);
     busy = false;
-    switch (out) {
+    // A save that did not end the review, while the recording went away: it ends as gone.
+    const result = wentAway() && out !== "saved" ? "gone" : out;
+    switch (result) {
       case "saved":
       case "gone":
-        endReview(page, out);
+        endReview(page, result);
         await focusMessage();
         break;
       case "failed":
         await announceFailure();
         break;
       default:
-        problem = out;
+        problem = result;
         await tick();
-        (out === "name" ? nameInput : prefixInput)?.focus();
+        (result === "name" ? nameInput : prefixInput)?.focus();
     }
   }
 
@@ -116,7 +146,10 @@
     failed = false;
     const ok = await discardReview(sessionId); // never throws
     busy = false;
-    if (ok) {
+    if (wentAway() && !ok) {
+      endReview(page, "gone");
+      await focusMessage();
+    } else if (ok) {
       endReview(page, "discarded");
       await focusMessage();
     } else {

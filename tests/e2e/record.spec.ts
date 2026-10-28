@@ -339,6 +339,28 @@ test.describe("popup: recording", () => {
     );
   });
 
+  test("Lock now in the popup hides a revealed value on the review page with no action there (I3)", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { review, tabId } = await finishedReview(context, extensionId);
+    await review.getByRole("button", { name: "Show city" }).click();
+    await expect(review.getByText("Springfield")).toBeVisible();
+
+    const popup = await openPopup(context, extensionId, tabId, TWINS);
+    await popup.getByRole("button", { name: "Lock now" }).click();
+    await expect(popup.getByLabel("Passphrase")).toBeVisible();
+
+    // The review tab is not touched: no click, no bringToFront (no visibilitychange either).
+    await expect
+      .poll(() => review.locator("body").innerText())
+      .not.toContain("Springfield");
+    await expect(review.getByText(GONE)).toBeVisible();
+    await expect(review.getByRole("rowheader")).toHaveCount(0);
+  });
+
   test("a locked vault offers no record button", async ({
     context,
     extensionId,
