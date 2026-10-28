@@ -28,14 +28,26 @@ and how a body is kept.
   `finished`/`expiresAt` patch and a result.
   - A changed body is re-sealed with a fresh IV. A meta-only change keeps the sealed body. With
     neither, nothing is written. If `fn` throws, nothing is written.
+  - `fn` receives a copy of the metadata, so changing it in place writes nothing.
   - Expiry is checked before the match: a session expires whoever asks.
   - The answer is `"off"` when there is no session, when `match` names another tab, origin or id,
     and when the record does not parse.
   - **Locked.** If `getDek()` throws `LockedError`, the session is discarded as `"locked"`. This
     covers a lock event that never reached the listener: after a lock the DEK is gone, so the body
     can never open again.
+  - **A lock during the job.** `lockEpoch()` is read before `getDek()`. If it changed by the time
+    `fn` returns, the session is dropped as `"locked"` and the answer is `"off"`: nothing is
+    written, and nothing `fn` computed from the opened body is returned. A lock can still land while
+    the new body is being sealed and written, so a caller that replies with values re-checks
+    `lockEpoch()` synchronously right before replying (ADR 0025, ADR 0030).
+  - **The meta patch** may set `expiresAt` to at most `now + RECORDING_TTL_MS`. A later value, or one
+    that is not finite, throws `TypeError` and nothing is written: Finish may reset the TTL, never
+    extend a session beyond it.
 - **Expiry.** `RECORDING_TTL_MS` = 30 min from start. Task 6 resets `expiresAt` to 30 min from
   Finish through the meta patch. A session at or past `expiresAt` is discarded as `"expired"`.
+- **`discardSession(reason, id?)`.** With an id, the session is discarded only while the stored
+  record still has that id, so a late discard of an old session never ends a newer one. A malformed
+  record is removed either way.
 - **Discard on lock and on tab close.** `installRecorderListeners()` registers synchronously at the
   worker's top level.
   - `onLockChange(false)` discards the session as `"locked"`, a finished one included (Review Focus
@@ -47,7 +59,8 @@ and how a body is kept.
   `{ tabId, reason, at }`, which holds no page data. `stoppedReason(tabId, now)` answers that reason
   for 30 min, so the content handlers can answer `stopped`. A new start clears it.
 - **Badge and nudge.** A start sets the tab's badge to `●`. A discard clears the badge and sends
-  `{ type: "refill-nudge" }` to frame 0 of the tab. Badge and nudge failures are logged by error name
+  `{ type: "refill-nudge" }` to frame 0 of the tab. Finish clears the badge through the exported
+  `clearBadge(tabId)` (ADR 0030). Badge and nudge failures are logged by error name
   only and never fail the job.
 - **Untrusted read-back.** `storage.session` is writable by every trusted extension context, so the
   record and the tombstone are parsed strictly. Exact keys are required, `id` and `seededFrom` must
@@ -78,4 +91,5 @@ and how a body is kept.
 - The store runs in the worker and imports no DOM module, so `check:sw-no-dom` still holds.
 
 ## Status
-Accepted (2026-10-27).
+Accepted (2026-10-27). Amended by Plan 3 Task 6 (2026-10-27): the lock-epoch check around `fn`, the
+`expiresAt` ceiling, discard by id, a copy of the metadata for `fn`, and `clearBadge`.
