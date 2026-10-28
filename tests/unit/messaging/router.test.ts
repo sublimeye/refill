@@ -60,6 +60,9 @@ function spyHandlers() {
     "record-state": vi.fn(async () => ({ state: "off" })),
     "record-finish": vi.fn(async () => ({ ok: false })),
     "record-cancel": vi.fn(async () => ({ ok: true })),
+    "review-load": vi.fn(async () => ({ state: "gone" })),
+    "review-save": vi.fn(async () => ({ ok: true })),
+    "review-discard": vi.fn(async () => ({ ok: true })),
   };
   const c = {
     "scan-report": vi.fn(async () => ({ state: "none" })),
@@ -619,6 +622,16 @@ describe("content senders", () => {
       { type: "vault-status" },
       { type: "vault-lock" },
       { type: "site-status", origin: SITE },
+      { type: "review-load", sessionId: "abc" },
+      { type: "review-discard", sessionId: "abc" },
+      {
+        type: "review-save",
+        sessionId: "abc",
+        name: "n",
+        fillMode: "auto",
+        pathPrefix: "/",
+        policies: [],
+      },
     ]) {
       expect(await createRouter(handlers)(m, content)).toEqual(REJECTED);
     }
