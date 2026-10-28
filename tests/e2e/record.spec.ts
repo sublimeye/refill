@@ -423,7 +423,9 @@ test.describe("record, review and fill", () => {
     since: LogMark,
     tabId: number,
     pathname?: string,
-  ) {
+    /** A document that must not count: the one the same URL showed before a re-render. */
+    notDocument?: string,
+  ): Promise<string | undefined> {
     const on = await waitForEntry(
       context,
       since,
@@ -431,7 +433,8 @@ test.describe("record, review and fill", () => {
       (e) =>
         e.tabId === tabId &&
         e.state === "on" &&
-        (pathname === undefined || e.pathname === pathname),
+        (pathname === undefined || e.pathname === pathname) &&
+        (notDocument === undefined || e.documentId !== notDocument),
     );
     await waitForEntry(
       context,
@@ -439,6 +442,7 @@ test.describe("record, review and fill", () => {
       "scan-report",
       (e) => e.tabId === tabId && e.documentId === on.documentId,
     );
+    return on.documentId;
   }
 
   /** Reopens the popup until it counts `n` captured fields (captures are debounced). */
@@ -664,11 +668,17 @@ test.describe("record, review and fill", () => {
           context,
           since,
           "fill-result",
-          (e) => e.tabId === tabId,
+          (e) => e.tabId === tabId && e.pathname === "/billpay/post-wizard",
         )
       ).filled,
     ).toBe(4);
-    await recordingReady(context, since, tabId, "/billpay/post-wizard");
+    const backDoc = await recordingReady(
+      context,
+      since,
+      tabId,
+      "/billpay/post-wizard",
+    );
+    expect(backDoc).toBeDefined();
 
     // A failed validation: unchecking puts the box back to its default (a revert, so the field is
     // dropped), and the server re-renders step 1 as a new document with the posted values.
@@ -681,7 +691,14 @@ test.describe("record, review and fill", () => {
       "Please authorize the payment.",
     );
     await expect(page.getByLabel("Amount")).toHaveValue("55.00");
-    await recordingReady(context, since, tabId, "/billpay/post-wizard");
+    // The re-render is a new document at the same URL: the old one's answers must not count.
+    await recordingReady(
+      context,
+      since,
+      tabId,
+      "/billpay/post-wizard",
+      backDoc,
+    );
     await page.getByLabel("I authorize this payment").check();
     await page.getByRole("button", { name: "Pay" }).click();
     await expect(page.getByRole("heading", { name: "Receipt" })).toBeVisible();
