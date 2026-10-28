@@ -265,7 +265,7 @@ describe("isSensitive: name / id / label words", () => {
     expect(sensitive(`<input ${attr}="${value}">`)).toBe(false);
   });
 
-  it("label text: password, pin, verification code, card number", () => {
+  it("label text: password, PIN, recovery phrase, one-time code, CVV and token words", () => {
     for (const label of [
       "Password",
       "Confirm password:",
