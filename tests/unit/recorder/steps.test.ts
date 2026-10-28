@@ -80,6 +80,47 @@ describe("observePage", () => {
     expect(b2.lastDocument).toBe("doc-2");
   });
 
+  it("Review Focus 3: an accordion reloaded collapsed stays on its step (subset of the fingerprint)", () => {
+    const s1 = keys(page("acct", "zip", "email"));
+    const s2 = keys(page("street", "city", "state"));
+    const s3 = keys(page("card", "exp", "name"));
+    let b = observe(emptyBody(), s1, "doc-1");
+    b = observe(b, [...s1, ...s2], "doc-1");
+    b = observe(b, [...s1, ...s2, ...s3], "doc-1");
+    expect(b.steps).toHaveLength(1);
+    // A failed submit re-renders the page with only the first section open: Jaccard 3/9.
+    const reloaded = observe(b, s1, "doc-2");
+    expect(reloaded.steps).toHaveLength(1);
+    expect(reloaded.current).toBe(0);
+  });
+
+  it("a page of fewer than 3 keys does not join a step by the subset rule", () => {
+    const b1 = observe(
+      emptyBody(),
+      keys(page("acct", "zip", "email", "amount", "memo")),
+      "doc-1",
+    );
+    // A later one-field step that repeats "amount": a subset of step 0, Jaccard 1/5.
+    const b2 = observe(b1, keys(page("amount")), "doc-2");
+    expect(b2.steps).toHaveLength(2);
+    expect(b2.current).toBe(1);
+    // Two keys: still Jaccard only (2/5).
+    const b3 = observe(b1, keys(page("amount", "memo")), "doc-3");
+    expect(b3.steps).toHaveLength(2);
+  });
+
+  it("among subset candidates the most similar step wins", () => {
+    const big = keys(page("a", "b", "c", "d", "e", "f", "g", "h"));
+    const small = keys(page("a", "b", "c", "x", "y"));
+    let b = observe(emptyBody(), big, "doc-1");
+    b = observe(b, small, "doc-2");
+    expect(b.steps).toHaveLength(2);
+    // {a, b, c} is a subset of both: Jaccard 3/8 with step 0, 3/5 with step 1.
+    const back = observe(b, keys(page("a", "b", "c")), "doc-3");
+    expect(back.steps).toHaveLength(2);
+    expect(back.current).toBe(1);
+  });
+
   it("a null document id never counts as the same document", () => {
     const b1 = observe(emptyBody(), STEP1, null);
     // A superset with low similarity: joins only through the same-document rule.

@@ -3,7 +3,7 @@
 import type { ControlKind } from "../fields/eligibility";
 import type { Sig } from "../fields/signature";
 import { sigLooksSensitive } from "../fields/sensitive-rules";
-import { sigKey } from "../match/match";
+import { matchControls, sigKey } from "../match/match";
 import { LIMITS } from "../profiles/types";
 import type { Capture, RecBody, RecField } from "./types";
 
@@ -39,6 +39,34 @@ function freshId(body: RecBody): { id: string; nextId: number } {
   return { id: `f${n}`, nextId: n + 1 };
 }
 
+/**
+ * The current step's field this capture is about when identity missed because the page changed the
+ * signature (Record again after a relabel, for a field Refill did not fill: an `ask` or `skip` one,
+ * or a `save` one whose element was not empty). Resolved by the fill matcher itself, so recording
+ * and filling agree on which field a control is. A field with the capture's exact `sigKey` is left
+ * out: identity tells it apart on purpose (the same label at another ordinal, or the same radio
+ * group in another form), and the matcher has no other control here to see the ambiguity.
+ */
+function driftedField(
+  body: RecBody,
+  step: number,
+  c: Capture,
+): RecField | undefined {
+  const current = body.steps.find((s) => s.index === step);
+  if (current === undefined) return undefined;
+  const key = sigKey(c.sig, c.kind);
+  const pool = body.fields.filter(
+    (f) => f.step === step && sigKey(f.sig, f.kind) !== key,
+  );
+  const matched = matchControls(
+    pool,
+    [current],
+    [{ i: 0, sig: c.sig, kind: c.kind }],
+  );
+  const [id] = matched.keys();
+  return id === undefined ? undefined : pool.find((f) => f.id === id);
+}
+
 export function applyCapture(
   body: RecBody,
   c: Capture,
@@ -50,20 +78,24 @@ export function applyCapture(
   const key = identity(c.sig, c.kind);
   const sameControl = (f: RecField): boolean =>
     f.step === step && identity(f.sig, f.kind) === key;
-  // The filled field id links an edit to the field across a relabel, where identity would not.
+  // The filled field id links an edit to the field across a relabel, where identity would not. A
+  // linked field from another step moves to the current one: the page it was filled into is this
+  // step, so that is where it will be matched again.
   const linked =
     c.fieldId === null
       ? undefined
       : body.fields.find((f) => f.id === c.fieldId);
-  const target = linked ?? body.fields.find(sameControl);
+  const target =
+    linked ?? body.fields.find(sameControl) ?? driftedField(body, step, c);
+  // Any other field of the current step with the capture's identity is an older capture of the same
+  // control (the target was found by link or drift). It goes too, on an update and on a revert: two
+  // claimants of one control both drop in the matcher, and a revert that left one behind would save
+  // a value the user cleared.
 
   // A revert: the user does not want this value saved, a seeded one included.
   if (c.value === c.pageDefault) {
-    if (target === undefined) return { body, result: "ok" };
-    return {
-      body: { ...body, fields: body.fields.filter((f) => f !== target) },
-      result: "ok",
-    };
+    const fields = body.fields.filter((f) => f !== target && !sameControl(f));
+    return { body: { ...body, fields }, result: "ok" };
   }
 
   const update = {
@@ -74,12 +106,10 @@ export function applyCapture(
     step,
   };
   if (target !== undefined) {
-    const fields: RecField[] = [];
-    for (const f of body.fields) {
-      if (f === target) fields.push({ ...f, ...update });
-      // A linked edit supersedes an older capture of the same control: two claimants would both drop.
-      else if (!sameControl(f)) fields.push(f);
-    }
+    // In place, so the field keeps its position (the review page lists fields in body order).
+    const fields = body.fields.flatMap((f) =>
+      f === target ? [{ ...f, ...update }] : sameControl(f) ? [] : [f],
+    );
     return { body: { ...body, fields }, result: "ok" };
   }
 

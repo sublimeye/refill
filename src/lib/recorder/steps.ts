@@ -24,8 +24,15 @@ function union(base: string[], add: string[]): string[] {
   return out;
 }
 
-const contains = (keys: Set<string>, fingerprint: string[]): boolean =>
-  fingerprint.every((k) => keys.has(k));
+/** True when `set` holds every entry of `list`. */
+const contains = (set: Set<string>, list: string[]): boolean =>
+  list.every((k) => set.has(k));
+
+/**
+ * Fewest distinct keys for the subset rule across documents. Fewer would let a short later step
+ * that repeats a control of an earlier one (one "amount" input) join that earlier step.
+ */
+const SUBSET_MIN_KEYS = 3;
 
 /** The step this page belongs to, or null for a new one. */
 function stepFor(
@@ -44,12 +51,20 @@ function stepFor(
   ) {
     return current;
   }
-  // Back, a reload or a failed-validation re-render: the most similar known step, the latest on a tie.
+  // Back, a reload or a failed-validation re-render: the most similar known step, the latest on a
+  // tie. A step whose fingerprint holds every key of a page with at least SUBSET_MIN_KEYS keys is a
+  // candidate too, whatever its Jaccard: an accordion reloaded collapsed shows only its first section,
+  // while the step's fingerprint grew to every section opened in the earlier document.
+  const pageKeys = new Set(keys);
   let best: RecStep | null = null;
-  let bestJ = MIN_JACCARD;
+  let bestJ = -1;
   for (const s of body.steps) {
     const j = jaccard(keys, s.fingerprint);
-    if (j >= bestJ) {
+    const candidate =
+      j >= MIN_JACCARD ||
+      (pageKeys.size >= SUBSET_MIN_KEYS &&
+        contains(new Set(s.fingerprint), keys));
+    if (candidate && j >= bestJ) {
       best = s;
       bestJ = j;
     }
@@ -64,7 +79,8 @@ export function observePage(
   pathname: string,
 ): RecBody | "full" {
   const keys = rawKeys.filter((k) => k.length <= LIMITS.fingerprintEntry);
-  // A page with no eligible controls is no step: nothing on it can be captured or filled.
+  // A page with no eligible controls is no step: nothing on it can be captured or filled. Plan 2's
+  // runner never reports an empty scan, so only a direct caller gets here.
   if (keys.length === 0) {
     return { ...body, current: null, lastDocument: documentId };
   }

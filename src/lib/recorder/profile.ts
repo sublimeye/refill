@@ -35,6 +35,18 @@ export function defaultPathPrefix(paths: string[]): string {
   return covers("https://x", dir, paths) ? dir : dir.slice(0, -1);
 }
 
+/**
+ * Path hints of the steps that have at least one field. A step without fields stays in the profile
+ * (it keeps the matcher's cross-step gate honest) but does not set the path prefix: a recording that
+ * starts on an unrelated page of the site must not force a wider prefix.
+ */
+function fieldStepHints(body: RecBody): string[] {
+  const withFields = new Set(body.fields.map((f) => f.step));
+  return body.steps
+    .filter((s) => withFields.has(s.index))
+    .map((s) => s.pathHint);
+}
+
 export interface ReviewModel {
   origin: string;
   host: string;
@@ -58,7 +70,7 @@ export function reviewModel(
   saved: Profile | null,
 ): ReviewModel {
   const host = new URL(origin).host;
-  const hints = body.steps.map((s) => s.pathHint);
+  const hints = fieldStepHints(body);
   const pathPrefix =
     saved !== null && covers(origin, saved.pathPrefix, hints)
       ? saved.pathPrefix
@@ -103,13 +115,7 @@ export function buildProfile(input: {
   }
   const name = input.name.trim();
   if (name.length < 1 || name.length > LIMITS.name) return null;
-  if (
-    !covers(
-      input.origin,
-      input.pathPrefix,
-      body.steps.map((s) => s.pathHint),
-    )
-  ) {
+  if (!covers(input.origin, input.pathPrefix, fieldStepHints(body))) {
     return null;
   }
   return parseProfile({
@@ -124,11 +130,11 @@ export function buildProfile(input: {
     steps: body.steps.map((s) => ({
       index: s.index,
       pathHint: s.pathHint,
-      fingerprint: s.fingerprint,
+      fingerprint: [...s.fingerprint],
     })),
     fields: body.fields.map((f) => ({
       id: f.id,
-      sig: f.sig,
+      sig: { ...f.sig },
       step: f.step,
       kind: f.kind,
       value: f.value,

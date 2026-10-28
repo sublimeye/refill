@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { matchControls } from "../../../src/lib/match/match";
 import { applyCapture, capturedCount } from "../../../src/lib/recorder/fields";
 import { observePage } from "../../../src/lib/recorder/steps";
 import type { Capture, RecBody } from "../../../src/lib/recorder/types";
@@ -224,6 +225,63 @@ describe("applyCapture", () => {
     b = apply(b, capture(zip, "10002", { fieldId: "f1" }));
     expect(b.fields.map((f) => f.id)).toEqual(["f1", "f4"]);
     expect(b.fields.some((f) => f.id === newId)).toBe(false);
+  });
+
+  it("Review Focus 1: a linked revert also removes an older capture of the same control", () => {
+    let b = on(seedBody(savedProfile()), page("acct", "zip"));
+    b = apply(b, capture(zip, "10001"));
+    expect(b.fields).toHaveLength(3);
+    // Refill filled f1 into the zip control in a new document; the user clears it.
+    b = apply(b, capture(zip, "", { fieldId: "f1" }));
+    expect(b.fields.map((f) => f.id)).toEqual(["f4"]);
+  });
+
+  it("Review Focus 5: an unlinked edit of a relabeled seeded field updates it (matcher fallback)", () => {
+    const p = savedProfile();
+    const amount = ctrl(0, "amount", {
+      idStable: "amt",
+      autocomplete: "transaction-amount",
+    });
+    const others = page("x", "date", "memo", "note").slice(1);
+    const seeded = seedBody({
+      ...p,
+      steps: [
+        p.steps[0]!,
+        { ...p.steps[1]!, fingerprint: keys([amount, ...others]) },
+      ],
+      fields: [
+        p.fields[0]!,
+        { ...p.fields[1]!, sig: amount.sig, policy: "ask" },
+      ],
+    });
+    // The page now labels it "Amount due"; Refill did not fill it (policy ask), so no fieldId.
+    const relabeled = {
+      ...amount,
+      sig: { ...amount.sig, labelText: "Amount due" },
+    };
+    const now = [relabeled, ...others];
+    let b = on(seeded, now, "doc-1");
+    expect(b.current).toBe(1);
+    b = apply(b, capture(relabeled, "50.00"));
+    expect(b.fields.map((f) => f.id)).toEqual(["f1", "f4"]);
+    expect(b.fields[1]).toMatchObject({
+      id: "f4",
+      value: "50.00",
+      policy: "ask",
+      step: 1,
+    });
+    expect(b.fields[1]?.sig.labelText).toBe("Amount due");
+    // The fill matcher still gives the control to f4 alone.
+    expect(matchControls(b.fields, b.steps, now).get("f4")).toBe(0);
+  });
+
+  it("a genuinely new control next to a seeded field is a new field", () => {
+    let b = on(seedBody(savedProfile()), page("acct", "zip"));
+    b = apply(
+      b,
+      capture(ctrl(7, "promo", { labelText: "Promo code" }), "SAVE10"),
+    );
+    expect(b.fields.map((f) => f.id)).toEqual(["f1", "f4", "f5"]);
   });
 
   it("a fieldId that names no field falls back to identity", () => {

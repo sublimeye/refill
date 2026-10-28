@@ -25,8 +25,16 @@ always fits a profile.
 - **Same document** (non-null `documentId` equal to `lastDocument`): the page stays on the current
   step when its keys contain the step's whole fingerprint (an accordion opening) or Jaccard ≥ 0.5.
 - **Otherwise** (an SPA step change that failed the test above, a new document, Back, a reload, a
-  failed-validation re-render): the page joins the known step with the highest Jaccard, if that is
-  ≥ 0.5. The latest step in the body wins a tie.
+  failed-validation re-render): the page joins the candidate step with the highest Jaccard. The latest
+  step in the body wins a tie. A step is a candidate when:
+  - its Jaccard with the page is ≥ 0.5; or
+  - its fingerprint contains every key of a page that has at least 3 distinct keys (the subset rule).
+
+  The subset rule covers an accordion reloaded collapsed: within one document the fingerprint grew to
+  every section opened, and a re-render showing only the first of three sections has Jaccard 3/9.
+  Without the rule it would become a duplicate step, which `recordingPlan` prefers, so section 1 would
+  not be pre-filled (Review Focus 3, 2). Pages with fewer than 3 keys use Jaccard only, so a short
+  later step that repeats a control of an earlier one (a single "amount" input) does not join it.
 - **Else** the page becomes a new step, with the lowest unused index (a seeded profile's indexes need
   not be 0..n-1, and the profile parser allows only 0..9). Its `pathHint` is the pathname, cut back to
   its last "/" within 256 characters when it is longer, so the hint stays a segment prefix of the real
@@ -57,9 +65,27 @@ always fits a profile.
   changed the label since the first recording, where identity would miss (Review Focus 5). The
   target takes the capture's signature, kind, value, page default and the current step, and keeps
   its id and policy.
-  - A linked edit also removes any other field of the current step with the capture's identity.
-    That field is an older unlinked capture of the same control, and leaving it would give the
-    matcher two claimants, which both drop. The brief did not cover this case.
+  - A linked target moves to the current step: the page it was filled into is that step, so that is
+    where it will be matched again.
+- **The matcher fallback (signature drift without a link):** when `fieldId` is null or unknown and
+  identity misses, the target is `matchControls(<current step's fields>, [<current step>], [the
+  capture as control 0])`. Recording and filling then agree on which field a control is, with the fill
+  thresholds. This covers Record again after a relabel for a field Refill did not fill: an `ask` or
+  `skip` field, or a `save` field whose element was not empty. Without it a new field would be added
+  next to the seeded one, both would claim the control, and the matcher would drop both
+  (Review Focus 5).
+  - Fields whose `sigKey` equals the capture's are left out of the fallback. Identity separates them
+    on purpose: the same label at another ordinal, or the same radio group in another form. The
+    fallback sees only the one control, so it cannot apply the margin against the page's other
+    controls that would tell them apart.
+  - A residual limit: two controls with different labels that share a name and an autocomplete token
+    score 7 against each other. If only one of them was captured before, an edit of the other updates
+    that field instead of adding one.
+- **Older captures of the same control:** when the target was found by link or by the fallback, any
+  other field of the current step with the capture's identity is an older capture of the same control.
+  It is removed on an update and on a revert alike. Otherwise the matcher gets two claimants, which
+  both drop, and a revert would leave a value the user cleared (Review Focus 1). The brief did not
+  cover this case.
 - **Reverts:** a capture whose value equals its page default removes the target field, a seeded
   field included. Clearing a value or setting it back means "don't save it" (Review Focus 1). The
   content script never refills an element the user edited in that document (Task 8), so the old value
@@ -85,17 +111,23 @@ always fits a profile.
 - **`reviewModel`**:
   - The label is `labelText ?? name ?? "Unlabeled field"`.
   - Name, prefix and fill mode come from the saved profile on Record again. A saved prefix that no
-    longer covers every step is replaced by the default.
+    longer covers every step that has fields is replaced by the default.
   - Without a saved profile, the name is the host (`URL.host`, cut to the 120-character name limit),
     the prefix is the default and the fill mode is `auto`.
 - **`buildProfile`** returns `null` in these cases:
   - a field has no policy, or a policy names an unknown id (own keys only, so an id such as
     `constructor` cannot pick up the prototype);
   - the trimmed name is not 1..120 characters;
-  - the prefix does not cover every step's `pathHint` under `profileApplies`.
+  - the prefix does not cover the `pathHint` of every step that has at least one field, under
+    `profileApplies`.
 
-  `createdAt` is kept on Record again, `lastUsedAt` is `null`, and the result goes through
-  `parseProfile`.
+  `createdAt` is kept on Record again and `lastUsedAt` is `null`. Steps and fields are copied (no
+  body references), and the result goes through `parseProfile`.
+- **Steps without fields** stay in the profile but do not set the prefix: the default prefix and the
+  coverage check use only steps with at least one field. Kept, such a step keeps the matcher's
+  cross-step gate honest, because a step-1 field does not fill a step-2 page that happens to share a
+  name. A recording that starts on an unrelated page of the site (a landing page at `/`) does not
+  widen the prefix.
 
 ## Consequences
 - **Known matcher limit:** step fingerprints hold label text, so a label with dynamic text ("amount
@@ -103,12 +135,11 @@ always fits a profile.
   that shares a header can win the gate, which under-fills without wrong-filling. While recording,
   the same drift can file a revisited page as a new step. A label normalizer (digits, currency) is
   left to corpus tuning.
-- **Steps without fields stay in the profile.** They keep the cross-step gate honest: a step-1 field
-  does not fill a step-2 page that happens to share a name. But their path hints count toward the
-  required prefix. A recording that starts on an unrelated page of the site widens the default
-  prefix, and `buildProfile` refuses a narrower one.
-- **After `"full"` the body is unchanged**, so `current` still names the previous step. The caller
-  (Task 6) must not file captures from the eleventh page into that step.
+- **A fieldless step outside the prefix** is saved with the profile, but the profile never applies
+  on its page. It still takes part in the gate on pages inside the prefix.
+- **After `"full"` the body is unchanged**, so `current` still names the previous step. The Task 6
+  handler sets `current` to null on `"full"`, so captures from the eleventh page are not filed into
+  that step.
 - The model is pure and imports DOM modules as types only, so it can run in the worker bundle
   (`check:sw-no-dom`).
 

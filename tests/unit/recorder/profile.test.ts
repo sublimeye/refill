@@ -99,6 +99,29 @@ describe("reviewModel", () => {
     });
   });
 
+  it("sets the default prefix from steps with fields only (a fieldless landing step at /)", () => {
+    let b = on(emptyBody(), page("q"), "d0", "/");
+    b = on(b, STEP1, "d1", "/billpay/a");
+    b = applyCapture(b, capture(STEP1[0]!, "12345")).body;
+    b = on(b, STEP2, "d2", "/billpay/b");
+    b = applyCapture(b, capture(STEP2[0]!, "45.12")).body;
+    expect(b.steps.map((s) => s.pathHint)).toEqual([
+      "/",
+      "/billpay/a",
+      "/billpay/b",
+    ]);
+    const m = reviewModel(ORIGIN, b, null);
+    expect(m.pathPrefix).toBe("/billpay/");
+    const p = build({ body: b, pathPrefix: m.pathPrefix });
+    expect(p).not.toBeNull();
+    // The fieldless step stays in the profile.
+    expect(p?.steps.map((s) => s.pathHint)).toEqual([
+      "/",
+      "/billpay/a",
+      "/billpay/b",
+    ]);
+  });
+
   it("labels a field by label text, then name, then a placeholder", () => {
     let b = on(emptyBody(), STEP1, "d1", "/x");
     b = applyCapture(b, capture(ctrl(5, "n1", { labelText: null }), "a")).body;
@@ -174,6 +197,13 @@ describe("buildProfile", () => {
     expect(build({ pathPrefix: "/billpay/one" })).toBeNull();
     expect(build({ pathPrefix: "/bill" })).toBeNull();
     expect(build({ pathPrefix: "/" })).not.toBeNull();
+  });
+
+  it("returns copies, not the body's own arrays and signatures", () => {
+    const body = recorded();
+    const p = build({ body });
+    expect(p?.steps[0]?.fingerprint).not.toBe(body.steps[0]?.fingerprint);
+    expect(p?.fields[0]?.sig).not.toBe(body.fields[0]?.sig);
   });
 
   it("rejects a missing policy", () => {
