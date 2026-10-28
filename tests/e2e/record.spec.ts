@@ -127,13 +127,20 @@ test.describe("popup: recording", () => {
       here.getByText("Recording · 0 fields", { exact: true }),
     ).toBeVisible();
 
+    // The other site has a saved form: starting here still reads "Record this site", since it
+    // stops the recording in the other tab (plan Task 9 copy), not "Record again".
     const other = await context.newPage();
-    await other.goto(`${FIXTURE_B}/`);
+    const otherTwins = `${FIXTURE_B}/billpay/twins`;
+    const scan = await recordScan(context, other, otherTwins);
+    await saveProfile(
+      context,
+      profileFrom(FIXTURE_B, [{ scan, values: { city: "Springfield" } }]),
+    );
     const elsewhere = await openPopup(
       context,
       extensionId,
       await tabIdOf(context, other),
-      `${FIXTURE_B}/`,
+      otherTwins,
     );
     await expect(
       elsewhere.getByText(
@@ -143,6 +150,14 @@ test.describe("popup: recording", () => {
     await expect(
       elsewhere.getByRole("button", { name: "Record this site" }),
     ).toBeVisible();
+    await expect(
+      elsewhere.getByRole("button", { name: "Record again" }),
+    ).toHaveCount(0);
+    await expect(
+      elsewhere.getByText(
+        "Your saved form fills in as you go; change what's different.",
+      ),
+    ).toHaveCount(0);
     await expect(elsewhere.getByText(/^Recording ·/)).toHaveCount(0);
     await expect(
       elsewhere.getByRole("button", { name: "Cancel recording" }),
