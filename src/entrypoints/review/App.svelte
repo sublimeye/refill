@@ -1,21 +1,24 @@
 <script lang="ts">
   // The review page (spec §6.2, ADR 0033): what a finished recording captured, masked until the
   // user asks, a policy per field, the form's name, fill mode and path prefix, then Save or
-  // Discard. Values are rendered as text only.
+  // Discard. Values are rendered as text only. Every reveal, and every return to the page, is
+  // re-confirmed with the worker first (ruling P15): after a lock, an expiry or a cancel the page
+  // drops the recording and shows the gone copy.
   import { onMount, tick } from "svelte";
-  import type { ReviewModel } from "../../lib/recorder/profile";
   import {
+    applyLoad,
     discardReview,
-    initialForm,
+    displayValue,
+    endReview,
     loadReview,
+    newPage,
+    recheckReview,
     saveReview,
     sessionIdFrom,
     stepNumber,
+    toggleValue,
     type FormProblem,
-    type ReviewForm,
   } from "../../lib/recorder/review-flow";
-
-  type View = "loading" | "ready" | "saved" | "gone" | "discarded" | "failed";
 
   const MASK = "••••••";
   const GENERIC = "Something went wrong — try again";
@@ -28,11 +31,7 @@
 
   const sessionId = sessionIdFrom(globalThis.location?.search ?? "");
 
-  let view = $state<View>("loading");
-  let model = $state<ReviewModel | null>(null);
-  let replacesProfile = $state(false);
-  let form = $state<ReviewForm | null>(null);
-  let shown = $state<boolean[]>([]);
+  const page = $state(newPage());
   let busy = $state(false);
   let problem = $state<FormProblem | null>(null);
   let failed = $state(false);
@@ -42,35 +41,32 @@
   let nameInput: HTMLInputElement | undefined = $state();
   let prefixInput: HTMLInputElement | undefined = $state();
 
-  async function show(next: View) {
-    view = next;
-    if (next !== "ready") {
-      // Nothing of the recording stays on the page once it is saved, gone or discarded.
-      model = null;
-      form = null;
-      shown = [];
-    }
+  /** The review ended (saved, gone, discarded) or failed to load: its message takes focus. */
+  async function focusMessage() {
     await tick();
     message?.focus();
   }
 
   async function load() {
-    const res = await loadReview(sessionId);
-    if (res.state === "ready") {
-      model = res.model;
-      replacesProfile = res.replacesProfile;
-      form = initialForm(res.model);
-      shown = res.model.fields.map(() => false);
-      view = "ready";
-      return;
-    }
-    await show(res.state);
+    applyLoad(page, await loadReview(sessionId));
+    if (page.view !== "ready") await focusMessage();
   }
 
-  onMount(load);
+  onMount(() => {
+    void load();
+    // Back to the page (another tab, the screen unlocked): drop the recording if it is gone.
+    const onVisible = () => {
+      if (document.visibilityState !== "visible" || sessionId === null) return;
+      void recheckReview(page, sessionId).then((ended) =>
+        ended ? focusMessage() : undefined,
+      );
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  });
 
   async function retry() {
-    view = "loading";
+    page.view = "loading";
     await load();
   }
 
@@ -80,19 +76,28 @@
     failure?.focus();
   }
 
+  async function toggle(i: number) {
+    if (sessionId === null) return;
+    failed = false;
+    const out = await toggleValue(page, sessionId, i);
+    if (out === "gone") await focusMessage();
+    else if (out === "failed") await announceFailure();
+  }
+
   async function save(event: SubmitEvent) {
     event.preventDefault();
-    if (busy || form === null || sessionId === null) return;
+    if (busy || page.form === null || sessionId === null) return;
     busy = true;
     problem = null;
     failed = false;
     // saveReview never throws. The controls are enabled again before focus moves to one of them.
-    const out = await saveReview(sessionId, form);
+    const out = await saveReview(sessionId, page.form);
     busy = false;
     switch (out) {
       case "saved":
       case "gone":
-        await show(out);
+        endReview(page, out);
+        await focusMessage();
         break;
       case "failed":
         await announceFailure();
@@ -111,38 +116,44 @@
     failed = false;
     const ok = await discardReview(sessionId); // never throws
     busy = false;
-    if (ok) await show("discarded");
-    else await announceFailure();
+    if (ok) {
+      endReview(page, "discarded");
+      await focusMessage();
+    } else {
+      await announceFailure();
+    }
   }
 </script>
 
 <main>
-  {#if view === "loading"}
+  {#if page.view === "loading"}
     <p>Loading…</p>
-  {:else if view === "saved"}
+  {:else if page.view === "saved"}
     <p bind:this={message} tabindex="-1" role="status">
       Saved. Refill will fill this form the next time you open it.
     </p>
-  {:else if view === "gone"}
+  {:else if page.view === "gone"}
     <p bind:this={message} tabindex="-1" role="status">{GONE}</p>
-  {:else if view === "discarded"}
+  {:else if page.view === "discarded"}
     <p bind:this={message} tabindex="-1" role="status">
       Discarded. Nothing was saved.
     </p>
-  {:else if view === "failed"}
+  {:else if page.view === "failed"}
     <p bind:this={message} tabindex="-1" role="status">{GENERIC}</p>
     <button type="button" onclick={retry}>Try again</button>
-  {:else if model && form}
+  {:else if page.model && page.form}
+    {@const model = page.model}
+    {@const form = page.form}
     <h1>Review what Refill recorded on {model.host}</h1>
-    {#if replacesProfile}
-      <p>Saving replaces the form saved for {model.host}.</p>
-    {/if}
     {#if model.fields.length === 0}
       <p>
         Nothing was recorded. Type into the form while recording, then finish.
       </p>
       <button type="button" onclick={discard} disabled={busy}>Discard</button>
     {:else}
+      {#if page.replacesProfile}
+        <p>Saving replaces the form saved for {model.host}.</p>
+      {/if}
       <form onsubmit={save} novalidate>
         <table>
           <thead>
@@ -159,14 +170,17 @@
                 <td>{stepNumber(model, field.step)}</td>
                 <th scope="row" id={`field-${i}`}>{field.label}</th>
                 <td>
-                  <span class="value">{shown[i] ? field.value : MASK}</span>
+                  <span class="value"
+                    >{page.shown[i] ? displayValue(field) : MASK}</span
+                  >
+                  <!-- A visible Show/Hide label, no aria-pressed (ruling P16); the accessible name
+                       carries the field's label so each button says what it reveals. -->
                   <button
                     type="button"
-                    aria-pressed={shown[i] ? "true" : "false"}
-                    aria-describedby={`field-${i}`}
-                    onclick={() => (shown[i] = !shown[i])}
+                    aria-label={`${page.shown[i] ? "Hide" : "Show"} ${field.label}`}
+                    onclick={() => toggle(i)}
                   >
-                    {shown[i] ? "Hide" : "Show"}
+                    {page.shown[i] ? "Hide" : "Show"}
                   </button>
                 </td>
                 <td>

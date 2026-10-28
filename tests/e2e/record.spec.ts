@@ -211,13 +211,16 @@ test.describe("popup: recording", () => {
     ).toBeChecked();
 
     // Show reveals that value only; Hide masks it again.
-    const show = city.getByRole("button", { name: "Show" });
-    await expect(show).toHaveAttribute("aria-pressed", "false");
+    // A visible Show/Hide label and no aria-pressed (ruling P16); the name says which field.
+    const show = city.getByRole("button", { name: "Show city", exact: true });
+    await expect(show).toHaveText("Show");
+    await expect(show).not.toHaveAttribute("aria-pressed");
     await show.click();
     await expect(city.getByText("Springfield")).toBeVisible();
     await expect(review.getByText("12 Main St")).toHaveCount(0);
-    const hide = city.getByRole("button", { name: "Hide" });
-    await expect(hide).toHaveAttribute("aria-pressed", "true");
+    const hide = city.getByRole("button", { name: "Hide city", exact: true });
+    await expect(hide).toHaveText("Hide");
+    await expect(hide).not.toHaveAttribute("aria-pressed");
     await hide.click();
     await expect(review.getByText("Springfield")).toHaveCount(0);
 
@@ -243,17 +246,19 @@ test.describe("popup: recording", () => {
     await expect(after.getByText(/^Recording/)).toHaveCount(0);
   });
 
-  test("a lock while the review page is open: Save says the recording is gone", async ({
-    context,
-    extensionId,
-    sites,
-  }) => {
-    void sites;
+  const GONE =
+    "This recording is no longer available. Recordings end when Refill locks, after 30 minutes, or when you cancel them.";
+
+  /** Records "Springfield" into City on the twins page, then Finish: the open review tab. */
+  async function finishedReview(context: BrowserContext, extensionId: string) {
     const { page, ext } = await setUp(context, extensionId, [FIXTURE_A]);
     await page.goto(TWINS);
     const tabId = await tabIdOf(context, page);
     const popup = await openPopup(context, extensionId, tabId, TWINS);
     await popup.getByRole("button", { name: "Record this site" }).click();
+    await expect(
+      popup.getByText("Recording · 0 fields", { exact: true }),
+    ).toBeVisible();
     await page.bringToFront();
     await page.getByLabel("City").pressSequentially("Springfield");
     await expect(async () => {
@@ -266,18 +271,43 @@ test.describe("popup: recording", () => {
     await popup.getByRole("button", { name: "Finish" }).click();
     const review = await opened;
     await expect(review.getByRole("rowheader")).toHaveCount(1);
+    return { review, ext, tabId };
+  }
 
+  test("a lock while the review page is open: Save says the recording is gone", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { review, ext } = await finishedReview(context, extensionId);
     await lockVault(ext);
     await review.getByRole("button", { name: "Save" }).click();
-    await expect(
-      review.getByText(
-        "This recording is no longer available. Recordings end when Refill locks, after 30 minutes, or when you cancel them.",
-      ),
-    ).toBeFocused();
+    await expect(review.getByText(GONE)).toBeFocused();
     await expect(review.getByRole("rowheader")).toHaveCount(0);
     expect(
       await sendFromPage(ext, { type: "site-status", origin: FIXTURE_A }),
     ).toMatchObject({ hasProfile: false });
+  });
+
+  test("Lock now in the popup, then Show on the review page: gone, and no value appears (ruling P15)", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { review, tabId } = await finishedReview(context, extensionId);
+    const popup = await openPopup(context, extensionId, tabId, TWINS);
+    await popup.getByRole("button", { name: "Lock now" }).click();
+    await expect(popup.getByLabel("Passphrase")).toBeVisible();
+
+    await review.bringToFront();
+    await review.getByRole("button", { name: "Show city" }).click();
+    await expect(review.getByText(GONE)).toBeFocused();
+    await expect(review.getByRole("rowheader")).toHaveCount(0);
+    expect(await review.locator("body").innerText()).not.toContain(
+      "Springfield",
+    );
   });
 
   test("a locked vault offers no record button", async ({

@@ -4,13 +4,20 @@ import { fakeBrowser } from "wxt/testing/fake-browser";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReviewModel } from "../../../src/lib/recorder/profile";
 import {
+  applyLoad,
   checkForm,
   discardReview,
+  displayValue,
+  endReview,
   initialForm,
   loadReview,
+  newPage,
+  recheckReview,
   saveReview,
   sessionIdFrom,
   stepNumber,
+  toggleValue,
+  type ReviewPage,
 } from "../../../src/lib/recorder/review-flow";
 
 const ID = "sess_0123456789abcdefgh";
@@ -172,5 +179,95 @@ describe("discardReview", () => {
     expect(sent).toEqual([{ type: "review-discard", sessionId: ID }]);
     answer = new Error("closed");
     expect(await discardReview(ID)).toBe(false);
+  });
+});
+
+describe("displayValue", () => {
+  it("checkboxes and radios read as words; other values as they are", () => {
+    const f = (kind: ReviewModel["fields"][number]["kind"], value: string) =>
+      displayValue({ ...model.fields[0]!, kind, value });
+    expect(f("checkbox", "true")).toBe("Checked");
+    expect(f("checkbox", "false")).toBe("Not checked");
+    expect(f("radio", "true")).toBe("Selected");
+    expect(f("text", "true")).toBe("true");
+    expect(f("select", "CA")).toBe("CA");
+  });
+});
+
+describe("the page state", () => {
+  function ready(): ReviewPage {
+    const page = newPage();
+    applyLoad(page, { state: "ready", model, replacesProfile: false });
+    return page;
+  }
+
+  it("a load fills the page; a gone or failed load keeps nothing", () => {
+    const page = ready();
+    expect(page).toMatchObject({ view: "ready", model, shown: [false, false] });
+    expect(page.form).toEqual(initialForm(model));
+    const gone = newPage();
+    applyLoad(gone, { state: "gone" });
+    expect(gone).toMatchObject({ view: "gone", model: null, form: null });
+  });
+
+  it("Show asks the worker first and reveals only on ready", async () => {
+    const page = ready();
+    answer = { state: "ready" };
+    expect(await toggleValue(page, ID, 1)).toBe("shown");
+    expect(sent).toEqual([{ type: "review-check", sessionId: ID }]);
+    expect(page.shown).toEqual([false, true]);
+  });
+
+  it("Hide needs no check", async () => {
+    const page = ready();
+    page.shown[0] = true;
+    expect(await toggleValue(page, ID, 0)).toBe("hidden");
+    expect(page.shown).toEqual([false, false]);
+    expect(sent).toEqual([]);
+  });
+
+  it("Show after a lock: gone drops the model, the form and every shown value", async () => {
+    const page = ready();
+    page.shown[0] = true;
+    answer = { state: "gone" };
+    expect(await toggleValue(page, ID, 1)).toBe("gone");
+    expect(page).toEqual({
+      view: "gone",
+      model: null,
+      replacesProfile: false,
+      form: null,
+      shown: [],
+    });
+  });
+
+  it("a failed check reveals nothing and keeps the page", async () => {
+    const page = ready();
+    answer = new Error("closed");
+    expect(await toggleValue(page, ID, 0)).toBe("failed");
+    expect(page.shown).toEqual([false, false]);
+    expect(page.model).toBe(model);
+  });
+
+  it("a page that ended while the check ran reveals nothing", async () => {
+    const page = ready();
+    vi.mocked(fakeBrowser.runtime.sendMessage).mockImplementationOnce((() => {
+      endReview(page, "saved");
+      return Promise.resolve({ state: "ready" });
+    }) as never);
+    expect(await toggleValue(page, ID, 0)).toBe("hidden");
+    expect(page).toMatchObject({ view: "saved", model: null, shown: [] });
+  });
+
+  it("back to the page: gone ends the review, ready keeps it, other views are not asked", async () => {
+    const page = ready();
+    answer = { state: "ready" };
+    expect(await recheckReview(page, ID)).toBe(false);
+    expect(page.view).toBe("ready");
+    answer = { state: "gone" };
+    expect(await recheckReview(page, ID)).toBe(true);
+    expect(page).toMatchObject({ view: "gone", model: null, form: null });
+    sent = [];
+    expect(await recheckReview(page, ID)).toBe(false);
+    expect(sent).toEqual([]);
   });
 });
