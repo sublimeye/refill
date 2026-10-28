@@ -110,10 +110,14 @@ describe("aad", () => {
     );
     expect(fromUtf8(aad.draft("d1", 123))).toBe("refill/v1|draft|d1|123");
     expect(fromUtf8(aad.draft("d1", null))).toBe("refill/v1|draft|d1|none");
+    expect(fromUtf8(aad.recording("r1", "https://a.example"))).toBe(
+      "refill/v1|recording|r1|https://a.example",
+    );
   });
 
-  it("rejects a separator inside profile/draft ids", () => {
+  it("rejects a separator inside profile/draft/recording ids", () => {
     expect(() => aad.profile("a|b", "https://a.example")).toThrow(TypeError);
     expect(() => aad.draft("a|b", null)).toThrow(TypeError);
+    expect(() => aad.recording("a|b", "https://a.example")).toThrow(TypeError);
   });
 });

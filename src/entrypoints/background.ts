@@ -8,6 +8,7 @@ import {
   type ContentContext,
 } from "../lib/messaging/router";
 import { saveProfile } from "../lib/profiles/store";
+import { installRecorderListeners } from "../lib/recorder/session";
 import { installSiteListeners } from "../lib/sites/reconcile";
 import { enforceOnWake, installLockTriggers } from "../lib/vault/lock-triggers";
 
@@ -78,6 +79,7 @@ export default defineBackground(() => {
   }
   installLockTriggers();
   installSiteListeners();
+  installRecorderListeners();
   enforceOnWake().catch((err: unknown) => {
     console.error(
       "[refill] wake check failed:",
