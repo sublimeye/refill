@@ -2,6 +2,7 @@
 import { browser } from "wxt/browser";
 import { profileKey, withStoreLock } from "../store/local";
 import type { PageHandlers } from "../messaging/router";
+import { discardOrigin } from "../recorder/session";
 import { normalizeOrigin, originPattern } from "./origin";
 import { readSites, removeSite, upsertSite } from "./index";
 import { takeIntent, writeIntent } from "./intent";
@@ -50,6 +51,9 @@ export function createSiteHandlers(now: () => number = Date.now): SiteHandlers {
       // A removal is deliberate: an unconsumed intent must not re-enable the site if access is
       // granted again within its TTL (P8). Taken first, result discarded.
       await takeIntent(origin, now());
+      // A recording (or a review) of the site ends with it: no capture continues, no save
+      // recreates the site, and the pill says nothing about a lock (M7, ADR 0029).
+      await discardOrigin(origin);
       await withStoreLock(async (tx) => {
         const rec = (await readSites(tx))[origin];
         // The site (its pointer) goes before its record: the lock-free profile load relies on it

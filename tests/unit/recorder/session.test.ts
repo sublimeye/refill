@@ -439,6 +439,7 @@ describe("recording session", { timeout: 30_000 }, () => {
       "replaced",
       "saved",
       "tab-closed",
+      "site-removed",
     ] as const) {
       await startSession(TAB, ORIGIN, T0, null);
       await discardSession(reason);

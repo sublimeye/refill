@@ -1,5 +1,12 @@
 import { fakeBrowser } from "wxt/testing/fake-browser";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { newKdfParams } from "../../../src/lib/crypto/kdf";
+import {
+  installRecorderListeners,
+  startSession,
+  stoppedReason,
+  withSession,
+} from "../../../src/lib/recorder/session";
 import { readSites, upsertSite } from "../../../src/lib/sites";
 import { createSiteHandlers } from "../../../src/lib/sites/handlers";
 import { takeIntent } from "../../../src/lib/sites/intent";
@@ -10,6 +17,11 @@ import {
   reconcile,
 } from "../../../src/lib/sites/reconcile";
 import { KEYS, profileKey } from "../../../src/lib/store/local";
+import {
+  __resetForTests,
+  createVault,
+  unlockWithPassphrase,
+} from "../../../src/lib/vault/vault";
 import { installShims } from "../helpers/browser-shims";
 
 const A = "https://a.example";
@@ -307,6 +319,68 @@ describe("site-remove", () => {
     await expect(
       h()["site-remove"]({ type: "site-remove", origin: A }),
     ).resolves.toEqual({ ok: true });
+  });
+});
+
+describe("site-remove ends a recording of that origin (M7)", () => {
+  const P = "correct horse battery staple";
+  const TAB = 7;
+  let vaultSnapshot: Record<string, unknown>;
+  let sendMessage: ReturnType<typeof vi.fn>;
+
+  beforeAll(async () => {
+    fakeBrowser.reset();
+    await createVault(P, newKdfParams());
+    vaultSnapshot = structuredClone(await fakeBrowser.storage.local.get(null));
+  }, 30_000);
+
+  beforeEach(async () => {
+    __resetForTests();
+    await fakeBrowser.storage.local.set(structuredClone(vaultSnapshot));
+    expect((await unlockWithPassphrase(P)).ok).toBe(true);
+    sendMessage = vi.fn(async () => undefined);
+    (fakeBrowser.tabs as unknown as { sendMessage: unknown }).sendMessage =
+      sendMessage;
+    installRecorderListeners();
+  });
+
+  const current = () =>
+    withSession({ any: true }, NOW, (meta) => ({ result: meta.origin }));
+  const remove = (origin: string) =>
+    h()["site-remove"]({ type: "site-remove", origin });
+
+  it.each([
+    ["while recording", false],
+    ["while its review is open", true],
+  ])(
+    "%s: discarded, badge cleared, tab nudged, no stopped notice",
+    async (_n, finished) => {
+      await upsertSite(A, {});
+      await startSession(TAB, A, NOW, null);
+      if (finished) {
+        await withSession({ any: true }, NOW, () => ({
+          meta: { finished: true },
+          result: null,
+        }));
+      }
+      sendMessage.mockClear();
+      expect(await remove(A)).toEqual({ ok: true });
+      expect(await current()).toBe("off");
+      expect(await stoppedReason(TAB, A, NOW)).toBeNull();
+      expect(await fakeBrowser.action.getBadgeText({ tabId: TAB })).toBe("");
+      expect(sendMessage).toHaveBeenCalledWith(
+        TAB,
+        { type: "refill-nudge" },
+        { frameId: 0 },
+      );
+    },
+  );
+
+  it("leaves a recording of another origin alone", async () => {
+    await upsertSite(A, {});
+    await startSession(TAB, B, NOW, null);
+    expect(await remove(A)).toEqual({ ok: true });
+    expect(await current()).toBe(B);
   });
 });
 

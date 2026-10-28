@@ -39,7 +39,12 @@ export interface SessionMeta {
 
 export type StopReason = "locked" | "expired";
 export type DiscardReason =
-  StopReason | "cancelled" | "replaced" | "saved" | "tab-closed";
+  | StopReason
+  | "cancelled"
+  | "replaced"
+  | "saved"
+  | "tab-closed"
+  | "site-removed";
 
 /**
  * Which session a job means. Content handlers always give the tab and the sender's origin
@@ -460,6 +465,21 @@ export function discardSession(
     if (rec === "malformed") await removeRecord();
     else if (rec && (id === undefined || rec.meta.id === id)) {
       await drop(rec.meta, reason, Date.now());
+    }
+  });
+}
+
+/**
+ * Discards the session of `origin`, finished or not (`"site-removed"`: no tombstone, badge cleared,
+ * tab nudged). The user removed the site and its saved form: a recording or a review open there
+ * must not go on, nor save the form back (ADR 0029, M7).
+ */
+export function discardOrigin(origin: string): Promise<void> {
+  return serialized(async () => {
+    const rec = await load();
+    if (rec === "malformed") await removeRecord();
+    else if (rec && rec.meta.origin === origin) {
+      await drop(rec.meta, "site-removed", Date.now());
     }
   });
 }
