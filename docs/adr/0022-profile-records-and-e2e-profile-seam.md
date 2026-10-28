@@ -17,4 +17,6 @@ Profiles hold field values and are the most sensitive records Refill stores. The
 - Callers must generate ids with `newId()`; ids chosen elsewhere must satisfy the same pattern.
 
 ## Status
-Accepted (2026-10-26).
+Accepted (2026-10-26). Amended by ADR 0033 (2026-10-27): `loadProfileForOrigin` re-reads the site
+index when the record is missing and follows a moved pointer, so a replace in flight never answers a
+spurious `null` (Plan 2 review M9); it stays lock-free.
