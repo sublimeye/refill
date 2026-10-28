@@ -386,7 +386,12 @@ describe("recording session", { timeout: 30_000 }, () => {
   });
 
   it("only locked and expired leave a tombstone", async () => {
-    for (const reason of ["cancelled", "replaced", "saved", "tab-closed"] as const) {
+    for (const reason of [
+      "cancelled",
+      "replaced",
+      "saved",
+      "tab-closed",
+    ] as const) {
       await startSession(TAB, ORIGIN, T0, null);
       await discardSession(reason);
       expect(await stoppedReason(TAB, T0)).toBeNull();

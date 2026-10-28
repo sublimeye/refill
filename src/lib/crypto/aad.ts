@@ -18,4 +18,6 @@ export const aad = {
     utf8(`refill/v1|profile|${field("profile id", id)}|${origin}`),
   draft: (id: string, expiresAt: number | null): Uint8Array =>
     utf8(`refill/v1|draft|${field("draft id", id)}|${expiresAt ?? "none"}`),
+  recording: (id: string, origin: string): Uint8Array =>
+    utf8(`refill/v1|recording|${field("recording id", id)}|${origin}`),
 };
