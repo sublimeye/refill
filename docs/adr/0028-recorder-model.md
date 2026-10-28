@@ -143,6 +143,13 @@ always fits a profile.
   answer `full` instead of being filed into the previous step.
 - The model is pure and imports DOM modules as types only, so it can run in the worker bundle
   (`check:sw-no-dom`).
+- **A duplicate claimant from an ordinal-only difference (accepted).** A seeded field that Refill
+  did not fill (an `ask` or `skip` field, or a `save` field whose element was not empty), and whose
+  signature differs from the edited control's only in `ordinal`, is neither the identity target
+  (`<sigKey>|<ordinal>` differs) nor reached by the matcher fallback (it shares the capture's
+  `sigKey`, so the fallback leaves it out). The edit adds a new field next to it; both can then
+  claim the control on the next visit, and the matcher drops both claimants. This is the same ambiguity class as the
+  same label at two ordinals, which identity keeps apart on purpose and which is already accepted.
 
 ## Status
-Accepted (2026-10-27).
+Accepted (2026-10-27). Plan 3 Task 12 (2026-10-28): the ordinal-only duplicate claimant noted under Consequences.

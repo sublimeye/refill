@@ -346,20 +346,44 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
 → "Pin Refill to your toolbar" → "Open a form you fill often and click Record".
 
 ### 6.2 Recording
-1. Popup (vault must be unlocked) → **Record this site** → permission grant if needed.
-2. SW creates a recording session `{tabId, origin, startedAt}` in `storage.session` (expires 30 min).
-   Only the popup can arm recording; content-script requests to start are rejected.
+1. Popup (vault must be unlocked) → **Record this site** (or **Record again** on a site with a saved
+   form) → permission grant if needed.
+2. SW creates the recording session in `storage.session`. **One session at a time**: starting one
+   replaces any other, except that an unfinished session of the same tab and origin is kept (a
+   double click or a second popup does not restart it). Plaintext metadata only
+   (`{v, id, tabId, origin, startedAt, expiresAt, finished, seededFrom}`); the body (steps and
+   fields) is sealed under the DEK with AAD `refill/v1|recording|<id>|<origin>`. Expires 30 min
+   after start; closing the tab before Finish discards it.
+   Only an extension page can start a recording; content-script requests to start are rejected
+   (ADR 0029, ADR 0031).
 3. Content script shows pill: `● Recording · N fields · Finish` (no inputs). Captures, on trusted
    `change`/`input` events, the final value of each eligible, non-excluded control whose value the
-   user changed, plus that control's `pageDefault` (its value when the page loaded). Step boundary
-   = new document, or field-set fingerprint change in an SPA.
-   Captured values are encrypted under the DEK as they arrive (never plaintext in
-   `storage.session`). If the vault locks mid-recording, the session and captures are discarded and
-   the pill says "Recording stopped — vault locked".
-4. **Finish** (pill or popup) → SW opens `review.html?session=<id>` in a new tab.
+   user changed, plus that control's `pageDefault` (its value when the page loaded). Clearing a
+   field or setting it back to its `pageDefault` means "don't save it": the field is removed.
+   Captured values are stored only sealed under the DEK (never plaintext in `storage.session`). If
+   the vault locks mid-recording, the session and captures are discarded and the pill says
+   "Recording stopped — vault locked".
+   - **Steps.** Each scan of the page files it into the session (ADR 0028). In the same document the
+     page stays on the current step when its controls are a superset of the step's fingerprint (an
+     accordion opening) or their Jaccard similarity is ≥ 0.5. Otherwise (an SPA step change, a new
+     document, Back, a reload, a failed-validation re-render) it joins the existing step with the
+     highest Jaccard ≥ 0.5, or a step whose fingerprint contains every control of a page that has at
+     least 3 distinct controls; the latest step wins a tie. Else it is a new step. With 10 steps, an
+     eleventh page is not filed and nothing is captured there; with 200 fields, no new field is
+     added (edits of recorded ones still apply). The pill then says the recording is full.
+   - **Filling while recording.** Refill fills only from the session, never from the stored profile,
+     and only fields with policy `save`, under all of the fill rules (§5.5), and never into an element
+     the user edited in that document. So going back on a wizard, even after a reload, pre-fills what
+     was recorded there. **Record again** seeds the session from the saved profile (its steps,
+     fields, ids, policies and values), so the saved values fill the same way as the user walks
+     through, and the user changes only what differs (ADR 0028, ADR 0030).
+4. **Finish** (pill or popup) → SW marks the session finished, resets its expiry to 30 min from
+   Finish and opens `review.html?session=<id>` in a new tab. A popup Finish first asks the tab to
+   send its pending edits (at most 1 s).
 5. Review: table (step, label, masked value with reveal, policy dropdown), profile name,
    fill mode, path prefix. Every field defaults to Fill it in; the user can set any to Don't save.
-   Save → encrypted profile.
+   Save → encrypted profile; Record again keeps the profile's id, and fields the user did not reach
+   stay as saved (ADR 0033).
 
 ### 6.3 Return visit
 - Unlocked + auto: fill (§5.5) → toast `✓ Water bill · filled 5 · 1 needs you  [Undo]`;
@@ -431,7 +455,7 @@ Touch ID, default TTL, change passphrase) → Export/Import → About/Security.
     - `fill-result` (counts for toast/badge).
     - `record-status`, `record-capture`, `record-finish` (only for the active session of that tab
       + origin; otherwise answered `off`, or `stopped` after a lock or expiry). `record-capture`
-      carries the one value the user typed, at most 4096 chars, sealed on arrival.
+      carries the one value the user typed, at most 4096 chars, stored only sealed.
     - `draft-seal`, `draft-mark-submitted`, `draft-offer-query`, `draft-restore`, `draft-discard`
       (drafts for `sender.origin` only).
     - `toast-unlock-click`.
@@ -474,6 +498,10 @@ are treated as hints while locked.
   without a user action; mitigated (visible, eligible, current-step, once-per-document,
   same-origin form action) to roughly the exposure of typing it yourself. Users can set a profile
   to One gesture.
+- Card numbers and SSNs are captured and stored, encrypted, by the user's choice (§5.3 as amended
+  2026-10-27); the user can set either to Don't save on the review screen. Once filled they are
+  readable by same-origin script like any filled value (previous bullet). The card security code
+  (CVV) is never captured, stored or filled.
 - DEK raw bytes in `storage.session` RAM may be paged to disk; any Refill extension page can read
   them (see §4.3).
 - **Touch ID is not device-bound.** PRF on macOS comes from iCloud Keychain passkeys, which sync
