@@ -52,6 +52,8 @@ export function createSiteHandlers(now: () => number = Date.now): SiteHandlers {
       await takeIntent(origin, now());
       await withStoreLock(async (tx) => {
         const rec = (await readSites(tx))[origin];
+        // The site (its pointer) goes before its record: the lock-free profile load relies on it
+        // (ADR 0033).
         await removeSite(origin, tx);
         // The profile record is removed by key: no decryption, so this works while locked.
         if (rec?.profileId != null) {

@@ -19,9 +19,12 @@ export function newId(): string {
 
 /**
  * Validates, seals and stores `p`, points the origin's site record at it, and removes the origin's
- * previous profile record when the id changed. One store lock, so a reader never sees the site
- * pointing at a missing record. Throws `TypeError` for an invalid profile or an id already used
- * by another origin, `LockedError` when locked (nothing is written then).
+ * previous profile record when the id changed, in one store lock. Throws `TypeError` for an
+ * invalid profile or an id already used by another origin, `LockedError` when locked (nothing is
+ * written then).
+ *
+ * Writer rule: move or remove the site pointer before removing `p:<id>`, in the same lock job. The
+ * lock-free `loadProfileForOrigin` relies on it (ADR 0033).
  */
 export async function saveProfile(p: Profile): Promise<void> {
   const profile = parseProfile(p);
@@ -43,6 +46,7 @@ export async function saveProfile(p: Profile): Promise<void> {
       tx,
     );
     await upsertSite(profile.origin, { profileId: profile.id }, tx);
+    // Pointer first, then the old record (writer rule above).
     if (previous !== null && previous !== profile.id) {
       await tx.removeItems([profileKey(previous)]);
     }

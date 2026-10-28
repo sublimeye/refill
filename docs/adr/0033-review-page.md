@@ -19,6 +19,7 @@ Exact keys; `sessionId` must match `ID_RE`.
   `gesture`, at most 200 `{ fieldId, policy }` entries with exact keys, `fieldId` matching `ID_RE`,
   `policy` `save`, `ask` or `skip`.
 - `review-discard { sessionId }` → `{ ok: true }`.
+- `review-check { sessionId }` → `{ state: "ready" }` or `{ state: "gone" }` (ruling P15, below).
 
 The handlers live in `src/lib/recorder/review-handlers.ts`, beside `handlers.ts` (which already
 holds the content and recording page handlers).
@@ -32,8 +33,9 @@ holds the content and recording page handlers).
   expiry checks use the worker's clock.
 
 ### Load
-The model is `reviewModel(origin, body, seededFrom ? current : null)` (ADR 0028), where `current` is
-the site's saved form: it lends its name, prefix and fill mode only to the recording it seeded.
+The model is `reviewModel(origin, body, current?.id === seededFrom ? current : null)` (ADR 0028),
+where `current` is the site's saved form: it lends its name, prefix and fill mode only to the
+recording it seeded. A form saved under another id since the recording started lends nothing.
 `replacesProfile` is `current !== null`, so a site whose form was saved after the recording started
 still gets the replace warning. `lockEpoch()` is read before the session is opened and checked again
 right before replying; a lock in between answers `gone` (ADR 0029: a caller that replies with values
@@ -54,17 +56,38 @@ re-checks the epoch).
    (ADR 0029), so a save after a lock, even after an unlock, is `gone` and writes nothing (Review
    Focus 4).
 6. `saveProfile` (one store lock, ADR 0022) replaces the site's record; a `LockedError` there →
-   `gone`, with nothing written (the record is sealed before anything is written).
+   `gone`, with nothing written (the record is sealed before anything is written). A residual
+   window remains: a lock that lands after `putEncrypted`'s `getDek()`, while it seals, still writes
+   the profile. The ordering stays consistent: that save counts as completed before the lock, as if
+   the user had clicked Save a moment earlier.
 7. `discardSession("saved", id)`: the id-guarded discard, so it never ends a newer session.
 
 ### Discard
 `discardSession("cancelled", id)`: badge cleared, tab nudged, no tombstone, and only while the stored
 session still has that id.
 
+### Check before every reveal (ruling P15)
+A loaded page holds the model, values included, in memory. Without a check, a lock, expiry or
+cancel would leave every value one Show away, indefinitely, on an unattended browser (spec §4.3
+relies on idle lock and Lock now there). So the page asks `review-check` before every Show and
+whenever it becomes visible again (`visibilitychange`). The handler reads `lockEpoch()`, requires
+`status()` to be `unlocked`, reads the session metadata through `peekSession(id, now)`, and requires
+the session to be finished and the epoch unchanged. `peekSession` is one session-chain job that
+opens no body and uses no DEK; an expired session is discarded as in `withSession`. On `gone` the
+page drops the model, the form and every shown value, and shows the gone copy. A messaging failure
+reveals nothing and keeps the page. Hide needs no check. The page never listens to
+`storage.session`: pages must not read the DEK mirror (spec §4.3).
+
 ### The page (`src/entrypoints/review/`, logic in `src/lib/recorder/review-flow.ts`)
-- Values are masked as `••••••`. Each row has a **Show**/**Hide** toggle (`aria-pressed`) that puts
-  that one value into the DOM, as a text node; there is no `{@html}`. A hidden value is not in the
-  DOM at all.
+- Values are masked as `••••••`. Each row has a **Show**/**Hide** button that, after the check
+  above, puts that one value into the DOM as a text node; there is no `{@html}`. A hidden value is
+  not in the DOM at all. The visible label changes, so the button has no `aria-pressed` (ruling P16:
+  a pressed toggle keeps one label, WAI-ARIA APG). Its accessible name is "Show {label}" or "Hide
+  {label}", so each button says which field it reveals.
+- Checkbox values read "Checked" or "Not checked" and radio values "Selected", not "true" or
+  "false". They are masked and revealed like any other value.
+- The replace notice appears only above a recording with fields: an empty recording can only be
+  discarded.
 - After Save, a `gone` answer or Discard, the page drops the model, so nothing of the recording stays
   in the page.
 - The page checks a blank name and a prefix that does not start with "/" itself. An `invalid` answer
@@ -95,17 +118,22 @@ a record is missing.
 - "Discarded. Nothing was saved." after Discard.
 - "Fill mode" as the legend of the two fill-mode radios, "Name" as the name field's label.
 - "Review recording · Refill" as the tab title.
+- "Checked", "Not checked" and "Selected" for checkbox and radio values.
 - A load or messaging failure reuses the popup's "Something went wrong — try again" (and its "Try
   again" button for a failed load).
 
 ## Consequences
 - A captured value reaches a page only for a finished session, on that page's request, and is put
   into the DOM only when the user presses Show.
-- A page that already shows a value keeps showing it after a lock, until Save, Discard or the tab
-  closes; Save then answers `gone`. The page does not watch the vault.
+- A value already revealed stays on screen after a lock until the page is used again: the next
+  Show, a return to the page (`visibilitychange`), Save or Discard ends the review and drops it.
+  A page left visible and untouched is not polled.
 - `review-save` needs one more session open than a plain save (the re-check at save time); each open
-  is one `storage.session` read and one AES-GCM open.
+  is one `storage.session` read and one AES-GCM open. `review-check` costs one `storage.session`
+  read and the vault status, and opens nothing.
 
 ## Status
-Accepted (2026-10-27). Amends ADR 0022: `loadProfileForOrigin` follows a moved pointer when the
+Accepted (2026-10-27). Fix round 1 (2026-10-27): `review-check` before every reveal and on return to
+the page (ruling P15), no `aria-pressed` (ruling P16), the seed-id rule for the model, words for
+checkbox and radio values. Amends ADR 0022: `loadProfileForOrigin` follows a moved pointer when the
 record is missing (M9).

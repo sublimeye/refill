@@ -104,4 +104,6 @@ Accepted (2026-10-27). Amended by Plan 3 Task 6 (2026-10-27): the lock-epoch che
 `expiresAt` ceiling, discard by id, a copy of the metadata for `fn`, and `clearBadge`. Amended by
 Task 7 (2026-10-27): the tombstone carries `origin` and `stoppedReason` takes it (ruling P10), and
 `SessionMatch` gains a tab-only and an any-session form. A job whose `fn` returns no `body` writes
-nothing, which the recording scan now uses when a page changed nothing (ADR 0030).
+nothing, which the recording scan now uses when a page changed nothing (ADR 0030). Amended by Task 10
+(2026-10-27): `peekSession(id, now)` reads a session's metadata in one chain job without opening the
+body, for the review page's `review-check` (ADR 0033).
