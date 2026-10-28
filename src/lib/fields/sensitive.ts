@@ -1,4 +1,4 @@
-// Sensitive-field classifier and card-number heuristic (spec 5.3). DOM-only, zero runtime
+// Sensitive-field classifier (spec 5.3: secrets only). DOM-only, zero runtime
 // dependencies: this runs in the content script. Page content is hostile, so every check is bounded
 // and fails closed: anything that throws is treated as sensitive.
 
@@ -9,8 +9,6 @@ import {
   sensitiveAutocomplete,
 } from "./sensitive-rules";
 import type { FormControl, Sig } from "./signature";
-
-export { looksLikeCardNumber } from "./sensitive-rules";
 
 const OBSERVE_OPTIONS: MutationObserverInit = {
   subtree: true,
