@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Never capture</title>
+  </head>
+  <body>
+    <h1>Sign in and pay</h1>
+    <!-- Plan 3 Task 11: secrets that must never reach the recording, next to fields that must. -->
+    <form action="/billpay/never-capture" method="post">
+      <p>
+        <label
+          >Email <input name="email" type="email" autocomplete="email"
+        /></label>
+      </p>
+      <p>
+        <label
+          >Password <input id="password" name="pw" type="password"
+        /></label>
+        <button type="button" id="show-password">Show password</button>
+      </p>
+      <p>
+        <label
+          >One-time code <input name="otc" autocomplete="one-time-code"
+        /></label>
+      </p>
+      <input type="hidden" id="session" name="session" />
+      <p>
+        <label
+          >Card number <input name="cardnumber" autocomplete="cc-number"
+        /></label>
+      </p>
+      <p>
+        <label
+          >Security code <input name="securitycode" autocomplete="cc-csc"
+        /></label>
+      </p>
+      <p>
+        <label>SSN <input name="ssn" /></label>
+      </p>
+      <p>
+        <label>Routing number <input name="routing" /></label>
+      </p>
+    </form>
+    <script src="never-capture.js"></script>
+  </body>
+</html>

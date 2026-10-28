@@ -28,7 +28,20 @@ export type LogEntry = { boot: string; seq: number } & (
       skipped: number;
       unsupported: number;
     }
+  | RecordEntry<"record-status">
+  | RecordEntry<"record-capture">
+  | RecordEntry<"record-finish">
 );
+
+/** A recording request: its type and the reply's state only, never a captured value. */
+interface RecordEntry<T extends string> {
+  type: T;
+  origin: string;
+  pathname: string;
+  tabId: number;
+  documentId: string | undefined;
+  state: string;
+}
 
 /** A point in the log. The worker may restart mid-spec (empty log, new `boot`). */
 export interface LogMark {

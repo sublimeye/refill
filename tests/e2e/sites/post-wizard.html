@@ -6,8 +6,10 @@
   </head>
   <body>
     <h1>Pay your water bill</h1>
-    <!-- Rendered by the fixture server: a POST without "authorize" re-renders the posted values. -->
-    <form action="/billpay/post-wizard" method="post">
+    <!-- Rendered by the fixture server: a POST without "authorize" re-renders the posted values,
+         and one with it is redirected to step 2. autocomplete="off" stops the browser restoring
+         typed values on Back, as many payment forms do, so what returns on Back is Refill's. -->
+    <form action="/billpay/post-wizard" method="post" autocomplete="off">
       <p role="alert">{{error}}</p>
       <p>
         <label>Payee <input name="payee" value="{{payee}}" /></label>

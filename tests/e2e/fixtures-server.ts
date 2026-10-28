@@ -118,17 +118,34 @@ function render(html: string, posted: Map<string, string> | null): string {
   });
 }
 
+/**
+ * Multi-page wizards: a POST to a key that passes validation (it has `authorize`) is answered
+ * `303 See Other` to the next step, so the next step is a new document at its own path and the
+ * history entry is a GET (browser Back returns to the step-1 GET, not to a POST).
+ */
+const NEXT_STEP: Record<string, string> = {
+  "/billpay/post-wizard": "/billpay/post-wizard-2",
+};
+
 async function serve(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
-    let file = fileFor(
-      decodeURIComponent(new URL(req.url ?? "/", "https://localhost").pathname),
+    const pathname = decodeURIComponent(
+      new URL(req.url ?? "/", "https://localhost").pathname,
     );
+    let file = fileFor(pathname);
     if (file === null) {
       res.writeHead(403).end();
       return;
     }
     if ((await stat(file)).isDirectory()) file = join(file, "index.html");
     const posted = await postedFields(req);
+    const next = Object.hasOwn(NEXT_STEP, pathname)
+      ? NEXT_STEP[pathname]
+      : undefined;
+    if (posted?.has("authorize") && next !== undefined) {
+      res.writeHead(303, { location: next, "cache-control": "no-store" }).end();
+      return;
+    }
     const type = TYPES[extname(file)] ?? "application/octet-stream";
     const headers = { "content-type": type, "cache-control": "no-store" };
     if (extname(file) === ".html") {

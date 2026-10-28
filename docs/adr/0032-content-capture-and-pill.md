@@ -134,6 +134,12 @@ calling `sendResponse`: a nudge never gets a reply.
   answered in that window may still fill such a field if it is empty or at its page default. The
   nudge listener stays registered on `runtime.onMessage` after `stop()` (the captured API has no
   removal); its callback checks the stopped flag and does nothing.
+- **Open (Task 11 e2e finding):** a **Finish from the popup** does not flush the content script's
+  debounced edits. An `input` less than 400 ms old with no `change` since (the field kept focus) is
+  still pending when the worker marks the session finished, and its capture then gets `off` and is
+  dropped. The pill's Finish flushes first; the popup's cannot reach the debounce today (the nudge
+  carries no reply). Opening a real popup may blur the page and fire `change`, which sends the edit
+  at once, but that is not guaranteed. The e2e suite waits for the capture before a popup Finish.
 - An input whose label changes only in wording (a validation message inside the label) looks like a
   re-use: it loses its edited mark, its page default and its `fieldId`, and its next capture is
   matched by signature.
