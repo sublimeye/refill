@@ -79,6 +79,12 @@ jobs:
       - name: Production build has no e2e seams
         run: node scripts/check-no-seams.mjs .output/chrome-mv3
 
+      # The worker bundle must stay DOM-free: DOM modules capture prototypes at import and would throw at worker startup.
+      - name: Service-worker bundle is DOM-free
+        run: |
+          sw="$(node -p "require('./.output/chrome-mv3/manifest.json').background.service_worker")"
+          node scripts/check-sw-no-dom.mjs ".output/chrome-mv3/$sw"
+
       # react, react-dom and vue are devDependencies for browser-mode fill tests only (ADR 0024): none of them may ship.
       - name: Production build has no React/Vue
         run: pnpm check:no-frameworks
