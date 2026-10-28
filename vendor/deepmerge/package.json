@@ -1,0 +1,8 @@
+{
+  "name": "deepmerge",
+  "version": "0.0.0-refill",
+  "private": true,
+  "description": "Refill's drop-in replacement for deepmerge 4.x (prototype-poisoning safe); see index.cjs.",
+  "license": "MIT",
+  "main": "index.cjs"
+}

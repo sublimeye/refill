@@ -52,5 +52,10 @@
     "test:e2e": "pnpm build:e2e && playwright test --pass-with-no-tests",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
+  },
+  "pnpm": {
+    "overrides": {
+      "deepmerge": "link:./vendor/deepmerge"
+    }
   }
 }
