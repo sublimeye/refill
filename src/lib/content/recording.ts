@@ -12,7 +12,11 @@ import {
 } from "../fields/eligibility";
 import type { ScanResult, ScannedControl } from "../fields/scan";
 import { isSensitive, type PasswordHistory } from "../fields/sensitive";
-import { buildSignature, type FormControl } from "../fields/signature";
+import {
+  buildSignature,
+  type FormControl,
+  type Sig,
+} from "../fields/signature";
 import { isFilling } from "../fill/fill";
 // Types only: the protocol module's runtime imports reach `wxt/browser` (ADR 0026).
 import type {
@@ -128,7 +132,8 @@ export function createRecording(env: RecordingEnv): Recording {
   const { doc, history, isTopWindow } = env;
   const isTrusted = env.isTrusted ?? ((e: Event) => e.isTrusted);
   const defaults = new PageDefaults();
-  const editedEls = new WeakSet<Element>();
+  /** Element -> its signature when the user edited it (null: unknown, edited under any meaning). */
+  const editedEls = new WeakMap<Element, Sig | null>();
   const roots = new Set<ShadowRoot>();
   const handled = new WeakSet<Event>();
   const timers = new Map<
@@ -242,8 +247,17 @@ export function createRecording(env: RecordingEnv): Recording {
     const s = recordState(await env.send({ type: "record-status" }));
     if (s === null || stopped) return; // a failed send keeps the current state
     // Starting: file the current page with the worker before any capture, even when the runner
-    // already reported this page (Plan 3 ruling P12).
-    if (apply(s, true)) await env.rescan(true);
+    // already reported this page (Plan 3 ruling P12). The listeners are live from `apply` on, so the
+    // capture chain waits for that report too, in the same task: no capture can overtake it.
+    if (!apply(s, true)) return;
+    const filed = env.rescan(true);
+    chain = chain
+      .then(() => filed)
+      .then(
+        () => undefined,
+        () => undefined,
+      );
+    await filed;
   }
 
   function handle(e: Event): void {
@@ -260,8 +274,14 @@ export function createRecording(env: RecordingEnv): Recording {
       return;
     }
     if (!trusted || isFilling()) return;
-    editedEls.add(el);
     const control = el as FormControl;
+    let sig: Sig | null;
+    try {
+      sig = buildSignature(control, 0, null);
+    } catch {
+      sig = null;
+    }
+    editedEls.set(el, sig);
     const type = eventType(e);
     const pending = timers.get(el);
     if (pending !== undefined) {
@@ -269,13 +289,18 @@ export function createRecording(env: RecordingEnv): Recording {
       timers.delete(el);
     }
     // The rules again, now: the scan's verdict may be stale (a type flip, a field hidden since).
-    if (!allowed(control)) return;
-    const value = readValue(control, kind);
-    if (value === null) return; // an unchecked radio: its checked sibling carries the choice
+    if (sig === null || !allowed(control, sig)) return;
+    const read = readValue(control, kind);
+    if (read === null) return; // an unchecked radio: its checked sibling carries the choice
+    const pageDefault = defaults.get(control, kind);
+    if (pageDefault.length > MAX_VALUE) return; // the worker would reject the whole capture
+    // Too long to save: send it as a revert, so the worker drops the field instead of keeping a
+    // shorter value captured earlier.
+    const value = read.length > MAX_VALUE ? pageDefault : read;
     const p: Pending = {
       el: control,
       value,
-      pageDefault: defaults.get(control, kind),
+      pageDefault,
       fieldId: env.filledField(el),
     };
     if (type === "change") {
@@ -289,10 +314,10 @@ export function createRecording(env: RecordingEnv): Recording {
     timers.set(el, { timer, p });
   }
 
-  function allowed(el: FormControl): boolean {
+  function allowed(el: FormControl, sig: Sig): boolean {
     try {
       if (!isEligible(el, doc, isTopWindow)) return false;
-      return !isSensitive(el, buildSignature(el, 0, null), history);
+      return !isSensitive(el, sig, history);
     } catch {
       return false;
     }
@@ -376,7 +401,12 @@ export function createRecording(env: RecordingEnv): Recording {
     noteScan(r) {
       defaults.note(r.controls);
     },
-    edited: (el) => state !== null && editedEls.has(el),
+    edited: (el) => {
+      if (state === null || !editedEls.has(el)) return false;
+      const sig = editedEls.get(el) ?? null;
+      // Re-used by the page for another field: the user has not edited that one (ruling P13).
+      return sig === null || stillMeans(el as FormControl, sig);
+    },
     ownsHost: (el) => pill !== null && pill.host === el,
     stop() {
       if (stopped) return;

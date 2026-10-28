@@ -14,7 +14,7 @@ import {
   type ScannedControl,
 } from "../fields/scan";
 import { PasswordHistory } from "../fields/sensitive";
-import type { Sig } from "../fields/signature";
+import type { FormControl, Sig } from "../fields/signature";
 import {
   canFill,
   fillControl,
@@ -163,8 +163,12 @@ function run(env: ContentEnv): ContentRun {
   const observer = new MutationObserver(() => schedule());
   const watched = new WeakSet<ShadowRoot>();
   const filled = new Set<string>();
-  /** Element -> the field id Refill filled into it: a capture there updates that field (ADR 0028). */
-  const filledInto = new WeakMap<Element, string>();
+  /**
+   * Element -> the field id Refill filled into it and the signature it had then: a capture there
+   * updates that field (ADR 0028), but only while the element still means that field. A framework
+   * that re-uses the input for another step's field must not move the filled field there (ADR 0032).
+   */
+  const filledInto = new WeakMap<Element, { fieldId: string; sig: Sig }>();
   let latest: ScanResult | null = null;
   let stopped = false;
   let started = false;
@@ -192,7 +196,11 @@ function run(env: ContentEnv): ContentRun {
     send: (msg) => send(msg),
     latest: () => latest,
     rescan,
-    filledField: (el) => filledInto.get(el) ?? null,
+    filledField: (el) => {
+      const link = filledInto.get(el);
+      if (link === undefined) return null;
+      return stillMeans(el as FormControl, link.sig) ? link.fieldId : null;
+    },
     history,
     isTrusted,
     isTopWindow,
@@ -300,7 +308,7 @@ function run(env: ContentEnv): ContentRun {
         switch (fillControl(item, history, origin, isTopWindow)) {
           case "filled":
             filled.add(fieldId);
-            filledInto.set(item.el, fieldId);
+            filledInto.set(item.el, { fieldId, sig });
             counts.filled++;
             break;
           case "unsupported":

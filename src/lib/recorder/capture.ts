@@ -6,7 +6,12 @@
 import { getter, localName } from "../fields/dom";
 import type { ControlKind } from "../fields/eligibility";
 import type { ScannedControl } from "../fields/scan";
-import type { FormControl } from "../fields/signature";
+import {
+  buildSignature,
+  type FormControl,
+  type Sig,
+} from "../fields/signature";
+import { stillMeans } from "../content/still-means";
 
 const inputValue = getter<string>(HTMLInputElement.prototype, "value");
 const textareaValue = getter<string>(HTMLTextAreaElement.prototype, "value");
@@ -98,33 +103,64 @@ function markupDefault(el: FormControl, kind: ControlKind): string {
   }
 }
 
+interface Noted {
+  value: string;
+  /** The signature the element had then; null when it could not be built (kept for good). */
+  sig: Sig | null;
+}
+
 /**
- * The value each control had when a scan first saw it, which is what the page itself rendered
- * (spec 6.2, `pageDefault`). `note` runs on every scan, before that scan's fill plan is applied, and
- * keeps the first value per element, so neither Refill's fill nor the user's later edits change it.
+ * The value each control had when a scan first saw it under its current meaning, which is what the
+ * page itself rendered (spec 6.2, `pageDefault`). `note` runs on every scan, before that scan's fill
+ * plan is applied, and keeps the first value per element and meaning, so neither Refill's fill nor
+ * the user's later edits change it. An element a framework re-uses for another field (`stillMeans`
+ * fails against the noted signature) gets a fresh default: the first value seen under its new
+ * meaning (ruling P13).
  */
 export class PageDefaults {
-  private readonly seen = new WeakMap<Element, string>();
+  private readonly seen = new WeakMap<Element, Noted>();
 
   note(controls: ScannedControl[]): void {
-    for (const { el, kind } of controls) {
-      if (this.seen.has(el)) continue;
+    for (const { el, kind, sig } of controls) {
+      if (this.current(el) !== undefined) continue;
       try {
-        this.seen.set(el, stateOf(el, kind));
+        this.seen.set(el, { value: stateOf(el, kind), sig });
       } catch {
         // a getter refused the element: `get` falls back to the markup default
       }
     }
   }
 
-  /** The noted value, or for an element no scan has seen, the markup default ("" if unreadable). */
+  /**
+   * The noted value. For an element no scan has seen under its current meaning, the markup default
+   * ("" if unreadable), which is then kept for that meaning: a scan that only runs after the user's
+   * edit must not take the typed value for the page's own.
+   */
   get(el: FormControl, kind: ControlKind): string {
-    const noted = this.seen.get(el);
-    if (noted !== undefined) return noted;
+    const noted = this.current(el);
+    if (noted !== undefined) return noted.value;
+    let value: string;
     try {
-      return markupDefault(el, kind);
+      value = markupDefault(el, kind);
     } catch {
-      return "";
+      value = "";
     }
+    let sig: Sig | null;
+    try {
+      sig = buildSignature(el, 0, null);
+    } catch {
+      sig = null;
+    }
+    this.seen.set(el, { value, sig });
+    return value;
+  }
+
+  private current(el: Element): Noted | undefined {
+    const noted = this.seen.get(el);
+    if (noted === undefined) return undefined;
+    if (noted.sig !== null && !stillMeans(el as FormControl, noted.sig)) {
+      return undefined;
+    }
+    return noted;
   }
 }

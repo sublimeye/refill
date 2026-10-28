@@ -208,15 +208,33 @@ describe("values", () => {
     expect(h.captures()[0]!.value).toBe("4111111111111111");
   });
 
-  it("does not send a value over the 4096-character limit", async () => {
-    mount(`<input name="note"><input name="city">`);
+  it("sends a value over 4096 characters as a revert, so no shorter prefix stays saved", async () => {
+    mount(`<input name="note" value="page">`);
     const h = harness();
     start(h);
     await started(h);
-    type(input("note"), "x".repeat(4097));
+    type(input("note"), "x".repeat(4096)); // at the limit: sent as typed
+    type(input("note"), "x".repeat(4097)); // past it: the field goes back to the page default
+    await vi.waitFor(() => expect(h.captures()).toHaveLength(2));
+    expect(h.captures()[0]!.value).toHaveLength(4096);
+    expect(h.captures()[1]).toMatchObject({
+      value: "page",
+      pageDefault: "page",
+    });
+    expect(h.captures()[1]!.sig).toEqual(h.captures()[0]!.sig);
+  });
+
+  it("sends nothing when the page default itself is over 4096 characters", async () => {
+    const long = "p".repeat(4097);
+    mount(`<input name="note" value="${long}"><input name="city">`);
+    const h = harness();
+    start(h);
+    await started(h);
+    type(input("note"), "short");
     type(input("city"), "Lyon");
     await vi.waitFor(() => expect(h.captures()).toHaveLength(1));
-    expect(h.captures()[0]!.sig.name).toBe("city");
+    await sleep(20);
+    expect(h.captures().map((c) => c.sig.name)).toEqual(["city"]);
   });
 
   it("captures the user's real typing (trusted events, default check)", async () => {
@@ -387,6 +405,69 @@ describe("in-recording fill", () => {
     ]);
   });
 
+  it("a capture on a filled element the page re-used for another field carries no field id", async () => {
+    mount(`<label><span id="l">City</span> <input name="city"></label>`);
+    const h = harness({ city: "Lyon" });
+    start(h);
+    await started(h);
+    expect(input("city").value).toBe("Lyon");
+    // An SPA wizard re-uses the input for the next step's field.
+    const el = input("city");
+    el.name = "iban";
+    document.querySelector("#l")!.textContent = "IBAN";
+    type(el, "FR76");
+    await vi.waitFor(() => expect(h.captures()).toHaveLength(1));
+    expect(h.captures()[0]!.sig.name).toBe("iban");
+    expect(h.captures()[0]!.fieldId).toBeNull();
+  });
+
+  it("an element the user edited and the page re-used for another field is filled for that field (P13)", async () => {
+    const root = mount(
+      `<label><span id="l">City</span> <input name="city"></label><div id="more"></div>`,
+    );
+    const h = harness({ iban: "FR76" });
+    start(h);
+    await started(h);
+    type(input("city"), "Lyon");
+    await vi.waitFor(() => expect(h.captures()).toHaveLength(1));
+    // Step 2 re-uses the input: renamed, relabelled and cleared by the framework.
+    const el = input("city");
+    el.name = "iban";
+    document.querySelector("#l")!.textContent = "IBAN";
+    el.value = "";
+    root.querySelector("#more")!.append(document.createElement("span"));
+    await vi.waitFor(() => expect(el.value).toBe("FR76"), {
+      timeout: RESCAN_DEBOUNCE_MS + 1500,
+    });
+  });
+
+  it("an element the page re-used gets the page default of its new meaning (P13)", async () => {
+    mount(
+      `<label><span id="l">City</span> <input name="city" value="Paris"></label>`,
+    );
+    const h = harness();
+    start(h);
+    await started(h);
+    type(input("city"), "Lyon");
+    await vi.waitFor(() => expect(h.captures()).toHaveLength(1));
+    expect(h.captures()[0]!.pageDefault).toBe("Paris");
+    const el = input("city");
+    el.name = "zip";
+    document.querySelector("#l")!.textContent = "Zip";
+    el.value = "75000"; // what the page renders for step 2
+    const before = h.reports().length;
+    await vi.waitFor(() => expect(h.reports().length).toBe(before + 1), {
+      timeout: RESCAN_DEBOUNCE_MS + 1500,
+    });
+    type(el, "75001");
+    await vi.waitFor(() => expect(h.captures()).toHaveLength(2));
+    expect(h.captures()[1]).toMatchObject({
+      value: "75001",
+      pageDefault: "75000",
+    });
+    expect(h.captures()[1]!.sig.name).toBe("zip");
+  });
+
   it("a filled value produces no capture", async () => {
     mount(
       `<input name="city"><label><input type="checkbox" name="agree"> A</label>`,
@@ -495,6 +576,29 @@ describe("shadow roots and ordering", () => {
       ["a", "123"],
       ["b", "x"],
     ]);
+  });
+
+  it("no capture overtakes the report that starts the recording (P12)", async () => {
+    mount(`<input name="a">`);
+    const h = harness();
+    const send = h.env.send;
+    let release: () => void = () => undefined;
+    let reports = 0;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      const answer = await send(msg); // logged in `sent` now
+      if (msg.type === "scan-report" && ++reports === 2) {
+        await new Promise<void>((r) => (release = r)); // the P12 report, held
+      }
+      return answer;
+    });
+    start(h);
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2));
+    type(input("a"), "typed"); // listeners are live; the worker has not answered the report yet
+    await sleep(50);
+    expect(h.captures()).toEqual([]);
+    release();
+    await vi.waitFor(() => expect(h.captures()).toHaveLength(1));
+    expect(h.captures()[0]!.value).toBe("typed");
   });
 
   it("pagehide flushes pending edits", async () => {

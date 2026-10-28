@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { PageDefaults, readValue } from "../../../src/lib/recorder/capture";
 import type { ScannedControl } from "../../../src/lib/fields/scan";
 import type { ControlKind } from "../../../src/lib/fields/eligibility";
-import type { FormControl } from "../../../src/lib/fields/signature";
+import {
+  buildSignature,
+  type FormControl,
+} from "../../../src/lib/fields/signature";
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -17,23 +20,12 @@ function mount(html: string): HTMLElement {
 
 const q = <T extends Element>(sel: string) => document.querySelector<T>(sel)!;
 
-function scanned(el: FormControl, kind: ControlKind): ScannedControl {
-  return {
-    i: 0,
-    el,
-    kind,
-    sig: {
-      name: null,
-      idStable: null,
-      autocomplete: null,
-      type: "text",
-      labelText: null,
-      ordinal: 0,
-      formAction: null,
-      nameIdDerived: false,
-    },
-  };
+/** A scanned control with the element's real signature, as the scanner would give it. */
+function scanned(el: FormControl, kind: ControlKind = "text"): ScannedControl {
+  return { i: 0, el, kind, sig: buildSignature(el, 0, null) };
 }
+
+const scan = (el: FormControl) => scanned(el);
 
 describe("readValue", () => {
   it("reads text, textarea, select, checkbox and radio", () => {
@@ -84,6 +76,41 @@ describe("PageDefaults", () => {
     expect(d.get(t, "text")).toBe("page");
     expect(d.get(c, "checkbox")).toBe("false");
     expect(d.get(s, "select")).toBe("a");
+  });
+
+  it("notes again when the element was re-used for another field (P13)", () => {
+    mount(
+      `<label><span id="l">City</span> <input name="city" value="Paris"></label>`,
+    );
+    const el = q<HTMLInputElement>('[name="city"]');
+    const d = new PageDefaults();
+    d.note([scan(el)]);
+    el.value = "Lyon"; // the user's edit: no new default
+    d.note([scan(el)]);
+    expect(d.get(el, "text")).toBe("Paris");
+    // Re-used for step 2: renamed, relabelled, and the page renders its own value.
+    el.name = "zip";
+    q("#l").textContent = "Zip";
+    el.value = "75000";
+    d.note([scan(el)]);
+    expect(d.get(el, "text")).toBe("75000");
+  });
+
+  it("an edit under a new meaning before any scan keeps the markup default for that meaning", () => {
+    mount(
+      `<label><span id="l">City</span> <input name="city" value="Paris"></label>`,
+    );
+    const el = q<HTMLInputElement>('[name="city"]');
+    const d = new PageDefaults();
+    d.note([scan(el)]);
+    el.name = "zip";
+    q("#l").textContent = "Zip";
+    el.defaultValue = "";
+    el.value = "75001"; // typed before the next scan
+    expect(d.get(el, "text")).toBe("");
+    // A scan after the edit does not take the typed value for the page's own.
+    d.note([scan(el)]);
+    expect(d.get(el, "text")).toBe("");
   });
 
   it("notes the live value, not the markup, when the page set it before the first scan", () => {
