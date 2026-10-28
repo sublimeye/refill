@@ -20,8 +20,8 @@ access to every site (see `docs/research/prior-art.md`).
    Next/Submit themselves.
 2. A long form on an opted-in site survives a failed submit / crash / closed tab and can be
    restored with one click.
-3. No form value, profile or draft is ever stored in plaintext on disk; passwords, OTPs, CVVs and hidden/CSRF fields are
-   never stored.
+3. No form value, profile or draft is ever stored in plaintext on disk; passwords, one-time codes, card security codes (CVV) and
+   hidden/CSRF fields are never stored.
 4. Install shows **no permission warnings**; site access is requested per site, in context.
 5. Passes a documented, adversarial security audit and Chrome Web Store review.
 
@@ -39,7 +39,7 @@ access to every site (see `docs/research/prior-art.md`).
 | Distribution | Public GitHub repo (MIT), Chrome Web Store |
 
 ### 1.4 Non-goals (v1)
-- Credit-card fields (`cc-*`) and cross-origin payment iframes (browser autofill covers these).
+- Cross-origin payment iframes and card-number auto-detection (browser card autofill covers these). Same-origin card fields are saved like any other field.
 - Custom widgets (react-select, MUI selects, calendar pickers) — detected and reported "can't fill".
 - Multiple profiles per site; clicking buttons; scripting/macros; cloud sync; Firefox.
 - Hotkeys.
@@ -269,18 +269,24 @@ Not run while `document.prerendering`; waits for `prerenderingchange`. A bfcache
 (`pageshow.persisted`) is treated as the same document.
 
 ### 5.3 Never-capture list (record, drafts)
-- `type=password`, and any field that was *ever* `type=password` in this document (MutationObserver
-  on `type` attribute — catches show-password toggles), `-webkit-text-security` styled fields.
-- `type=hidden`, `file`, disabled/readonly, captcha-like fields.
-- `autocomplete`: `current-password`, `new-password`, `one-time-code`, all `cc-*`.
-- Name/label heuristics (case-insensitive): pass(word)?, pwd, pin, otp, 2fa, mfa, totp, code
-  (verification), cvv, cvc, csc, security code, ssn, social security, card number, seed/mnemonic,
-  recovery phrase, `__VIEWSTATE`, `__EVENTVALIDATION`, csrf, xsrf, token, nonce.
-- Values that look like card numbers (Luhn-valid 13–19 digits **and** a card hint in the field's
-  signature or a card IIN prefix) are dropped; the review screen lists them as
-  "dropped — looked like a card number" so nothing disappears silently.
-- Bank account / routing numbers are capturable (common for utility ACH payments) but default to
-  `policy:"ask"` in review if detected; user may switch to `save`.
+Only secrets are never captured and never filled (decision of 2026-10-27). Everything else the user
+types is saved by default, card numbers and SSNs included; the user can set any field to "Don't save"
+on the review screen.
+- Passwords: `type=password`, any field that was *ever* `type=password` in this document
+  (MutationObserver on the `type` attribute catches show-password toggles), `-webkit-text-security`
+  styled fields, `autocomplete` `current-password` / `new-password`, and the name/label words
+  pass(word)?, pwd, pin, passphrase, seed, mnemonic, recovery phrase.
+- One-time codes: `autocomplete=one-time-code` and the otp, 2fa, mfa, totp and verification-code words
+  (`code` only after a qualifier such as sms, verify, auth, login, access or confirmation, or as the bare
+  name `code`).
+- Card security codes: `autocomplete=cc-csc`, cvv, cvc, csc, and "security code" / "card code". Sites
+  ask for the CVV because it should not be kept, and a card number together with its CVV is the
+  complete fraud set, so the CVV stays excluded while the card number is saved.
+- Captcha-like fields.
+- Fields the user never types: `type=hidden`, `file`, disabled/readonly, and `__VIEWSTATE`,
+  `__EVENTVALIDATION`, csrf, xsrf, token, nonce names.
+
+Card number, expiry, name on card and SSN fields are saved like any field.
 
 ### 5.4 Matching (fill)
 - A profile applies to a page iff `page.origin === profile.origin` (exact: scheme, punycode host,
@@ -352,7 +358,8 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
    the pill says "Recording stopped — vault locked".
 4. **Finish** (pill or popup) → SW opens `review.html?session=<id>` in a new tab.
 5. Review: table (step, label, masked value with reveal, policy dropdown), profile name,
-   fill mode, path prefix. Suspicious fields pre-set to `skip`/`ask`. Save → encrypted profile.
+   fill mode, path prefix. Every field defaults to Fill it in; the user can set any to Don't save.
+   Save → encrypted profile.
 
 ### 6.3 Return visit
 - Unlocked + auto: fill (§5.5) → toast `✓ Water bill · filled 5 · 1 needs you  [Undo]`;
