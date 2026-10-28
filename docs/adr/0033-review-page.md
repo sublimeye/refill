@@ -40,7 +40,8 @@ right before replying; a lock in between answers `gone` (ADR 0029: a caller that
 re-checks the epoch).
 
 ### Save
-1. The session is opened; not finished (or missing) → `gone`.
+1. The session is opened; not finished (or missing) → `gone`. A recording with no fields →
+   `invalid`: the page offers only Discard then, and an empty form must never replace a saved one.
 2. The policies become a null-prototype map; a repeated field id → `invalid`.
 3. The site's current form is loaded (`LockedError` → `gone`). Its id and `createdAt` are kept, or
    `newId()` and the worker's `now` are used when the site has none. Record again therefore keeps the

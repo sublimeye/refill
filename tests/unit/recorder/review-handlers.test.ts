@@ -348,6 +348,14 @@ describe("review-save", () => {
     expect(await profileKeys()).toEqual([]);
   });
 
+  it("invalid: an empty recording (the page offers Discard only) never replaces a saved form", async () => {
+    const saved = savedProfile();
+    await saveProfile(saved);
+    const id = await session(emptyBody(), saved);
+    expect(await save(id)).toEqual({ ok: false, error: "invalid" });
+    expect((await loadProfileForOrigin(ORIGIN))!.fields).toHaveLength(2);
+  });
+
   it("gone wins over invalid", async () => {
     expect(await save(ID, { name: "" })).toEqual({ ok: false, error: "gone" });
   });

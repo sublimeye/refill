@@ -90,6 +90,8 @@ export function createReviewPageHandlers(
       const epoch = lockEpoch();
       const rec = await finished(req.sessionId, t);
       if (rec === null) return SAVE_GONE;
+      // Nothing recorded is nothing to save: an empty form must never replace a saved one.
+      if (rec.body.fields.length === 0) return INVALID;
       const policies = policyMap(req.policies);
       if (policies === null) return INVALID;
       const current = await currentProfile(rec.origin);
