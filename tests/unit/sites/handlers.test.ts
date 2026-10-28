@@ -101,6 +101,7 @@ describe("site-enable", () => {
 
   it("when already granted: creates the site, registers, then injects into the tab", async () => {
     shims.grant(PA);
+    shims.setTab(9, A + "/signup");
     expect(
       await h()["site-enable"]({ type: "site-enable", tabId: 9, origin: A }),
     ).toEqual({ ok: true });
@@ -112,8 +113,41 @@ describe("site-enable", () => {
     });
   });
 
+  it("a tab that navigated to another origin is not injected, but the site is enabled", async () => {
+    shims.grant(PA);
+    shims.grant(PB);
+    shims.setTab(9, B + "/");
+    expect(
+      await h()["site-enable"]({ type: "site-enable", tabId: 9, origin: A }),
+    ).toEqual({ ok: true });
+    expect(Object.keys(await readSites())).toEqual([A]);
+    expect(shims.scripts.get(CONTENT_SCRIPT_ID)!.matches).toEqual([PA]);
+    expect(shims.scripting.executeScript).not.toHaveBeenCalled();
+  });
+
+  it("a closed tab is not injected, but the site is enabled", async () => {
+    shims.grant(PA);
+    expect(
+      await h()["site-enable"]({ type: "site-enable", tabId: 9, origin: A }),
+    ).toEqual({ ok: true });
+    expect(Object.keys(await readSites())).toEqual([A]);
+    expect(shims.scripts.size).toBe(1);
+    expect(shims.scripting.executeScript).not.toHaveBeenCalled();
+  });
+
+  it("a tab whose URL is unreadable is not injected, but the site is enabled", async () => {
+    shims.grant(PA);
+    shims.setTab(9, undefined);
+    expect(
+      await h()["site-enable"]({ type: "site-enable", tabId: 9, origin: A }),
+    ).toEqual({ ok: true });
+    expect(Object.keys(await readSites())).toEqual([A]);
+    expect(shims.scripting.executeScript).not.toHaveBeenCalled();
+  });
+
   it("still succeeds when injection fails (tab closed)", async () => {
     shims.grant(PA);
+    shims.setTab(9, A + "/");
     shims.scripting.executeScript.mockRejectedValue(new Error("No tab"));
     expect(
       await h()["site-enable"]({ type: "site-enable", tabId: 9, origin: A }),
@@ -301,6 +335,7 @@ describe("requestSiteEnable", () => {
   let sent: string[];
   beforeEach(() => {
     sent = [];
+    shims.setTab(3, A + "/");
     const handlers = h();
     vi.spyOn(fakeBrowser.runtime, "sendMessage").mockImplementation(
       (async (msg: { type: "site-enable" | "site-intent" }) => {

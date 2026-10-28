@@ -41,7 +41,7 @@ export function createSiteHandlers(now: () => number = Date.now): SiteHandlers {
       await takeIntent(origin, now());
       await upsertSite(origin, { accessRevoked: false });
       await reconcile();
-      await injectContentScript(tabId);
+      await injectContentScript(tabId, origin);
       return { ok: true };
     },
 
