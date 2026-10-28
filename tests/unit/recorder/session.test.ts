@@ -249,12 +249,34 @@ describe("recording session", { timeout: 30_000 }, () => {
     expect(await stoppedReason(TAB, ORIGIN, end + 30 * 60_000)).toBeNull();
   });
 
-  it("discards on lock with a locked tombstone, also a finished session", async () => {
-    const meta = await startSession(TAB, ORIGIN, Date.now(), null);
+  it("a finished session is discarded on a lock or an expiry without a tombstone (M1)", async () => {
+    // The user already finished: the tab must not say "Recording stopped".
+    await startSession(TAB, ORIGIN, Date.now(), null);
     await withSession(at, Date.now(), () => ({
       meta: { finished: true },
       result: null,
     }));
+    await lock();
+    await vi.waitFor(async () =>
+      expect((await sessionStore())[KEY]).toBeUndefined(),
+    );
+    expect((await sessionStore())[TOMB]).toBeUndefined();
+    expect(await stoppedReason(TAB, ORIGIN, Date.now())).toBeNull();
+
+    expect((await unlockWithPassphrase(P)).ok).toBe(true);
+    await startSession(TAB, ORIGIN, T0, null);
+    await withSession(at, T0, () => ({
+      meta: { finished: true, expiresAt: T0 + 1000 },
+      result: null,
+    }));
+    expect(await read(at, T0 + 1000)).toBe("off");
+    expect((await sessionStore())[KEY]).toBeUndefined();
+    expect((await sessionStore())[TOMB]).toBeUndefined();
+    expect(await stoppedReason(TAB, ORIGIN, T0 + 1000)).toBeNull();
+  });
+
+  it("discards an unfinished session on lock with a locked tombstone", async () => {
+    const meta = await startSession(TAB, ORIGIN, Date.now(), null);
     await captureOn(meta, SECRET, Date.now());
     await lock();
     await vi.waitFor(async () =>

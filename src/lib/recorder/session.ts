@@ -240,14 +240,18 @@ function serialized<T>(job: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** Inside a chain job: removes the record, leaves a tombstone for a lock or expiry, clears the badge and nudges the tab. */
+/**
+ * Inside a chain job: removes the record, leaves a tombstone for a lock or expiry of an unfinished
+ * session, clears the badge and nudges the tab.
+ */
 async function drop(
   meta: SessionMeta,
   reason: DiscardReason,
   at: number,
 ): Promise<void> {
   await removeRecord();
-  if (reason === "locked" || reason === "expired") {
+  // A finished session ended on the user's own Finish: its tab must not say "Recording stopped".
+  if ((reason === "locked" || reason === "expired") && !meta.finished) {
     const t: Tombstone = {
       tabId: meta.tabId,
       origin: meta.origin,
