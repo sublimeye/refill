@@ -303,23 +303,37 @@ test.describe("popup: recording", () => {
     return { review, ext, tabId };
   }
 
-  test("a lock while the review page is open: Save says the recording is gone", async ({
+  test("a lock while the review page is open: the page ends, and a save is refused with nothing written (Review Focus 4)", async ({
     context,
     extensionId,
     sites,
   }) => {
     void sites;
     const { review, ext } = await finishedReview(context, extensionId);
+    const sessionId = new URL(review.url()).searchParams.get("session");
+    expect(sessionId).not.toBeNull();
     await lockVault(ext);
-    await review.getByRole("button", { name: "Save" }).click();
-    await expect(review.getByText(GONE)).toBeFocused();
+    // The page ends by itself (I3): its Save is gone with it.
+    await expect(review.getByText(GONE)).toBeVisible();
     await expect(review.getByRole("rowheader")).toHaveCount(0);
+    await expect(review.getByRole("button", { name: "Save" })).toHaveCount(0);
+    // The worker refuses the save the page would have sent, and writes nothing.
+    expect(
+      await sendFromPage(ext, {
+        type: "review-save",
+        sessionId,
+        name: "Twins",
+        fillMode: "auto",
+        pathPrefix: "/billpay/twins",
+        policies: [{ fieldId: "f1", policy: "save" }],
+      }),
+    ).toEqual({ ok: false, error: "gone" });
     expect(
       await sendFromPage(ext, { type: "site-status", origin: FIXTURE_A }),
     ).toMatchObject({ hasProfile: false });
   });
 
-  test("Lock now in the popup, then Show on the review page: gone, and no value appears (ruling P15)", async ({
+  test("Lock now in the popup: the review page ends, and no value appears (ruling P15, I3)", async ({
     context,
     extensionId,
     sites,
@@ -331,9 +345,11 @@ test.describe("popup: recording", () => {
     await expect(popup.getByLabel("Passphrase")).toBeVisible();
 
     await review.bringToFront();
-    await review.getByRole("button", { name: "Show city" }).click();
     await expect(review.getByText(GONE)).toBeFocused();
     await expect(review.getByRole("rowheader")).toHaveCount(0);
+    await expect(review.getByRole("button", { name: "Show city" })).toHaveCount(
+      0,
+    );
     expect(await review.locator("body").innerText()).not.toContain(
       "Springfield",
     );
@@ -617,11 +633,27 @@ test.describe("record, review and fill", () => {
     await expect(page.getByText("Step 1 of 2")).toBeVisible();
     await expect(page.getByLabel("Full name")).toHaveValue("");
 
-    await startRecording(context, extensionId, page, "Record again");
+    const { tabId } = await startRecording(
+      context,
+      extensionId,
+      page,
+      "Record again",
+    );
     await expect(page.getByLabel("Full name")).toHaveValue("Ada Lovelace");
     await expect(page.getByLabel("Email")).toHaveValue("ada@example.test");
+    const toStep2 = await logMark(context);
     await page.getByRole("button", { name: "Next" }).click();
     await expect(page.getByText("Step 2 of 2")).toBeVisible();
+    // Step 2 is on file before Back, as when a user looks at it (a Next and Back inside one
+    // re-scan debounce show the page unchanged, so nothing is reported).
+    await waitForEntry(
+      context,
+      toStep2,
+      "scan-report",
+      (e) =>
+        e.tabId === tabId &&
+        e.controls.some((c) => c.sig.labelText === "street address"),
+    );
     await page.getByRole("button", { name: "Back" }).click();
     await expect(page.getByText("Step 1 of 2")).toBeVisible();
     await expect(page.getByLabel("Full name")).toHaveValue("Ada Lovelace");
