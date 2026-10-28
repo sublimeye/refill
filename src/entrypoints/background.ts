@@ -7,7 +7,7 @@ import {
   toRuntimeListener,
   type ContentContext,
 } from "../lib/messaging/router";
-import { saveProfile } from "../lib/profiles/store";
+import { loadProfileForOrigin, saveProfile } from "../lib/profiles/store";
 import { installRecorderListeners } from "../lib/recorder/session";
 import { installSiteListeners } from "../lib/sites/reconcile";
 import { enforceOnWake, installLockTriggers } from "../lib/vault/lock-triggers";
@@ -25,7 +25,8 @@ export default defineBackground(() => {
     });
   let content = createContentHandlers();
   // E2E seam (ADR 0022, ADR 0026, ADR 0030): lets Playwright seed a profile through
-  // `worker.evaluate`, read what content scripts reported (signatures, plan state and fill counts;
+  // `worker.evaluate`, read back the site's saved profile (what a review saved), read what content
+  // scripts reported (signatures, plan state and fill counts;
   // for recording requests only the type and the reply's state, never a captured value; `boot` and
   // `seq` order entries across a worker restart), and hold scan-report replies until released, to
   // change the page between scan and fill on purpose. `MODE` is folded at build time, so the production bundle has
@@ -38,6 +39,7 @@ export default defineBackground(() => {
     let release: () => void = () => undefined;
     const seam = {
       saveProfile,
+      loadProfile: loadProfileForOrigin,
       contentLog,
       boot,
       holdReplies: () => {

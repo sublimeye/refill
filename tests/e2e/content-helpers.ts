@@ -52,6 +52,7 @@ export interface LogMark {
 type Seam = {
   __refillE2E: {
     saveProfile(p: unknown): Promise<void>;
+    loadProfile(origin: string): Promise<Profile | null>;
     contentLog: LogEntry[];
     boot: string;
     holdReplies(): void;
@@ -269,6 +270,17 @@ export async function saveProfile(context: BrowserContext, profile: Profile) {
   ).evaluate(
     (p) => (globalThis as unknown as Seam).__refillE2E.saveProfile(p),
     profile,
+  );
+}
+
+/** The site's saved profile, decrypted in the worker (e2e seam; the vault must be unlocked). */
+export async function loadSavedProfile(
+  context: BrowserContext,
+  origin: string,
+): Promise<Profile | null> {
+  return (await serviceWorker(context)).evaluate(
+    (o) => (globalThis as unknown as Seam).__refillE2E.loadProfile(o),
+    origin,
   );
 }
 

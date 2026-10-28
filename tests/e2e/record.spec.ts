@@ -1,5 +1,6 @@
 import type { BrowserContext, Page } from "@playwright/test";
 import {
+  loadSavedProfile,
   lockVault,
   logMark,
   type LogMark,
@@ -711,6 +712,42 @@ test.describe("record, review and fill", () => {
     await expect(later.getByLabel("Security code")).toHaveValue("");
     await expect(later.getByLabel("Password")).toHaveValue("");
     await expect(later.getByLabel("One-time code")).toHaveValue("");
+  });
+
+  test("Don't save keeps no value: the card number is not in the saved form, and a later visit leaves it empty (C1)", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const CARD = "4111111111111111";
+    const { page } = await setUp(context, extensionId, [FIXTURE_A]);
+    await page.goto(NEVER);
+    const { popup } = await startRecording(context, extensionId, page);
+    await page.getByLabel("Email").pressSequentially("ada@example.test");
+    await page.getByLabel("Card number").pressSequentially(CARD);
+    await expectCount(popup, 2);
+
+    const review = await finish(context, popup);
+    expect(await reviewRows(review)).toEqual(["1 email", "1 card number"]);
+    await policyOf(review, "card number").selectOption("skip");
+    await save(review);
+
+    const saved = await loadSavedProfile(context, FIXTURE_A);
+    expect(saved).not.toBeNull();
+    expect(JSON.stringify(saved)).not.toContain(CARD);
+    // The field stays, so it still claims its control, with no value.
+    expect(
+      saved!.fields.map((f) => [f.sig.labelText, f.value, f.policy]),
+    ).toEqual([
+      ["email", "ada@example.test", "save"],
+      ["card number", "", "skip"],
+    ]);
+
+    const later = await context.newPage();
+    await later.goto(NEVER);
+    await expect(later.getByLabel("Email")).toHaveValue("ada@example.test");
+    await expect(later.getByLabel("Card number")).toHaveValue("");
   });
 
   test("Record again: the saved values fill while recording, and one change keeps the rest (Review Focus 5)", async ({
