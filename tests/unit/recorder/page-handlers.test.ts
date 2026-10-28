@@ -416,6 +416,31 @@ describe("record-finish", () => {
     );
   });
 
+  it("nudges the tab once the session is finished, so its pill goes away (I1)", async () => {
+    ready();
+    await start();
+    sendMessage.mockClear();
+    const seen: unknown[] = [];
+    sendMessage.mockImplementation(
+      async (_tab: number, msg: { type: string }) => {
+        if (msg.type !== "refill-nudge") return undefined;
+        // The content script answers a nudge with record-status: it must hear "finished".
+        const got = await peek();
+        seen.push(got === "off" ? "off" : got.meta.finished);
+        return undefined;
+      },
+    );
+    expect(await finish()).toEqual({ ok: true });
+    await vi.waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith(
+        TAB,
+        { type: "refill-nudge" },
+        { frameId: 0 },
+      ),
+    );
+    await vi.waitFor(() => expect(seen).toEqual([true]));
+  });
+
   it("on an already finished session it opens the review page again (idempotent)", async () => {
     ready();
     await start();

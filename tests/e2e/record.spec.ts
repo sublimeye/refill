@@ -199,11 +199,18 @@ test.describe("popup: recording", () => {
       ).toBeVisible({ timeout: 1_000 });
     }).toPass({ timeout: 15_000 });
 
+    // The page shows the recording pill (a top-layer popover; its root is closed).
+    const pillOpen = () =>
+      page.evaluate(() => document.querySelector(":popover-open") !== null);
+    await expect.poll(pillOpen).toBe(true);
+
     // Finish opens the review page in a new tab.
     const opened = context.waitForEvent("page");
     await popup.getByRole("button", { name: "Finish" }).click();
     const review = await opened;
     await review.waitForLoadState();
+    // A popup Finish nudges the tab: its pill goes away without any action on the page (I1).
+    await expect.poll(pillOpen).toBe(false);
     expect(review.url()).toMatch(
       new RegExp(`^chrome-extension://${extensionId}/review\\.html\\?session=`),
     );

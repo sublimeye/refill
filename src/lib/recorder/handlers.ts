@@ -106,7 +106,7 @@ export async function recordingScan(
 
 /**
  * Finishes the session `match` names: marks it finished, resets its TTL to 30 min from `now`,
- * clears the tab's badge and opens the review page. `false` when there is no such unfinished
+ * clears the tab's badge, nudges the tab (its pill hides) and opens the review page. `false` when there is no such unfinished
  * session. With `reopen`, a session that is already finished is opened again instead (its TTL is
  * reset to 30 min from `now`): a closed or failed review tab can be reopened from the popup, and
  * Finish stays idempotent (ADR 0031). A content script never reopens.
@@ -126,6 +126,9 @@ export async function finishSession(
   );
   if (done === "off" || done === null) return false;
   await clearBadge(done.tabId);
+  // The tab's pill still says Recording after a popup Finish: its content script asks again and
+  // hears `off`. Not awaited (a failure is logged by name in `nudge`); the answer queues behind.
+  void nudge(done.tabId);
   await browser.tabs.create({
     url: `${browser.runtime.getURL(REVIEW_PAGE)}?session=${done.id}`,
   });
