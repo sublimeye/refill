@@ -534,9 +534,26 @@ const CLOBBER_FIXTURES: Array<(n: string) => string> = [
   (n) =>
     `<form style="overflow:auto;height:60px;width:200px;position:absolute;left:-5000px">` +
     `<input type="hidden" name="${n}"><input name="parked"></form>`,
+  // Fixture 8: `#host` gets an open shadow root holding its own form with the named control
+  // (see `mountFixture`), so the clobbering name is tried inside a shadow tree too.
   (n) =>
     `<div id="host"></div><form><input type="hidden" name="${n}"><input name="outer"></form>`,
 ];
+
+/** Shadow content per fixture index, attached as an open root to the fixture's `#host`. */
+const CLOBBER_SHADOWS: Record<number, (n: string) => string> = {
+  8: (n) =>
+    `<form action="/s"><input type="hidden" name="${n}"><label>Inner <input name="inner"></label>` +
+    `<input type="radio" name="g"></form>`,
+};
+
+function mountFixture(i: number, n: string): void {
+  const root = mount(CLOBBER_FIXTURES[i]!(n));
+  const shadow = CLOBBER_SHADOWS[i];
+  if (shadow === undefined) return;
+  const host = root.querySelector("#host")!;
+  host.attachShadow({ mode: "open" }).innerHTML = shadow(n); // test-only fixture markup
+}
 
 function verdicts(): unknown[] {
   return scan().controls.map((c) => [
@@ -549,14 +566,14 @@ function verdicts(): unknown[] {
 }
 
 describe("scanDocument clobber sweep", () => {
-  it.each(CLOBBER_FIXTURES.map((f, i) => [i, f] as const))(
+  it.each(CLOBBER_FIXTURES.map((_f, i) => [i] as const))(
     "fixture %i: a named form control never changes a verdict",
-    (_i, fixture) => {
-      mount(fixture("zz"));
+    (i) => {
+      mountFixture(i, "zz");
       const baseline = verdicts();
       document.body.replaceChildren();
       for (const name of CLOBBER_NAMES) {
-        mount(fixture(name));
+        mountFixture(i, name);
         expect(verdicts(), name).toEqual(baseline);
         document.body.replaceChildren();
       }
@@ -564,8 +581,8 @@ describe("scanDocument clobber sweep", () => {
   );
 
   it("baselines are not vacuous", () => {
-    const sizes = CLOBBER_FIXTURES.map((fixture) => {
-      mount(fixture("zz"));
+    const sizes = CLOBBER_FIXTURES.map((_fixture, i) => {
+      mountFixture(i, "zz");
       const n = verdicts().length;
       document.body.replaceChildren();
       return n;
@@ -577,7 +594,7 @@ describe("scanDocument clobber sweep", () => {
     expect(sizes[5]).toBe(1);
     expect(sizes[6]).toBeGreaterThan(0);
     expect(sizes[7]).toBe(0);
-    expect(sizes[8]).toBe(1);
+    expect(sizes[8]).toBe(3); // inner, the radio (shadow root first) and outer
   });
 });
 

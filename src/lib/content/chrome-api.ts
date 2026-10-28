@@ -13,6 +13,39 @@ export interface ChromeApi {
   /** False once the extension context is gone (`runtime.id` becomes undefined). */
   alive(): boolean;
   openOrClosedShadowRoot: ((el: Element) => ShadowRoot | null) | undefined;
+  /**
+   * Calls `cb` for each worker nudge: exactly `{ type: "refill-nudge" }`, from this extension
+   * (`sender.id`) and not from a tab (`sender.tab` absent). Never replies. A no-op when
+   * `runtime.onMessage.addListener` is not the real API.
+   */
+  onNudge(cb: () => void): void;
+}
+
+/** Exactly `{ type: "refill-nudge" }`: a plain object with that one key. */
+function isNudge(msg: unknown): boolean {
+  try {
+    if (typeof msg !== "object" || msg === null) return false;
+    if (Object.getPrototypeOf(msg) !== Object.prototype) return false;
+    const keys = Object.keys(msg);
+    return (
+      keys.length === 1 &&
+      keys[0] === "type" &&
+      (msg as Record<string, unknown>)["type"] === "refill-nudge"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** The worker or an extension page of this extension: its id, no tab. */
+function fromExtension(sender: unknown, id: string): boolean {
+  try {
+    if (typeof sender !== "object" || sender === null) return false;
+    const s = sender as Record<string, unknown>;
+    return s["id"] === id && s["tab"] === undefined;
+  } catch {
+    return false;
+  }
 }
 
 /** A non-null object that is not page markup (an element, or a frame's window). */
@@ -51,10 +84,28 @@ export function captureChrome(chrome: unknown): ChromeApi | null {
     return null;
   }
   if (!apiObject(runtime)) return null;
-  const sendMessage = runtime["sendMessage"];
+  let sendMessage: unknown;
+  let onMessage: unknown;
+  try {
+    sendMessage = runtime["sendMessage"];
+    onMessage = runtime["onMessage"];
+  } catch {
+    return null;
+  }
   const id = idOf(runtime);
   if (!apiFunction(sendMessage) || typeof id !== "string" || id === "") {
     return null;
+  }
+
+  // Optional: without it the content script still reads the recording state at start and restore.
+  let addListener: ((...args: unknown[]) => unknown) | undefined;
+  if (apiObject(onMessage)) {
+    try {
+      const add = onMessage["addListener"];
+      if (apiFunction(add)) addListener = add;
+    } catch {
+      addListener = undefined;
+    }
   }
 
   let openOrClosedShadowRoot: ChromeApi["openOrClosedShadowRoot"];
@@ -79,5 +130,24 @@ export function captureChrome(chrome: unknown): ChromeApi | null {
       return typeof now === "string" && now !== "";
     },
     openOrClosedShadowRoot,
+    onNudge: (cb) => {
+      if (addListener === undefined) return;
+      const listener = (msg: unknown, sender: unknown): undefined => {
+        // Never `true` and never `sendResponse`: a nudge gets no reply.
+        if (isNudge(msg) && fromExtension(sender, id)) {
+          try {
+            cb();
+          } catch {
+            // nothing to report
+          }
+        }
+        return undefined;
+      };
+      try {
+        Reflect.apply(addListener, onMessage, [listener]);
+      } catch {
+        // no nudges
+      }
+    },
   };
 }

@@ -153,12 +153,13 @@ describe("scan, report, fill", () => {
     expect(input("name").value).toBe("");
   });
 
-  it("sends nothing for a page without eligible controls", async () => {
+  it("reports nothing for a page without eligible controls (it only asks the recording state)", async () => {
     mount(`<p>No form here</p><input type="hidden" name="t">`);
     const h = harness();
     start(h);
     await settle();
-    expect(h.sent).toEqual([]);
+    // A wizard's last page has no fields, and the pill's Finish must still show there.
+    expect(h.sent).toEqual([{ type: "record-status" }]);
   });
 
   it("does nothing with a locked, none, gesture or malformed answer", async () => {
@@ -517,7 +518,8 @@ describe("lifecycle", () => {
     const root = mount(`<input name="a">`);
     let calls = 0;
     const h = harness();
-    h.env.send = vi.fn(async () => {
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      if (msg.type !== "scan-report") return { state: "off" };
       calls++;
       if (calls === 1) throw new Error("Could not establish connection.");
       return { state: "none" };
@@ -545,5 +547,153 @@ describe("lifecycle", () => {
     window.dispatchEvent(new Event("scrollend"));
     await settle();
     expect(h.reports()).toHaveLength(1);
+  });
+});
+
+describe("recording", () => {
+  /** A worker whose `record-status` answers `status.value`; nudges are delivered by `nudge()`. */
+  function recordingHarness(initial: { state: string; count?: number }) {
+    const status = { value: initial as unknown };
+    const nudges: (() => void)[] = [];
+    const h = harness(byName({ a: "A" }), {
+      onNudge: (cb) => {
+        nudges.push(cb);
+      },
+      isTrusted: () => true, // the bfcache case dispatches its own pageshow
+    });
+    const send = h.env.send;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      if (msg.type === "record-status") {
+        h.sent.push(structuredClone(msg));
+        return status.value;
+      }
+      return send(msg);
+    });
+    const statuses = () => h.sent.filter((m) => m.type === "record-status");
+    return {
+      h,
+      status,
+      statuses,
+      nudge: () => {
+        for (const cb of nudges) cb();
+      },
+    };
+  }
+
+  it("asks the recording state after the first scan", async () => {
+    mount(`<input name="a">`);
+    const { h } = recordingHarness({ state: "off" });
+    start(h);
+    await vi.waitFor(() =>
+      expect(h.sent.map((m) => m.type)).toEqual([
+        "scan-report",
+        "fill-result",
+        "record-status",
+      ]),
+    );
+  });
+
+  it("reports the unchanged page again when recording starts (P12): first sync", async () => {
+    mount(`<input name="a">`);
+    const { h } = recordingHarness({ state: "on", count: 0 });
+    start(h);
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2));
+    const [first, second] = h.reports();
+    expect(second!.controls).toEqual(first!.controls);
+    // The status came first, then the page was filed again.
+    const types = h.sent.map((m) => m.type);
+    expect(types.indexOf("record-status")).toBeLessThan(
+      types.lastIndexOf("scan-report"),
+    );
+    // Filled once only: the field id is not written again.
+    expect(h.results()).toHaveLength(1);
+  });
+
+  it("reports the unchanged page again when a nudge starts the recording (P12)", async () => {
+    mount(`<input name="a">`);
+    const r = recordingHarness({ state: "off" });
+    start(r.h);
+    await vi.waitFor(() => expect(r.statuses()).toHaveLength(1));
+    await settle();
+    expect(r.h.reports()).toHaveLength(1);
+
+    r.status.value = { state: "on", count: 0 };
+    r.nudge();
+    await vi.waitFor(() => expect(r.h.reports()).toHaveLength(2));
+
+    // Already recording: a nudge only updates the state, nothing is reported again.
+    r.nudge();
+    await vi.waitFor(() => expect(r.statuses()).toHaveLength(3));
+    await settle();
+    expect(r.h.reports()).toHaveLength(2);
+  });
+
+  it("re-reads the recording state on a bfcache restore and starts it", async () => {
+    mount(`<input name="a">`);
+    const r = recordingHarness({ state: "off" });
+    start(r.h);
+    await vi.waitFor(() => expect(r.statuses()).toHaveLength(1));
+    r.status.value = { state: "on", count: 0 };
+    window.dispatchEvent(
+      new PageTransitionEvent("pageshow", { persisted: true }),
+    );
+    await vi.waitFor(() => expect(r.statuses()).toHaveLength(2));
+    await settle();
+    // A restore reports the page anyway (ADR 0026); recording starts and the page is on file
+    // before any capture.
+    const types = r.h.sent.map((m) => m.type);
+    expect(types.lastIndexOf("scan-report")).toBeGreaterThan(
+      types.lastIndexOf("record-status"),
+    );
+    expect(document.querySelector("[popover]")?.matches(":popover-open")).toBe(
+      true,
+    );
+  });
+
+  it("rescan() resolves after the report it triggered was delivered", async () => {
+    const root = mount(`<input name="a">`);
+    let release: () => void = () => undefined;
+    const h = harness(() => ({ state: "none" }));
+    const send = h.env.send;
+    let hold = false;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      const answer = await send(msg); // logged in `sent` now
+      if (msg.type === "scan-report" && hold) {
+        await new Promise<void>((r) => (release = r));
+      }
+      return answer;
+    });
+    const run = start(h)!;
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(1));
+    await sleep(10);
+    const b = document.createElement("input");
+    b.name = "b";
+    root.append(b);
+    hold = true;
+    let done = false;
+    const p = run.rescan().then((r) => {
+      done = true;
+      return r;
+    });
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2));
+    await sleep(20);
+    expect(done).toBe(false);
+    release();
+    const result = await p;
+    expect(result!.controls.map((c) => c.sig.name)).toEqual(["a", "b"]);
+  });
+
+  it("ignores a nudge after stop() and removes the pill", async () => {
+    mount(`<input name="a">`);
+    const r = recordingHarness({ state: "on", count: 2 });
+    const run = start(r.h)!;
+    await vi.waitFor(() =>
+      expect(document.querySelector("[popover]")).not.toBeNull(),
+    );
+    run.stop();
+    expect(document.querySelector("[popover]")).toBeNull();
+    r.nudge();
+    await sleep(20);
+    expect(r.statuses()).toHaveLength(1);
   });
 });

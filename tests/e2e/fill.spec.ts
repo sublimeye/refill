@@ -409,7 +409,13 @@ test("page markup named `browser` cannot switch Refill off; `chrome` markup fail
       "1",
     );
     await expectTwinsEmpty(fresh);
-    expect(await entriesSince(context, since)).toEqual([]);
+    // Only this page's messages: the other open tabs may still ask the recording state after their
+    // fill (ADR 0032), which can land after the mark.
+    expect(
+      (await entriesSince(context, since)).filter(
+        (e) => e.pathname === `/billpay/${name}`,
+      ),
+    ).toEqual([]);
   }
 });
 
