@@ -208,6 +208,22 @@ export async function nudge(tabId: number): Promise<void> {
   }
 }
 
+/**
+ * Tells open extension pages that a recording ended, with a data-free runtime message (content
+ * scripts do not get runtime messages). The review page answers it with `review-check` and ends if
+ * its recording is gone, so a revealed value does not stay on screen after a lock (I3, ADR 0033).
+ * Not awaited; with no page listening the send fails, which is the usual case and not logged.
+ */
+function announceEnded(): void {
+  try {
+    browser.runtime
+      .sendMessage({ type: "refill-recording-ended" })
+      .catch(() => undefined);
+  } catch {
+    // no runtime messaging here: nothing to tell
+  }
+}
+
 /** How long a popup Finish waits for the tab's pending captures (ADR 0032). */
 export const FLUSH_TIMEOUT_MS = 1_000;
 
@@ -246,8 +262,8 @@ function serialized<T>(job: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Inside a chain job: removes the record, leaves a tombstone for a lock or expiry of an unfinished
- * session, clears the badge and nudges the tab.
+ * Inside a chain job: removes the record, tells open extension pages, leaves a tombstone for a lock
+ * or expiry of an unfinished session, clears the badge and nudges the tab.
  */
 async function drop(
   meta: SessionMeta,
@@ -255,6 +271,7 @@ async function drop(
   at: number,
 ): Promise<void> {
   await removeRecord();
+  announceEnded();
   // A finished session ended on the user's own Finish: its tab must not say "Recording stopped".
   if ((reason === "locked" || reason === "expired") && !meta.finished) {
     const t: Tombstone = {

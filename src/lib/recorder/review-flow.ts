@@ -211,38 +211,27 @@ export async function recheckReview(
   return true;
 }
 
-/** Where the worker keeps the one recording session (`session.ts`, ADR 0029). */
-const SESSION_KEY = "recorder:session";
-
-/** The plaintext metadata id of a stored session record, or null for anything else. */
-function storedSessionId(raw: unknown): string | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const meta = (raw as Record<string, unknown>)["meta"];
-  if (typeof meta !== "object" || meta === null) return null;
-  const id = (meta as Record<string, unknown>)["id"];
-  return typeof id === "string" ? id : null;
-}
-
 /**
- * Calls `onGone` once the stored recording is no longer session `sessionId`: removed (a lock, an
- * expiry, a save or a cancel) or replaced by another, read from `storage.session` changes. Only the
- * plaintext metadata is read, and a record of any other shape counts as gone (the page then hides
- * every value, which is the safe side). No messaging: a lock in another window ends the page at
- * once, with nothing revealed left on screen (I3, ADR 0033). Returns the unsubscribe.
+ * Calls `onSignal` for each `{ type: "refill-recording-ended" }` from this extension: the worker's
+ * data-free word that a recording ended (a lock, an expiry, a save, a cancel, a replace). It proves
+ * nothing, so the page answers it with `review-check`, as on a return to the page; a forged one
+ * costs one check. The page does not watch `storage.session` instead: its change events would hand
+ * the page the DEK mirror on every unlock (spec §4.3, ADR 0033). Returns the unsubscribe.
  */
-export function watchReviewSession(
-  sessionId: string,
-  onGone: () => void,
-): () => void {
-  const listener = (
-    changes: Record<string, { newValue?: unknown }>,
-    area: string,
-  ): void => {
-    if (area !== "session" || !Object.hasOwn(changes, SESSION_KEY)) return;
-    if (storedSessionId(changes[SESSION_KEY]?.newValue) !== sessionId) {
-      onGone();
+export function onRecordingEnded(onSignal: () => void): () => void {
+  const listener = (msg: unknown, sender: { id?: string }): undefined => {
+    if (
+      typeof sender.id === "string" &&
+      sender.id === browser.runtime.id &&
+      typeof msg === "object" &&
+      msg !== null &&
+      Object.keys(msg).length === 1 &&
+      (msg as Record<string, unknown>)["type"] === "refill-recording-ended"
+    ) {
+      onSignal();
     }
+    return undefined; // never answers: the worker does not wait for pages
   };
-  browser.storage.onChanged.addListener(listener);
-  return () => browser.storage.onChanged.removeListener(listener);
+  browser.runtime.onMessage.addListener(listener);
+  return () => browser.runtime.onMessage.removeListener(listener);
 }

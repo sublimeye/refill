@@ -17,7 +17,7 @@ import {
   sessionIdFrom,
   stepNumber,
   toggleValue,
-  watchReviewSession,
+  onRecordingEnded,
   type ReviewPage,
 } from "../../../src/lib/recorder/review-flow";
 
@@ -273,69 +273,37 @@ describe("the page state", () => {
   });
 });
 
-describe("watchReviewSession (I3)", () => {
-  const KEY = "recorder:session";
-  const record = (id: string) => ({
-    meta: { v: 1, id, finished: true },
-    body: { iv: "x", ct: "y" },
-  });
-  /** storage.onChanged is delivered asynchronously. */
-  const settle = () => new Promise((r) => setTimeout(r, 10));
+describe("onRecordingEnded (I3)", () => {
+  const ENDED = { type: "refill-recording-ended" };
+  const self = () => ({ id: fakeBrowser.runtime.id });
+  const noReply = () => undefined;
 
-  beforeEach(async () => {
-    await fakeBrowser.storage.session.set({ [KEY]: record(ID) });
-  });
-
-  it("ends the review when the recording is removed (a lock, a save, a cancel)", async () => {
-    const gone = vi.fn();
-    watchReviewSession(ID, gone);
-    await fakeBrowser.storage.session.remove(KEY);
-    await vi.waitFor(() => expect(gone).toHaveBeenCalledOnce());
-  });
-
-  it("ends the review when another recording replaced it", async () => {
-    const gone = vi.fn();
-    watchReviewSession(ID, gone);
-    await fakeBrowser.storage.session.set({
-      [KEY]: record("sess_another0123456789"),
-    });
-    await vi.waitFor(() => expect(gone).toHaveBeenCalledOnce());
+  it("calls back for the worker's data-free signal", async () => {
+    const signal = vi.fn();
+    onRecordingEnded(signal);
+    await fakeBrowser.runtime.onMessage.trigger(ENDED, self(), noReply);
+    expect(signal).toHaveBeenCalledOnce();
   });
 
   it.each([
-    ["a string", "x"],
-    ["no meta", { body: {} }],
-    ["a meta without an id", { meta: { v: 1 }, body: {} }],
-    ["null", null],
-  ])(
-    "ends the review on a malformed record (%s): fail closed",
-    async (_n, raw) => {
-      const gone = vi.fn();
-      watchReviewSession(ID, gone);
-      await fakeBrowser.storage.session.set({ [KEY]: raw });
-      await vi.waitFor(() => expect(gone).toHaveBeenCalledOnce());
-    },
-  );
-
-  it("keeps the review for an update of the same recording, another key or another area", async () => {
-    const gone = vi.fn();
-    watchReviewSession(ID, gone);
-    await fakeBrowser.storage.session.set({ [KEY]: record(ID) });
-    await fakeBrowser.storage.session.set({ "recorder:stopped": { at: 1 } });
-    await fakeBrowser.storage.local.remove(KEY);
-    await fakeBrowser.storage.local.set({
-      [KEY]: record("sess_another0123456789"),
-    });
-    await settle();
-    expect(gone).not.toHaveBeenCalled();
+    ["another extension", ENDED, { id: "another-extension" }],
+    ["no sender id", ENDED, {}],
+    ["another type", { type: "refill-nudge" }, undefined],
+    ["an extra key", { ...ENDED, sessionId: ID }, undefined],
+    ["not an object", "refill-recording-ended", undefined],
+    ["null", null, undefined],
+  ])("ignores %s", async (_n, msg, sender) => {
+    const signal = vi.fn();
+    onRecordingEnded(signal);
+    await fakeBrowser.runtime.onMessage.trigger(msg, sender ?? self(), noReply);
+    expect(signal).not.toHaveBeenCalled();
   });
 
   it("stops listening once unsubscribed", async () => {
-    const gone = vi.fn();
-    const stop = watchReviewSession(ID, gone);
+    const signal = vi.fn();
+    const stop = onRecordingEnded(signal);
     stop();
-    await fakeBrowser.storage.session.remove(KEY);
-    await settle();
-    expect(gone).not.toHaveBeenCalled();
+    await fakeBrowser.runtime.onMessage.trigger(ENDED, self(), noReply);
+    expect(signal).not.toHaveBeenCalled();
   });
 });

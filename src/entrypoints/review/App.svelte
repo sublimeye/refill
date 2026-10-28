@@ -3,8 +3,8 @@
   // user asks, a policy per field, the form's name, fill mode and path prefix, then Save or
   // Discard. Values are rendered as text only. Every reveal, and every return to the page, is
   // re-confirmed with the worker first (ruling P15): after a lock, an expiry or a cancel the page
-  // drops the recording and shows the gone copy. It also watches the stored session, so a lock
-  // elsewhere hides a revealed value at once, with no action on this page (I3).
+  // drops the recording and shows the gone copy. The worker's data-free "recording ended" message
+  // triggers the same check, so a lock elsewhere hides a revealed value with no action here (I3).
   import { onMount, tick } from "svelte";
   import {
     applyLoad,
@@ -18,7 +18,7 @@
     sessionIdFrom,
     stepNumber,
     toggleValue,
-    watchReviewSession,
+    onRecordingEnded,
     type FormProblem,
   } from "../../lib/recorder/review-flow";
 
@@ -35,8 +35,8 @@
 
   const page = $state(newPage());
   let busy = $state(false);
-  /** The recording went away while a save or discard was in flight (see `settle`). */
-  let goneWhileBusy = false;
+  /** A check was asked for while a save or discard was in flight (see `recheck`). */
+  let recheckWhenIdle = false;
   let problem = $state<FormProblem | null>(null);
   let failed = $state(false);
 
@@ -56,39 +56,40 @@
     if (page.view !== "ready") await focusMessage();
   }
 
-  /** The recording is gone: hide every value now, unless a save or discard will settle it. */
-  function onGone() {
+  /**
+   * Asks the worker whether the recording is still there and ends the review if not (ruling P15).
+   * While a save or discard is in flight its own answer settles the page; the check runs after it.
+   */
+  function recheck() {
+    if (sessionId === null) return;
     if (busy) {
-      goneWhileBusy = true;
+      recheckWhenIdle = true;
       return;
     }
-    if (page.view !== "ready") return;
-    endReview(page, "gone");
-    void focusMessage();
+    void recheckReview(page, sessionId).then((ended) =>
+      ended ? focusMessage() : undefined,
+    );
   }
 
-  /** After a save or discard: whether the recording went away while it was in flight. */
-  function wentAway(): boolean {
-    const gone = goneWhileBusy;
-    goneWhileBusy = false;
-    return gone;
+  /** After a save or discard: a check asked for meanwhile runs now (a no-op once the page ended). */
+  function idle() {
+    if (!recheckWhenIdle) return;
+    recheckWhenIdle = false;
+    recheck();
   }
 
   onMount(() => {
     void load();
-    // A lock, an expiry or a new recording, even in another window: the page ends at once (I3).
-    const unwatch =
-      sessionId === null ? () => {} : watchReviewSession(sessionId, onGone);
+    // A recording ended somewhere (a lock in another window, an expiry, a new recording): check
+    // now, so a revealed value does not stay on screen (I3).
+    const stop = onRecordingEnded(recheck);
     // Back to the page (another tab, the screen unlocked): drop the recording if it is gone.
     const onVisible = () => {
-      if (document.visibilityState !== "visible" || sessionId === null) return;
-      void recheckReview(page, sessionId).then((ended) =>
-        ended ? focusMessage() : undefined,
-      );
+      if (document.visibilityState === "visible") recheck();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      unwatch();
+      stop();
       document.removeEventListener("visibilitychange", onVisible);
     };
   });
@@ -121,22 +122,21 @@
     // saveReview never throws. The controls are enabled again before focus moves to one of them.
     const out = await saveReview(sessionId, page.form);
     busy = false;
-    // A save that did not end the review, while the recording went away: it ends as gone.
-    const result = wentAway() && out !== "saved" ? "gone" : out;
-    switch (result) {
+    switch (out) {
       case "saved":
       case "gone":
-        endReview(page, result);
+        endReview(page, out);
         await focusMessage();
         break;
       case "failed":
         await announceFailure();
         break;
       default:
-        problem = result;
+        problem = out;
         await tick();
-        (result === "name" ? nameInput : prefixInput)?.focus();
+        (out === "name" ? nameInput : prefixInput)?.focus();
     }
+    idle();
   }
 
   async function discard() {
@@ -146,15 +146,13 @@
     failed = false;
     const ok = await discardReview(sessionId); // never throws
     busy = false;
-    if (wentAway() && !ok) {
-      endReview(page, "gone");
-      await focusMessage();
-    } else if (ok) {
+    if (ok) {
       endReview(page, "discarded");
       await focusMessage();
     } else {
       await announceFailure();
     }
+    idle();
   }
 </script>
 
