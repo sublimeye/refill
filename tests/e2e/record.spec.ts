@@ -527,6 +527,18 @@ test.describe("record, review and fill", () => {
     await expect(page.getByLabel("State")).toHaveValue("NY");
     await expect(page.getByLabel("Paperless billing")).toBeChecked();
 
+    // Back again, in the same document: step 1's new inputs are pre-filled again (ruling P20),
+    // and so is step 2 on the next Next.
+    await page.getByRole("button", { name: "Back" }).click();
+    await expect(page.getByText("Step 1 of 2")).toBeVisible();
+    await expect(page.getByLabel("Full name")).toHaveValue("Ada Lovelace");
+    await expect(page.getByLabel("Email")).toHaveValue("ada@example.test");
+    await page.getByRole("button", { name: "Next" }).click();
+    await expect(page.getByLabel("Street address")).toHaveValue(
+      "1 Analytical Way",
+    );
+    await expect(page.getByLabel("Paperless billing")).toBeChecked();
+
     // Two steps, no duplicate: going back and forth added none.
     const review = await finish(context, popup);
     expect(await reviewRows(review)).toEqual([
@@ -554,6 +566,40 @@ test.describe("record, review and fill", () => {
     await expect(page.getByLabel("City")).toHaveValue("London");
     await expect(page.getByLabel("State")).toHaveValue("NY");
     await expect(page.getByLabel("Paperless billing")).toBeChecked();
+  });
+
+  test("SPA wizard, Record again: the seeded values fill on arrival, and again after Next and Back (ruling P20)", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { page } = await setUp(context, extensionId, [FIXTURE_A]);
+    const scan = await recordScan(context, page, SPA);
+    // Saved as "fill only when I click": a plain visit fills nothing, so what fills below comes
+    // from the recording, which Record again seeds from the saved form.
+    await saveProfile(context, {
+      ...profileFrom(FIXTURE_A, [
+        {
+          scan,
+          values: { "full name": "Ada Lovelace", email: "ada@example.test" },
+        },
+      ]),
+      fillMode: "gesture",
+    });
+    await page.reload();
+    await expect(page.getByText("Step 1 of 2")).toBeVisible();
+    await expect(page.getByLabel("Full name")).toHaveValue("");
+
+    await startRecording(context, extensionId, page, "Record again");
+    await expect(page.getByLabel("Full name")).toHaveValue("Ada Lovelace");
+    await expect(page.getByLabel("Email")).toHaveValue("ada@example.test");
+    await page.getByRole("button", { name: "Next" }).click();
+    await expect(page.getByText("Step 2 of 2")).toBeVisible();
+    await page.getByRole("button", { name: "Back" }).click();
+    await expect(page.getByText("Step 1 of 2")).toBeVisible();
+    await expect(page.getByLabel("Full name")).toHaveValue("Ada Lovelace");
+    await expect(page.getByLabel("Email")).toHaveValue("ada@example.test");
   });
 
   test("POST wizard: browser Back pre-fills step 1, a failed validation keeps one step 1, and a later visit fills", async ({
