@@ -263,7 +263,10 @@ export function createRecorderPageHandlers(
       // queue on the session chain. A finished session (reopen) has nothing pending.
       const meta = await peekMeta({ tab: tabId }, now());
       if (meta !== null && !meta.finished) await flushTab(tabId);
-      return { ok: await finishSession({ tab: tabId }, now(), true) };
+      // Reopen only what was already finished when the popup asked: a pill Finish that lands during
+      // the flush wait has opened its review tab, and a second one must not open (M9, ADR 0031).
+      const reopen = meta?.finished === true;
+      return { ok: await finishSession({ tab: tabId }, now(), reopen) };
     },
 
     "record-cancel": async ({ tabId }) => {

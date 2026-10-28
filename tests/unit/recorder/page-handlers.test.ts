@@ -522,6 +522,24 @@ describe("record-finish", () => {
     );
   });
 
+  it("a pill Finish that lands while the popup Finish waits for the flush opens one review tab (M9)", async () => {
+    ready();
+    await start();
+    sendMessage.mockImplementation(
+      async (_tab: number, msg: { type: string }) => {
+        if (msg.type !== "refill-flush") return undefined;
+        // The user clicked Finish on the pill meanwhile: the content script's own record-finish.
+        expect(await finishSession({ tabId: TAB, origin: ORIGIN }, clock)).toBe(
+          true,
+        );
+        return { ok: true };
+      },
+    );
+    expect(await finish()).toEqual({ ok: false });
+    expect(create).toHaveBeenCalledOnce();
+    expect((await state()).state).toBe("review");
+  });
+
   it("reopening a finished session sends no flush", async () => {
     ready();
     await start();
