@@ -1,6 +1,8 @@
 // Keeps the one registered content script in step with reality: it matches exactly the origins
 // that have a site record AND a granted host permission. Decisions: ADR 0018.
 import { browser } from "wxt/browser";
+import { beginRecording } from "../recorder/start";
+import { nudge } from "../recorder/session";
 import { withStoreLock } from "../store/local";
 import { normalizeOrigin, originPattern } from "./origin";
 import { readSites, upsertSite } from "./index";
@@ -144,7 +146,21 @@ async function onAdded(permissions: { origins?: string[] }): Promise<void> {
         if (intent === null) continue;
         await upsertSite(origin, { accessRevoked: false });
         await reconcile();
+        // A record intent also starts the session, but only for a tab that still shows the origin
+        // and an unlocked vault: otherwise the site is just enabled (ADR 0031).
+        let recording = false;
+        if (intent.kind === "record") {
+          try {
+            recording =
+              (await tabShowsOrigin(intent.tabId, origin)) &&
+              (await beginRecording(intent.tabId, origin, Date.now()));
+          } catch (err) {
+            // The enable work below must still complete.
+            logFailure("recording start", err);
+          }
+        }
         await injectContentScript(intent.tabId, origin);
+        if (recording) await nudge(intent.tabId);
       } catch (err) {
         logFailure("permission grant handling", err);
       }

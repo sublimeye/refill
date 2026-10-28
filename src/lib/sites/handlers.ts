@@ -73,11 +73,11 @@ export function createSiteHandlers(now: () => number = Date.now): SiteHandlers {
     },
 
     // Written BEFORE permissions.request; the popup may be gone by the time the grant lands (ADR 0007).
-    "site-intent": async ({ tabId, origin }) => {
+    "site-intent": async ({ tabId, origin, kind }) => {
       if (normalizeOrigin(origin) !== origin) {
         return { ok: false, error: "invalid-origin" };
       }
-      await writeIntent({ tabId, origin, kind: "enable", ts: now() });
+      await writeIntent({ tabId, origin, kind, ts: now() });
       return { ok: true };
     },
   };

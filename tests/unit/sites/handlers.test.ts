@@ -225,7 +225,12 @@ describe("wildcard origins", () => {
         await h()["site-enable"]({ type: "site-enable", tabId: 1, origin }),
       ).toEqual({ ok: false, error: "invalid-origin" });
       expect(
-        await h()["site-intent"]({ type: "site-intent", tabId: 1, origin }),
+        await h()["site-intent"]({
+          type: "site-intent",
+          tabId: 1,
+          origin,
+          kind: "enable",
+        }),
       ).toEqual({ ok: false, error: "invalid-origin" });
     }
     expect(await readSites()).toEqual({});
@@ -308,7 +313,12 @@ describe("site-remove", () => {
 describe("site-intent", () => {
   it("writes a pending intent stamped by the service worker's clock", async () => {
     expect(
-      await h()["site-intent"]({ type: "site-intent", tabId: 4, origin: A }),
+      await h()["site-intent"]({
+        type: "site-intent",
+        tabId: 4,
+        origin: A,
+        kind: "enable",
+      }),
     ).toEqual({ ok: true });
     expect(await takeIntent(A, NOW + 1)).toEqual({
       tabId: 4,
@@ -318,12 +328,23 @@ describe("site-intent", () => {
     });
   });
 
+  it("stores the kind it is given", async () => {
+    await h()["site-intent"]({
+      type: "site-intent",
+      tabId: 4,
+      origin: A,
+      kind: "record",
+    });
+    expect(await takeIntent(A, NOW + 1)).toMatchObject({ kind: "record" });
+  });
+
   it("rejects an origin that does not normalize to itself, writing nothing", async () => {
     expect(
       await h()["site-intent"]({
         type: "site-intent",
         tabId: 4,
         origin: "https://a.example/x",
+        kind: "enable",
       }),
     ).toEqual({ ok: false, error: "invalid-origin" });
     expect(await takeIntent("https://a.example", NOW)).toBeNull();
@@ -352,7 +373,7 @@ describe("requestSiteEnable", () => {
       return true;
     });
     // No await between the call and these assertions: the click handler's turn.
-    const p = requestSiteEnable(3, A);
+    const p = requestSiteEnable(3, A, "enable");
     void p.then(() => (settled = true));
     expect(shims.permissions.request).toHaveBeenCalledOnce();
     expect(shims.permissions.request).toHaveBeenCalledWith({ origins: [PA] });
@@ -370,7 +391,7 @@ describe("requestSiteEnable", () => {
       ];
       return true;
     });
-    await requestSiteEnable(3, A);
+    await requestSiteEnable(3, A, "enable");
     expect(intentAtRequest).toMatchObject({
       tabId: 3,
       origin: A,
@@ -383,7 +404,7 @@ describe("requestSiteEnable", () => {
       for (const o of p.origins ?? []) shims.grants.add(o);
       return true;
     });
-    expect(await requestSiteEnable(3, A)).toBe("enabled");
+    expect(await requestSiteEnable(3, A, "enable")).toBe("enabled");
     expect(sent).toEqual(["site-intent", "site-enable"]);
     expect(Object.keys(await readSites())).toEqual([A]);
     expect(shims.scripting.executeScript).toHaveBeenCalledOnce();
@@ -391,32 +412,32 @@ describe("requestSiteEnable", () => {
 
   it("already granted: request resolves true at once and site-enable completes", async () => {
     shims.grant(PA);
-    expect(await requestSiteEnable(3, A)).toBe("enabled");
+    expect(await requestSiteEnable(3, A, "enable")).toBe("enabled");
     expect(shims.permissions.request).toHaveBeenCalledOnce();
     expect(shims.scripting.executeScript).toHaveBeenCalledOnce();
   });
 
   it("returns granted-pending when granted but the service worker declines site-enable", async () => {
     // request says true but the permission is not actually held: site-enable answers not-granted.
-    expect(await requestSiteEnable(3, A)).toBe("granted-pending");
+    expect(await requestSiteEnable(3, A, "enable")).toBe("granted-pending");
   });
 
   it("returns denied when the user declines, and does not send site-enable", async () => {
     shims.permissions.request.mockResolvedValue(false);
-    expect(await requestSiteEnable(3, A)).toBe("denied");
+    expect(await requestSiteEnable(3, A, "enable")).toBe("denied");
     expect(sent).toEqual(["site-intent"]);
   });
 
   it("never throws: a rejecting request is denied", async () => {
     shims.permissions.request.mockRejectedValue(new Error("no gesture"));
-    expect(await requestSiteEnable(3, A)).toBe("denied");
+    expect(await requestSiteEnable(3, A, "enable")).toBe("denied");
   });
 
   it("never throws: a synchronously throwing request is denied", async () => {
     shims.permissions.request.mockImplementation(() => {
       throw new Error("bad pattern");
     });
-    expect(await requestSiteEnable(3, A)).toBe("denied");
+    expect(await requestSiteEnable(3, A, "enable")).toBe("denied");
   });
 
   it("never throws: a messaging failure on site-enable is denied", async () => {
@@ -424,7 +445,7 @@ describe("requestSiteEnable", () => {
     vi.spyOn(fakeBrowser.runtime, "sendMessage").mockRejectedValue(
       new Error("no receiver"),
     );
-    expect(await requestSiteEnable(3, A)).toBe("denied");
+    expect(await requestSiteEnable(3, A, "enable")).toBe("denied");
   });
 
   it("never throws: a router error on site-enable is denied", async () => {
@@ -433,7 +454,7 @@ describe("requestSiteEnable", () => {
       ok: false,
       error: "internal",
     } as never);
-    expect(await requestSiteEnable(3, A)).toBe("denied");
+    expect(await requestSiteEnable(3, A, "enable")).toBe("denied");
   });
 
   it("a failed intent write does not block the request or leave an unhandled rejection", async () => {
@@ -441,13 +462,82 @@ describe("requestSiteEnable", () => {
       new Error("no receiver"),
     );
     shims.permissions.request.mockResolvedValue(false);
-    expect(await requestSiteEnable(3, A)).toBe("denied");
+    expect(await requestSiteEnable(3, A, "enable")).toBe("denied");
     expect(shims.permissions.request).toHaveBeenCalledOnce();
   });
 
+  describe("kind record", () => {
+    let recordReply: unknown;
+    beforeEach(() => {
+      recordReply = { ok: true };
+      const handlers = h();
+      vi.spyOn(fakeBrowser.runtime, "sendMessage").mockImplementation(
+        (async (msg: { type: string }) => {
+          sent.push(msg.type);
+          if (msg.type === "record-start") return recordReply;
+          return handlers[msg.type as "site-intent"](msg as never);
+        }) as never,
+      );
+    });
+
+    it("stores a record intent and calls permissions.request in the synchronous turn", async () => {
+      const p = requestSiteEnable(3, A, "record");
+      expect(shims.permissions.request).toHaveBeenCalledOnce();
+      expect(sent).toEqual(["site-intent"]);
+      await p;
+      shims.permissions.request.mockClear();
+    });
+
+    it("the stored intent has kind record", async () => {
+      let intent: unknown;
+      shims.permissions.request.mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        intent = (await fakeBrowser.storage.session.get("sites:intent"))[
+          "sites:intent"
+        ];
+        return true;
+      });
+      await requestSiteEnable(3, A, "record");
+      expect(intent).toMatchObject({ tabId: 3, origin: A, kind: "record" });
+    });
+
+    it("sends record-start instead of site-enable and returns recording", async () => {
+      expect(await requestSiteEnable(3, A, "record")).toBe("recording");
+      expect(sent).toEqual(["site-intent", "record-start"]);
+    });
+
+    it("a locked vault is locked", async () => {
+      recordReply = { ok: false, error: "locked" };
+      expect(await requestSiteEnable(3, A, "record")).toBe("locked");
+    });
+
+    it.each([
+      ["not-granted", "granted-pending"],
+      ["tab-moved", "tab-moved"],
+      ["invalid-origin", "denied"],
+    ])("record-start %s is %s", async (error, outcome) => {
+      recordReply = { ok: false, error };
+      expect(await requestSiteEnable(3, A, "record")).toBe(outcome);
+    });
+
+    it("a declined request sends nothing more", async () => {
+      shims.permissions.request.mockResolvedValue(false);
+      expect(await requestSiteEnable(3, A, "record")).toBe("denied");
+      expect(sent).toEqual(["site-intent"]);
+    });
+
+    it("a router error on record-start is denied", async () => {
+      recordReply = { ok: false, error: "internal" };
+      // `internal` is a RouterError: sendToSw throws it.
+      expect(await requestSiteEnable(3, A, "record")).toBe("denied");
+    });
+  });
+
   it("an invalid origin is denied without requesting anything", async () => {
-    expect(await requestSiteEnable(3, "https://a.example/path")).toBe("denied");
-    expect(await requestSiteEnable(3, "https://*")).toBe("denied");
+    expect(await requestSiteEnable(3, "https://a.example/path", "enable")).toBe(
+      "denied",
+    );
+    expect(await requestSiteEnable(3, "https://*", "enable")).toBe("denied");
     expect(shims.permissions.request).not.toHaveBeenCalled();
     expect(sent).toEqual([]);
   });

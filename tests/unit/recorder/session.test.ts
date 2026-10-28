@@ -198,8 +198,8 @@ describe("recording session", { timeout: 30_000 }, () => {
     const end = T0 + RECORDING_TTL_MS;
     expect(await read(at, end)).toBe("off");
     expect((await sessionStore())[KEY]).toBeUndefined();
-    expect(await stoppedReason(TAB, end)).toBe("expired");
-    expect(await stoppedReason(TAB + 1, end)).toBeNull();
+    expect(await stoppedReason(TAB, ORIGIN, end)).toBe("expired");
+    expect(await stoppedReason(TAB + 1, ORIGIN, end)).toBeNull();
     expect(await badge(TAB)).toBe("");
     expect(sendMessage).toHaveBeenCalledWith(
       TAB,
@@ -213,15 +213,38 @@ describe("recording session", { timeout: 30_000 }, () => {
     const end = T0 + RECORDING_TTL_MS;
     expect(await read({ tabId: 99, origin: ORIGIN }, end)).toBe("off");
     expect((await sessionStore())[KEY]).toBeUndefined();
-    expect(await stoppedReason(TAB, end)).toBe("expired");
+    expect(await stoppedReason(TAB, ORIGIN, end)).toBe("expired");
+  });
+
+  it("a tombstone answers only for its own origin", async () => {
+    await startSession(TAB, ORIGIN, T0, null);
+    const end = T0 + RECORDING_TTL_MS;
+    await read(at, end);
+    expect(await stoppedReason(TAB, "https://other.example", end)).toBeNull();
+    expect(await stoppedReason(TAB, ORIGIN, end)).toBe("expired");
+    expect((await sessionStore())[TOMB]).toEqual({
+      tabId: TAB,
+      origin: ORIGIN,
+      reason: "expired",
+      at: end,
+    });
+  });
+
+  it("a tombstone without an origin is ignored", async () => {
+    await fakeBrowser.storage.session.set({
+      [TOMB]: { tabId: TAB, reason: "locked", at: T0 },
+    });
+    expect(await stoppedReason(TAB, ORIGIN, T0)).toBeNull();
   });
 
   it("keeps a tombstone for 30 min", async () => {
     await startSession(TAB, ORIGIN, T0, null);
     const end = T0 + RECORDING_TTL_MS;
     await read(at, end);
-    expect(await stoppedReason(TAB, end + 30 * 60_000 - 1)).toBe("expired");
-    expect(await stoppedReason(TAB, end + 30 * 60_000)).toBeNull();
+    expect(await stoppedReason(TAB, ORIGIN, end + 30 * 60_000 - 1)).toBe(
+      "expired",
+    );
+    expect(await stoppedReason(TAB, ORIGIN, end + 30 * 60_000)).toBeNull();
   });
 
   it("discards on lock with a locked tombstone, also a finished session", async () => {
@@ -235,7 +258,7 @@ describe("recording session", { timeout: 30_000 }, () => {
     await vi.waitFor(async () =>
       expect((await sessionStore())[KEY]).toBeUndefined(),
     );
-    expect(await stoppedReason(TAB, Date.now())).toBe("locked");
+    expect(await stoppedReason(TAB, ORIGIN, Date.now())).toBe("locked");
     expect(await badge(TAB)).toBe("");
     expect(sendMessage).toHaveBeenCalledWith(
       TAB,
@@ -253,7 +276,7 @@ describe("recording session", { timeout: 30_000 }, () => {
     __resetForTests();
     expect(await read(at, now)).toBe("off");
     expect((await sessionStore())[KEY]).toBeUndefined();
-    expect(await stoppedReason(TAB, now)).toBe("locked");
+    expect(await stoppedReason(TAB, ORIGIN, now)).toBe("locked");
   });
 
   it("refuses to start while locked", async () => {
@@ -278,7 +301,7 @@ describe("recording session", { timeout: 30_000 }, () => {
     await vi.waitFor(async () =>
       expect((await sessionStore())[KEY]).toBeUndefined(),
     );
-    expect(await stoppedReason(TAB, T0)).toBeNull();
+    expect(await stoppedReason(TAB, ORIGIN, T0)).toBeNull();
   });
 
   it("closing the tab keeps a finished session (the review page needs it)", async () => {
@@ -309,7 +332,7 @@ describe("recording session", { timeout: 30_000 }, () => {
       { type: "refill-nudge" },
       { frameId: 0 },
     );
-    expect(await stoppedReason(TAB, T0)).toBeNull();
+    expect(await stoppedReason(TAB, ORIGIN, T0)).toBeNull();
   });
 
   it("a seeded start contains the profile's steps and fields", async () => {
@@ -330,9 +353,9 @@ describe("recording session", { timeout: 30_000 }, () => {
     await startSession(TAB, ORIGIN, T0, null);
     const end = T0 + RECORDING_TTL_MS;
     await read(at, end);
-    expect(await stoppedReason(TAB, end)).toBe("expired");
+    expect(await stoppedReason(TAB, ORIGIN, end)).toBe("expired");
     await startSession(TAB, ORIGIN, end, null);
-    expect(await stoppedReason(TAB, end)).toBeNull();
+    expect(await stoppedReason(TAB, ORIGIN, end)).toBeNull();
   });
 
   it("20 concurrent appends all persist", async () => {
@@ -395,7 +418,7 @@ describe("recording session", { timeout: 30_000 }, () => {
     ] as const) {
       await startSession(TAB, ORIGIN, T0, null);
       await discardSession(reason);
-      expect(await stoppedReason(TAB, T0)).toBeNull();
+      expect(await stoppedReason(TAB, ORIGIN, T0)).toBeNull();
     }
   });
 
@@ -474,7 +497,7 @@ describe("recording session", { timeout: 30_000 }, () => {
     await vi.waitFor(async () =>
       expect((await sessionStore())[KEY]).toBeUndefined(),
     );
-    expect(await stoppedReason(TAB, t)).toBe("locked");
+    expect(await stoppedReason(TAB, ORIGIN, t)).toBe("locked");
   });
 
   it("refuses an expiresAt past now + 30 min and writes nothing", async () => {

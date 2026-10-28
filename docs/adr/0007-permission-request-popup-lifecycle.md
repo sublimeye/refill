@@ -15,4 +15,8 @@ Keep the spec §3.1 design:
 - Result measured only in Brave on macOS. Other browsers may keep the popup open, which is harmless under this design.
 
 ## Status
-Accepted (2026-10-26).
+Accepted (2026-10-26). Amended 2026-10-27 (ADR 0018, ADR 0031): when `permissions.request` resolves
+true the popup may still be alive, and then it sends one idempotent request to the worker
+(`site-enable`, or `record-start` for a record intent). That is work after the await, allowed only
+because the worker does the same work from `onAdded` and the intent, so nothing depends on it.
+Nothing is awaited before the request, and the intent is still written first.

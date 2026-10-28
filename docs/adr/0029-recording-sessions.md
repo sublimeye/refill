@@ -24,6 +24,14 @@ and how a body is kept.
   chain: start, `withSession`, discard and the tab-close check. A failed job does not break the
   chain. A job never awaits another job, and the nudge is fired without being awaited: the content
   script answers a nudge by messaging the worker, and that handler queues behind the current job.
+- **`SessionMatch`.** `{ tabId, origin }` (content handlers; the origin is required), `{ tab }` (an
+  extension page that knows the tab only: `record-finish`, `record-cancel`), `{ id }`, or
+  `{ any: true }` (`record-state`). The variants are distinct, so a content handler cannot match
+  every origin of a tab by omitting the origin.
+- **`startSession(..., reuse)`.** With `reuse`, an unfinished, unexpired session of the same tab and
+  origin is kept and its metadata returned, as one chain job (ADR 0031).
+- **`cancelUnfinished(match)`.** Discards as `"cancelled"` only while the session is unfinished, in
+  one chain job.
 - **`withSession(match, now, fn)`.** `fn` is synchronous and returns an optional new body, an optional
   `finished`/`expiresAt` patch and a result.
   - A changed body is re-sealed with a fresh IV. A meta-only change keeps the sealed body. With
@@ -56,8 +64,9 @@ and how a body is kept.
     finished session belongs to its review tab.
   - Calling the installer again replaces its vault listener instead of adding a second one.
 - **Tombstones.** `"locked"` and `"expired"` write `storage.session["recorder:stopped"]` =
-  `{ tabId, reason, at }`, which holds no page data. `stoppedReason(tabId, now)` answers that reason
-  for 30 min, so the content handlers can answer `stopped`. A new start clears it.
+  `{ tabId, origin, reason, at }`, which holds no page data. `stoppedReason(tabId, origin, now)`
+  answers that reason for 30 min and only for that tab and origin, so the content handlers can
+  answer `stopped` and another origin in the same tab learns nothing. A new start clears it.
 - **Badge and nudge.** A start sets the tab's badge to `●`. A discard clears the badge and sends
   `{ type: "refill-nudge" }` to frame 0 of the tab. Finish clears the badge through the exported
   `clearBadge(tabId)` (ADR 0030). Badge and nudge failures are logged by error name
@@ -92,4 +101,7 @@ and how a body is kept.
 
 ## Status
 Accepted (2026-10-27). Amended by Plan 3 Task 6 (2026-10-27): the lock-epoch check around `fn`, the
-`expiresAt` ceiling, discard by id, a copy of the metadata for `fn`, and `clearBadge`.
+`expiresAt` ceiling, discard by id, a copy of the metadata for `fn`, and `clearBadge`. Amended by
+Task 7 (2026-10-27): the tombstone carries `origin` and `stoppedReason` takes it (ruling P10), and
+`SessionMatch` gains a tab-only and an any-session form. A job whose `fn` returns no `body` writes
+nothing, which the recording scan now uses when a page changed nothing (ADR 0030).

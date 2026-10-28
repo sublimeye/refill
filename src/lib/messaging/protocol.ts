@@ -1,6 +1,7 @@
 // Typed message protocol between extension pages and the service worker (spec §7).
 // Decisions: ADR 0014.
 import { browser } from "wxt/browser";
+import type { IntentKind } from "../sites/intent";
 import type { UnlockResult, VaultStatus } from "../vault/types";
 
 export type SiteStatus =
@@ -13,6 +14,16 @@ export type SiteStatus =
     }
   | { origin: null };
 
+/** What the popup learns about the one recording session (ADR 0031). `here`: it is this tab's. */
+export type RecordPageState =
+  | { state: "off" }
+  | {
+      state: "on" | "full" | "review";
+      origin: string;
+      count: number;
+      here: boolean;
+    };
+
 export type PageRequest =
   | { type: "vault-status" }
   | { type: "vault-create"; passphrase: string }
@@ -21,7 +32,11 @@ export type PageRequest =
   | { type: "site-status"; origin: string }
   | { type: "site-enable"; tabId: number; origin: string }
   | { type: "site-remove"; origin: string }
-  | { type: "site-intent"; tabId: number; origin: string };
+  | { type: "site-intent"; tabId: number; origin: string; kind: IntentKind }
+  | { type: "record-start"; tabId: number; origin: string }
+  | { type: "record-state"; tabId: number }
+  | { type: "record-finish"; tabId: number }
+  | { type: "record-cancel"; tabId: number };
 
 export type {
   ContentRequest,
@@ -48,7 +63,23 @@ export type PageResponse<R extends PageRequest> = R extends {
               ? { ok: true }
               : R extends { type: "site-intent" }
                 ? { ok: true } | { ok: false; error: "invalid-origin" }
-                : never;
+                : R extends { type: "record-start" }
+                  ? | { ok: true }
+                    | {
+                        ok: false;
+                        error:
+                          | "locked"
+                          | "not-granted"
+                          | "invalid-origin"
+                          | "tab-moved";
+                      }
+                  : R extends { type: "record-state" }
+                    ? RecordPageState
+                    : R extends { type: "record-finish" }
+                      ? { ok: boolean }
+                      : R extends { type: "record-cancel" }
+                        ? { ok: true }
+                        : never;
 
 /** What the router resolves for a message it refuses or whose handler threw. Never carries detail. */
 export type RouterError = { ok: false; error: "rejected" | "internal" };
@@ -64,7 +95,11 @@ const KEYS_BY_TYPE: Readonly<Record<PageRequest["type"], readonly string[]>> = {
   "site-status": ["type", "origin"],
   "site-enable": ["type", "tabId", "origin"],
   "site-remove": ["type", "origin"],
-  "site-intent": ["type", "tabId", "origin"],
+  "site-intent": ["type", "tabId", "origin", "kind"],
+  "record-start": ["type", "tabId", "origin"],
+  "record-state": ["type", "tabId"],
+  "record-finish": ["type", "tabId"],
+  "record-cancel": ["type", "tabId"],
 };
 
 /** Origins are short: a longer string cannot be a canonical https origin worth handling. */
@@ -118,11 +153,29 @@ export function parsePageRequest(raw: unknown): PageRequest | null {
       return { type: type as "site-status" | "site-remove", origin };
     }
     case "site-enable":
-    case "site-intent": {
+    case "record-start": {
       const origin = parseOrigin(raw["origin"]);
       const tabId = parseTabId(raw["tabId"]);
       if (origin === null || tabId === null) return null;
-      return { type: type as "site-enable" | "site-intent", tabId, origin };
+      return { type: type as "site-enable" | "record-start", tabId, origin };
+    }
+    case "site-intent": {
+      const origin = parseOrigin(raw["origin"]);
+      const tabId = parseTabId(raw["tabId"]);
+      const kind = raw["kind"];
+      if (origin === null || tabId === null) return null;
+      if (kind !== "enable" && kind !== "record") return null;
+      return { type: "site-intent", tabId, origin, kind };
+    }
+    case "record-state":
+    case "record-finish":
+    case "record-cancel": {
+      const tabId = parseTabId(raw["tabId"]);
+      if (tabId === null) return null;
+      return {
+        type: type as "record-state" | "record-finish" | "record-cancel",
+        tabId,
+      };
     }
   }
 }
