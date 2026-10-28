@@ -12,18 +12,30 @@ function mount(html: string): HTMLElement {
   return root;
 }
 
+type Listener = (msg: unknown, sender: unknown, reply: unknown) => unknown;
+
 function fakeChrome(id: string | undefined = "abcdefghijklmnop") {
+  const listeners: Listener[] = [];
   const runtime: {
     id: string | undefined;
     sendMessage: (msg: unknown) => Promise<unknown>;
+    onMessage?: unknown;
   } = {
     id,
     sendMessage: vi.fn(async (msg: unknown) => ({ echo: msg })),
+    onMessage: {
+      addListener: vi.fn((l: Listener) => {
+        listeners.push(l);
+      }),
+    },
   };
   const dom = {
     openOrClosedShadowRoot: vi.fn((el: Element) => el.shadowRoot),
   };
-  return { runtime, dom };
+  /** Delivers `msg` from `sender` to every listener; what each returned. */
+  const deliver = (msg: unknown, sender: unknown, reply: unknown = vi.fn()) =>
+    listeners.map((l) => l(msg, sender, reply));
+  return { runtime, dom, deliver };
 }
 
 describe("captureChrome", () => {
@@ -117,5 +129,67 @@ describe("captureChrome", () => {
       },
     };
     expect(captureChrome({ runtime })).toBeNull();
+  });
+});
+
+describe("captureChrome onNudge", () => {
+  const ID = "abcdefghijklmnop";
+  const NUDGE = { type: "refill-nudge" };
+
+  it("calls back for the worker's nudge and never replies", () => {
+    const chrome = fakeChrome(ID);
+    const cb = vi.fn();
+    captureChrome(chrome)!.onNudge(cb);
+    const reply = vi.fn();
+    const returned = chrome.deliver(NUDGE, { id: ID }, reply);
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(reply).not.toHaveBeenCalled();
+    expect(returned).toEqual([undefined]); // not `true`: the channel closes without an answer
+  });
+
+  it("ignores a nudge from a tab, another extension or with any other shape", () => {
+    const chrome = fakeChrome(ID);
+    const cb = vi.fn();
+    captureChrome(chrome)!.onNudge(cb);
+    // Another content script of this extension (a tab sender) cannot wake this one.
+    chrome.deliver(NUDGE, {
+      id: ID,
+      tab: { id: 3 },
+      url: "https://x.example/",
+    });
+    chrome.deliver(NUDGE, { id: "otherextensionid" });
+    chrome.deliver(NUDGE, {});
+    chrome.deliver(NUDGE, null);
+    chrome.deliver({ type: "refill-nudge", extra: 1 }, { id: ID });
+    chrome.deliver({ type: "scan-report" }, { id: ID });
+    chrome.deliver("refill-nudge", { id: ID });
+    chrome.deliver([NUDGE], { id: ID });
+    chrome.deliver(Object.create({ type: "refill-nudge" }), { id: ID });
+    const trap = {
+      get type(): never {
+        throw new Error("boom");
+      },
+    };
+    chrome.deliver(trap, { id: ID });
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when onMessage is missing or page markup", () => {
+    const { runtime } = fakeChrome(ID);
+    delete runtime.onMessage;
+    expect(() => captureChrome({ runtime })!.onNudge(vi.fn())).not.toThrow();
+    const form = mount(`<form><input name="addListener"></form>`).querySelector(
+      "form",
+    )!;
+    const marked = fakeChrome(ID).runtime;
+    marked.onMessage = form;
+    expect(() =>
+      captureChrome({ runtime: marked })!.onNudge(vi.fn()),
+    ).not.toThrow();
+    const named = fakeChrome(ID).runtime;
+    named.onMessage = { addListener: form.firstChild };
+    expect(() =>
+      captureChrome({ runtime: named })!.onNudge(vi.fn()),
+    ).not.toThrow();
   });
 });
