@@ -1,9 +1,12 @@
-// Content-script ↔ service-worker messages (spec §5.4, §7). The content script sends signatures,
-// never values; the worker answers a scan with a fill plan. Types only from the field modules: this
-// file is part of the worker bundle, and the DOM modules must never load there. Decisions: ADR 0025.
+// Content-script ↔ service-worker messages (spec §5.4, §6.2, §7). The content script sends
+// signatures, never values, except a recording capture: one value the user typed while a session
+// records this tab. The worker answers a scan with a fill plan. Types only from the field modules:
+// this file is part of the worker bundle, and the DOM modules must never load there. Decisions:
+// ADR 0025 (fill), ADR 0030 (recording).
 import type { ControlKind } from "../fields/eligibility";
 import type { Sig } from "../fields/signature";
 import { MAX_CONTROLS } from "../limits";
+import { ID_RE, LIMITS } from "../profiles/types";
 import { isPlainObject } from "./protocol";
 
 export interface ScanControl {
@@ -20,7 +23,18 @@ export type ContentRequest =
       filled: number;
       skipped: number;
       unsupported: number;
-    };
+    }
+  | { type: "record-status" }
+  | {
+      type: "record-capture";
+      kind: ControlKind;
+      sig: Sig;
+      value: string;
+      pageDefault: string;
+      /** The field Refill filled into the edited element during this recording, if any. */
+      fieldId: string | null;
+    }
+  | { type: "record-finish" };
 
 export interface FillItem {
   fieldId: string;
@@ -36,19 +50,32 @@ export type FillPlan =
   | { state: "gesture"; count: number }
   | { state: "fill"; items: FillItem[] };
 
+/** What the pill shows: the session of this tab and origin, or why it stopped. ADR 0030. */
+export type RecordState =
+  | { state: "off" }
+  | { state: "on"; count: number }
+  | { state: "full"; count: number }
+  | { state: "stopped"; reason: "locked" | "expired" };
+
 export type ContentResponse<R extends ContentRequest> = R extends {
   type: "scan-report";
 }
   ? FillPlan
   : R extends { type: "fill-result" }
     ? { ok: true }
-    : never;
+    : R extends { type: "record-status" } | { type: "record-capture" }
+      ? RecordState
+      : R extends { type: "record-finish" }
+        ? { ok: boolean }
+        : never;
 
 /** Controls per report; `i` is in 0..MAX_CONTROLS-1. Fill-result counts are at most this. */
 export { MAX_CONTROLS };
 /** Every string in a signature (the scanner truncates to the same length). */
 export const MAX_SIG_STRING = 256;
 export const MAX_ORDINAL = 10_000;
+/** A captured value and its page default: the profile value limit, so a capture always fits. */
+export const MAX_CAPTURE_VALUE = LIMITS.value;
 
 const KINDS: readonly string[] = [
   "text",
@@ -89,6 +116,10 @@ const intIn = (v: unknown, max: number): v is number =>
 const str = (v: unknown): v is string =>
   typeof v === "string" && v.length <= MAX_SIG_STRING;
 const strOrNull = (v: unknown): v is string | null => v === null || str(v);
+const value = (v: unknown): v is string =>
+  typeof v === "string" && v.length <= MAX_CAPTURE_VALUE;
+const kindOf = (v: unknown): ControlKind | null =>
+  typeof v === "string" && KINDS.includes(v) ? (v as ControlKind) : null;
 
 function parseSig(raw: unknown): Sig | null {
   const r = exact(raw, SIG_KEYS);
@@ -125,21 +156,57 @@ function parseControls(raw: unknown): ScanControl[] | null {
     const c = exact(raw[n] as unknown, ["i", "kind", "sig"]);
     if (c === null) return null;
     const i = c["i"];
-    const kind = c["kind"];
     if (!intIn(i, MAX_CONTROLS - 1) || seen.has(i)) return null;
-    if (typeof kind !== "string" || !KINDS.includes(kind)) return null;
+    const kind = kindOf(c["kind"]);
+    if (kind === null) return null;
     const sig = parseSig(c["sig"]);
     if (sig === null) return null;
     seen.add(i);
-    out.push({ i, kind: kind as ControlKind, sig });
+    out.push({ i, kind, sig });
   }
   return out;
 }
 
+function parseCapture(
+  raw: Record<string, unknown>,
+): Extract<ContentRequest, { type: "record-capture" }> | null {
+  const r = exact(raw, [
+    "type",
+    "kind",
+    "sig",
+    "value",
+    "pageDefault",
+    "fieldId",
+  ]);
+  if (r === null) return null;
+  const kind = kindOf(r["kind"]);
+  const sig = parseSig(r["sig"]);
+  const fieldId = r["fieldId"];
+  if (
+    kind === null ||
+    sig === null ||
+    !value(r["value"]) ||
+    !value(r["pageDefault"]) ||
+    !(fieldId === null || (typeof fieldId === "string" && ID_RE.test(fieldId)))
+  ) {
+    return null;
+  }
+  return {
+    type: "record-capture",
+    kind,
+    sig,
+    value: r["value"],
+    pageDefault: r["pageDefault"],
+    fieldId,
+  };
+}
+
 /**
  * Strict: exact keys at every level, `controls` at most 300 with unique integer `i` in 0..299,
- * every signature string at most 256 chars, counts integers 0..300. Returns a fresh object, so
- * nothing the page side attached (getters, prototypes) reaches a handler.
+ * every signature string at most 256 chars, counts integers 0..300, a captured value and page
+ * default at most 4096 chars, a field id null or an id. Returns a fresh object, so nothing the page
+ * side attached (getters, prototypes) reaches a handler. `record-start` is page-only and never
+ * parses here.
  */
 export function parseContentRequest(raw: unknown): ContentRequest | null {
   if (!isPlainObject(raw)) return null;
@@ -168,6 +235,12 @@ export function parseContentRequest(raw: unknown): ContentRequest | null {
         unsupported: r["unsupported"],
       };
     }
+    case "record-status":
+      return exact(raw, ["type"]) && { type: "record-status" };
+    case "record-finish":
+      return exact(raw, ["type"]) && { type: "record-finish" };
+    case "record-capture":
+      return parseCapture(raw);
     default:
       return null;
   }

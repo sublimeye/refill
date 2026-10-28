@@ -1,10 +1,15 @@
 // Content-request handlers: the worker side of the fill protocol (spec §5.4, §6.3). The scan
 // carries signatures only; the answer carries values only for controls matched on this page whose
-// field policy is `save`. The origin and path come from the router's sender context, never from
-// the message, and the clock is the worker's own. Decisions: ADR 0025.
+// field policy is `save`. While a session records the tab, the scan is filed into the session and
+// answered from it instead (spec §6.2). The origin and path come from the router's sender context,
+// never from the message, and the clock is the worker's own. Decisions: ADR 0025, ADR 0030.
 import { matchControls, profileApplies } from "../match/match";
 import { loadProfileForOrigin, touchLastUsed } from "../profiles/store";
 import type { Profile } from "../profiles/types";
+import {
+  createRecorderContentHandlers,
+  recordingScan,
+} from "../recorder/handlers";
 import { LockedError } from "../vault/types";
 import { lockEpoch, status } from "../vault/vault";
 import type { FillItem, FillPlan, ScanControl } from "./content-protocol";
@@ -61,6 +66,14 @@ export function createContentHandlers(
     // lands during the storage read or decrypt, and would still open the record (ADR 0025).
     const epoch = lockEpoch();
     if ((await status()).state !== "unlocked") return LOCKED;
+    // Recording this tab and origin: the plan comes from the session, never the stored profile,
+    // and the profile's lastUsedAt is not touched. Always auto: the user is filling this page.
+    const recorded = await recordingScan(controls, ctx, now());
+    if (recorded !== null) {
+      // Synchronous from here to the return, as below.
+      if (lockEpoch() !== epoch) return LOCKED;
+      return recorded.length === 0 ? NONE : { state: "fill", items: recorded };
+    }
     const profile = await loadOrLocked(ctx.origin);
     if (profile === "locked") return LOCKED;
     if (
@@ -99,5 +112,6 @@ export function createContentHandlers(
     "scan-report": (req, ctx) => scanReport(req.controls, ctx),
     // Plan 2 records nothing: the counts feed the badge and toast in Plan 4.
     "fill-result": async () => ({ ok: true }),
+    ...createRecorderContentHandlers(now),
   };
 }
