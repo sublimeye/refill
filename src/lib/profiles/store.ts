@@ -49,29 +49,53 @@ export async function saveProfile(p: Profile): Promise<void> {
   });
 }
 
+/** How often a load follows a moved pointer before it gives up (each needs a write in between). */
+const MAX_REREADS = 3;
+
+async function profileIdOf(origin: string): Promise<string | null> {
+  const sites = await readSites();
+  const id = Object.hasOwn(sites, origin) ? sites[origin]!.profileId : null;
+  return id !== null && ID_RE.test(id) ? id : null;
+}
+
 /**
  * The profile attached to `origin`, or `null` when there is none or it cannot be trusted
  * (undecryptable, malformed, or sealed for another origin). Throws `LockedError` when locked.
+ *
+ * Lock-free, so a held store lock (an unlock's KDF) never delays a scan-report (ADR 0025). A record
+ * that is missing after the index was read is re-checked against the index: every writer that
+ * removes `p:<id>` (a replace, a site removal) first moves the site's pointer in the same store-lock
+ * job, so a reader that finds the record gone and the pointer moved follows the pointer instead of
+ * answering a spurious `null` (Plan 2 review M9, ADR 0033).
  */
 export async function loadProfileForOrigin(
   origin: string,
 ): Promise<Profile | null> {
   if (normalizeOrigin(origin) !== origin) return null;
-  const sites = await readSites();
-  const id = Object.hasOwn(sites, origin) ? sites[origin]!.profileId : null;
-  if (id === null || !ID_RE.test(id)) return null;
+  let id = await profileIdOf(origin);
   let raw: unknown;
-  try {
-    raw = await getEncrypted<unknown>(profileKey(id), aad.profile(id, origin));
-  } catch (err) {
-    // SyntaxError: authenticated plaintext that is not JSON (cannot happen without our own bug).
-    if (err instanceof DecryptError || err instanceof SyntaxError) {
-      console.error("[refill] profile record unreadable:", err.name);
-      return null;
+  for (let rereads = 0; ; rereads++) {
+    if (id === null) return null;
+    try {
+      raw = await getEncrypted<unknown>(
+        profileKey(id),
+        aad.profile(id, origin),
+      );
+    } catch (err) {
+      // SyntaxError: authenticated plaintext that is not JSON (cannot happen without our own bug).
+      if (err instanceof DecryptError || err instanceof SyntaxError) {
+        console.error("[refill] profile record unreadable:", err.name);
+        return null;
+      }
+      throw err;
     }
-    throw err;
+    if (raw !== undefined) break;
+    // Gone: either a dangling pointer, or a writer removed it after moving the pointer.
+    if (rereads === MAX_REREADS) return null;
+    const next = await profileIdOf(origin);
+    if (next === id) return null;
+    id = next;
   }
-  if (raw === undefined) return null;
   const profile = parseProfile(raw);
   if (!profile || profile.id !== id || profile.origin !== origin) {
     console.error("[refill] profile record invalid:", "ProfileParseError");

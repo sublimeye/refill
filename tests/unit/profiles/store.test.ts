@@ -130,6 +130,74 @@ describe("profiles", { timeout: 30_000 }, () => {
     expect((await readSites())[A]!.profileId).toBe("new");
   });
 
+  it("a load during a replace never answers null (M9)", async () => {
+    await saveProfile(profile("old"));
+    const local = fakeBrowser.storage.local;
+    const get = local.get.bind(local);
+    const remove = local.remove.bind(local);
+    // The replace removes the old record last; signal when it does.
+    let removed!: () => void;
+    const oldRemoved = new Promise<void>((r) => (removed = r));
+    vi.spyOn(local, "remove").mockImplementation((keys) => {
+      removed();
+      return remove(keys);
+    });
+    // Hold the load's read of the site index (old pointer) until the replace has removed the old
+    // record, or a moment passes.
+    let first = true;
+    vi.spyOn(local, "get").mockImplementation(async (keys) => {
+      const res = await get(keys);
+      if (first && keys === "sites") {
+        first = false;
+        await Promise.race([
+          oldRemoved,
+          new Promise((r) => setTimeout(r, 100)),
+        ]);
+      }
+      return res;
+    });
+    const loading = loadProfileForOrigin(A);
+    const replacing = saveProfile(profile("new", A, "Newer"));
+    const loaded = await loading;
+    await replacing;
+    // Either side of the replace is a right answer; "no profile" is not.
+    expect(loaded?.id).toBe("new");
+    expect((await loadProfileForOrigin(A))!.id).toBe("new");
+  });
+
+  it("a load during a site removal answers null", async () => {
+    await saveProfile(profile("old"));
+    const local = fakeBrowser.storage.local;
+    const get = local.get.bind(local);
+    let first = true;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    vi.spyOn(local, "get").mockImplementation(async (keys) => {
+      const res = await get(keys);
+      if (first && keys === "sites") {
+        first = false;
+        await gate;
+      }
+      return res;
+    });
+    const loading = loadProfileForOrigin(A);
+    await withStoreLock(async (tx) => {
+      await removeSite(A, tx);
+      await tx.removeItems([profileKey("old")]);
+    });
+    release();
+    expect(await loading).toBeNull();
+  });
+
+  it("a held store lock does not delay a load (ADR 0025: scan-reports never wait on it)", async () => {
+    await saveProfile(profile("p1"));
+    let release!: () => void;
+    const held = withStoreLock(() => new Promise<void>((r) => (release = r)));
+    expect((await loadProfileForOrigin(A))!.id).toBe("p1");
+    release();
+    await held;
+  });
+
   it("saving the same id again overwrites and keeps the record", async () => {
     await saveProfile(profile("p1"));
     await saveProfile(profile("p1", A, "Renamed"));
