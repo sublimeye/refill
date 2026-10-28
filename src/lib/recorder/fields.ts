@@ -32,6 +32,17 @@ function storable(c: Capture): boolean {
   return true;
 }
 
+/**
+ * The field already holds what the capture says. A named radio group stores `"true"` whichever
+ * option is chosen, so for a radio the chosen option (its signature) must be the same too.
+ */
+function holds(f: RecField, c: Capture): boolean {
+  if (f.value !== c.value || f.kind !== c.kind) return false;
+  if (c.kind !== "radio") return true;
+  const option = (sig: Sig): string => `${sigKey(sig, "radio")}|${sig.ordinal}`;
+  return option(f.sig) === option(c.sig);
+}
+
 function freshId(body: RecBody): { id: string; nextId: number } {
   const used = new Set(body.fields.map((f) => f.id));
   let n = body.nextId;
@@ -94,6 +105,11 @@ export function applyCapture(
 
   // A revert: the user does not want this value saved, a seeded one included.
   if (c.value === c.pageDefault) {
+    // Unless it is what the field already holds: on a re-rendered or restored page the page
+    // default is the user's earlier value, and typing it again changes nothing (M3).
+    if (target !== undefined && holds(target, c)) {
+      return { body, result: "ok" };
+    }
     const fields = body.fields.filter((f) => f !== target && !sameControl(f));
     return { body: { ...body, fields }, result: "ok" };
   }

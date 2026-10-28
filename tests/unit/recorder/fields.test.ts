@@ -80,6 +80,57 @@ describe("applyCapture", () => {
     expect(b.fields).toEqual([]);
   });
 
+  it("retyping the stored value on a restored page keeps the field (M3)", () => {
+    // Recorded on the first visit; the page then re-renders with that value as its own (a
+    // failed-validation POST, a restored form): the page default is now the user's value.
+    let b = apply(on(emptyBody()), capture(acct, "12345"));
+    const before = b;
+    b = apply(
+      on(b, STEP1, "doc-2"),
+      capture(acct, "12345", { pageDefault: "12345" }),
+    );
+    expect(b.fields).toEqual(before.fields);
+  });
+
+  it("a checkbox captured as its stored state on a restored page keeps the field (M3)", () => {
+    const box = ctrl(3, "terms", { type: "checkbox" }, "checkbox");
+    const controls = [...STEP1, box];
+    let b = apply(
+      on(emptyBody(), controls),
+      capture(box, "true", { pageDefault: "false" }),
+    );
+    // The re-rendered page shows it checked; a change event reports the same state again.
+    b = apply(
+      on(b, controls, "doc-2"),
+      capture(box, "true", { pageDefault: "true" }),
+    );
+    expect(b.fields.map((f) => [f.kind, f.value, f.pageDefault])).toEqual([
+      ["checkbox", "true", "false"],
+    ]);
+  });
+
+  it("a real revert on a restored page still removes the field (M3)", () => {
+    // Stored "54321"; the page re-renders with "12345" as its own value, and the user puts it back.
+    let b = apply(on(emptyBody()), capture(acct, "54321"));
+    b = apply(
+      on(b, STEP1, "doc-2"),
+      capture(acct, "12345", { pageDefault: "12345" }),
+    );
+    expect(b.fields).toEqual([]);
+    // Same for a checkbox: stored "false", the page shows it checked, the user leaves it checked.
+    const box = ctrl(3, "terms", { type: "checkbox" }, "checkbox");
+    const controls = [...STEP1, box];
+    b = apply(
+      on(emptyBody(), controls),
+      capture(box, "false", { pageDefault: "true" }),
+    );
+    b = apply(
+      on(b, controls, "doc-2"),
+      capture(box, "true", { pageDefault: "true" }),
+    );
+    expect(b.fields).toEqual([]);
+  });
+
   it("Review Focus 1: reverting a seeded field removes it", () => {
     const seeded = on(seedBody(savedProfile()), page("acct", "zip"));
     // Refill filled f1 into the account input; the user clears it.
