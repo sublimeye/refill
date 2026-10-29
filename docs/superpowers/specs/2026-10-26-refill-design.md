@@ -292,8 +292,15 @@ Card number, expiry, name on card and SSN fields are saved like any field.
 - A profile applies to a page iff `page.origin === profile.origin` (exact: scheme, punycode host,
   port) and the page pathname is at or under `profile.pathPrefix` on a path-segment boundary (`pathname ===
   prefix`, or `pathname` starts with `prefix + "/"`, or the prefix ends with `/` and `pathname`
-  starts with it; `/billpay` does not apply to `/billpayment`). `pathPrefix` defaults to the longest
-  common path-segment prefix of recorded steps; editable in dashboard.
+  starts with it; `/billpay` does not apply to `/billpayment`). Paths are compared
+  case-insensitively (`/WebPayments/x` applies to `/webpayments/x`); the origin is not. `pathPrefix`
+  defaults to the longest common path-segment prefix of recorded steps; editable on the review page
+  ("Fills on pages under").
+- Off the prefix, on the profile's own origin, a saved field may still fill, but only if the
+  Jaccard similarity of its own step's fingerprint with the page's `sigKey` set is >= 0.5 (also for
+  single-step profiles): an SPA that rewrites its URL after rendering the recorded form still fills,
+  while a page that shares one field with it (a footer email, a header search box) does not. Every
+  other rule below is unchanged. ADR 0034.
 - Per-field match is a **weighted score**; `type`/`kind` must be compatible (hard gate):
   | evidence | weight |
   |---|---|
