@@ -158,5 +158,8 @@ a record is missing.
 Accepted (2026-10-27). Fix round 1 (2026-10-27): `review-check` before every reveal and on return to
 the page (ruling P15), no `aria-pressed` (ruling P16), the seed-id rule for the model, words for
 checkbox and radio values. Amended by the Plan 3 final review (2026-10-28): a `skip` field is saved
-without its value (C1), and the page ends on the worker's data-free "recording ended" signal (I3). Amends ADR 0022: `loadProfileForOrigin` follows a moved pointer when the
+without its value (C1), and the page ends on the worker's data-free "recording ended" signal (I3). Amended by ADR 0035 (2026-10-28): the page has a saved mode (`?saved=<profile id>`) for the site's
+saved form, and the signal is renamed `{ type: "refill-recheck" }`. It is sent on every lock and site
+removal as well, and pages accept it only from the service worker (its script URL, no tab, no
+document). Amends ADR 0022: `loadProfileForOrigin` follows a moved pointer when the
 record is missing (M9).
