@@ -58,8 +58,8 @@ brief left open.
   is dropped. How captures are ordered against each other and against Finish: see "Capture
   pipeline" below.
 - **Debounce.** `input` waits 400 ms of quiet per element (`CAPTURE_DEBOUNCE_MS`); a `change`
-  sends at once and replaces the element's pending send; `pagehide`, a trusted `submit` and Finish
-  flush every pending send first.
+  sends at once and replaces the element's pending send; `pagehide`, a trusted `submit` nothing
+  cancelled and Finish flush every pending send first.
 - **Over the 4096-character cap** (the worker's, `LIMITS.value`, which rejects the whole message).
   A value over the cap is sent as a revert (`value = pageDefault`, same signature and `fieldId`), so
   the worker drops the field instead of keeping a shorter value captured earlier. A page default
@@ -98,24 +98,35 @@ POST wizard lost Amount and the checkbox together. Now:
 - **Same control, normal path.** The worker never holds two captures of one element at once, so
   their order of application is the user's whatever the worker does. This needs nothing from the
   worker.
-- **Unload.** On `pagehide` and on a trusted `submit` (capture phase, at the document and at every
-  watched shadow root, since `submit` is not composed), every debounced edit is sent inside that
-  handler, even when an earlier capture of the same element is unanswered: waiting for the reply
-  could outlive the document. Two safeguards keep the older value from winning:
+- **Unload.** On `pagehide`, and on a trusted `submit` that nothing cancelled, every debounced edit
+  is sent inside that handler, even when an earlier capture of the same element is unanswered:
+  waiting for the reply could outlive the document. The `submit` listener runs late, in the bubble
+  phase at the window and at every watched shadow root (`submit` is not composed), and acts only
+  when the event is trusted and `defaultPrevented` (captured getter) is false. A trusted submit is
+  not necessarily the user's: the page's own `requestSubmit()` or a scripted click on a submit
+  button is trusted as well. A submit the page cancels (an SPA, or such a call) changes nothing
+  here; its edits follow the normal path. Two safeguards keep the older value from winning:
   - **Content side:** each capture has an increasing number, and the newest sent per element is
     kept. A capture still waiting (behind its predecessor, the gate or a re-scan) is dropped when it
     finds a newer one of its element already sent.
   - **Worker side:** the two captures in flight must be applied in the order they were sent.
-    Chrome delivers one frame's runtime messages in the order they were sent (they are opened on
-    one ordered IPC channel, and a sleeping worker's events are queued in order). In the router,
+    Chrome delivering one frame's runtime messages in the order they were sent is **assumed
+    (Chromium implementation, not API-guaranteed)**: they are opened on one ordered IPC channel,
+    and a sleeping worker's events are queued in order. No per-document sequence number is added
+    for now (controller ruling). In the router,
     `authorizeContentSender` awaits the site index and the permission check, and those awaits
     could finish out of order. So `record-capture` handlers are entered in arrival order: each
     capture waits for the previous capture's turn, which ends once that handler was called (or
-    failed). The capture handler joins the session chain (`withSession`) in the call itself, with
+    the capture failed) and every earlier turn has ended, so a capture whose check fails at once
+    cannot let the next overtake one still being checked. The capture handler joins the session chain (`withSession`) in the call itself, with
     no `await` before it, and that chain is FIFO. Other content requests do not wait behind a
     capture. No protocol change: the request still has no sequence field.
-  A trusted `submit` that the page cancels (an SPA) only sends those edits early, with the same
-  ordering.
+  - **After it:** the element's next capture waits for every earlier capture of it still in
+    flight, not only the one sent at the unload (a page kept in the bfcache can be edited again).
+- **Session epoch.** Each capture keeps the epoch it was made in; stopping capture (`off`,
+  `stopped`, Finish) bumps it, and a capture still waiting (on the start report, its predecessor
+  or a re-scan) is dropped on a mismatch. An edit from before a Cancel or Finish never lands in the
+  recording a Record again starts.
 - **Finish and `refill-flush`.** Both flush, then wait until the start report and every capture
   made so far are answered or dropped. Only then does the pill send `record-finish` and the flush
   listener ack. A capture made after that point is not waited for; after the finish the worker
@@ -188,11 +199,16 @@ not reach the debounce.
   report when the page unloads may not get out. An edit whose `change` was sent before a submit is
   no longer lost because an earlier capture of another control was still unanswered (ruling F4).
 - Captures of one element at an unload rely on Chrome delivering one frame's messages in the order
-  they were sent. The router and the session chain keep that order from there; if delivery ever
-  reordered them, the worker could keep the older of the two values. Away from an unload, a second
-  capture of an element is not sent before the first is answered, so this does not apply.
-- A trusted `submit` is heard while recording only; it reads no value and sends only edits the
-  user already made.
+  they were sent (assumed: Chromium implementation, not API-guaranteed). The router and the session
+  chain keep that order from there; if delivery ever reordered them, the worker could keep the
+  older of the two values. Away from an unload, a second capture of an element is not sent before
+  the first is answered, so this does not apply.
+- Page script can produce a trusted `submit` (`requestSubmit()`, a scripted click on a submit
+  button) and leave it uncancelled, or cancel it from a window bubble listener added after
+  Refill's. Either way it can only make the user's pending edits go out before their 400 ms quiet
+  period ends (a bounded debounce bypass), beside an earlier capture of the same element; the
+  residual is the message-order assumption above. The listener reads no value and sends only edits
+  the user already made, and exists only while recording.
 - A page that rewrites a value right after the user's keystroke has the user's keystroke recorded,
   and its rewrite only if the following `change` carries it.
 - Text inside a closed root that is only reachable through `dom.openOrClosedShadowRoot` is captured
@@ -216,4 +232,4 @@ not reach the debounce.
   matched by signature.
 
 ## Status
-Accepted (2026-10-27). Amended by the Task 8 review (fix round 1): meaning-bound edited marks, page defaults and `fieldId` link; over-cap reverts; captures wait for the P12 report. Amended by Task 11 (ruling P17): `refill-flush` before a popup Finish. Task 12 (2026-10-28): the pill-Finish race during the flush wait noted under Consequences. Plan 3 final review (2026-10-28): that race opens one review tab (M9); while recording the runner fills a field id once per element (ruling P20, ADR 0026). Plan 3 follow-up (2026-10-28, ruling F4): the capture pipeline replaces the single chain (no head-of-line blocking on replies, per-element order, synchronous sends on `pagehide` and a trusted `submit`, captures entered in arrival order in the router).
+Accepted (2026-10-27). Amended by the Task 8 review (fix round 1): meaning-bound edited marks, page defaults and `fieldId` link; over-cap reverts; captures wait for the P12 report. Amended by Task 11 (ruling P17): `refill-flush` before a popup Finish. Task 12 (2026-10-28): the pill-Finish race during the flush wait noted under Consequences. Plan 3 final review (2026-10-28): that race opens one review tab (M9); while recording the runner fills a field id once per element (ruling P20, ADR 0026). Plan 3 follow-up (2026-10-28, ruling F4): the capture pipeline replaces the single chain (no head-of-line blocking on replies, per-element order, synchronous sends on `pagehide` and a trusted `submit`, captures entered in arrival order in the router). Fix round 1 (2026-10-28): a turn ends only after the earlier ones; only an uncancelled trusted submit, heard late, takes the unload path; the next capture after an unload waits for every earlier one in flight; a session epoch drops captures from a stopped recording.
