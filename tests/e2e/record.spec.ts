@@ -1155,3 +1155,224 @@ test.describe("record, review and fill", () => {
     await expect(page.getByLabel("Nickname")).toHaveValue("Ada");
   });
 });
+
+// ADR 0035: the popup's "Saved form · N fields" line and View, which opens the review page in
+// saved mode for the site's saved form.
+test.describe("view the saved form from the popup", () => {
+  const SAVED_GONE =
+    "This saved form is no longer shown. Refill hides it when it locks or when the site is removed. Unlock, then open it again from the Refill button.";
+
+  /** The row of the field labelled `label`. */
+  const rowOf = (p: Page, label: string) =>
+    p.getByRole("row").filter({
+      has: p.getByRole("rowheader", { name: label, exact: true }),
+    });
+
+  /** View in the popup: the saved-mode tab that opens. */
+  async function view(context: BrowserContext, popup: Page) {
+    const opened = context.waitForEvent("page");
+    await popup.getByRole("button", { name: "View", exact: true }).click();
+    const saved = await opened;
+    await expect(
+      saved.getByRole("heading", { name: "Saved form for localhost:4510" }),
+    ).toBeVisible();
+    return saved;
+  }
+
+  test("record with one field Don't save; View shows it masked, Not saved stays unfillable, and a fill-mode change is saved", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { page } = await setUp(context, extensionId, [FIXTURE_A]);
+    await page.goto(TWINS);
+    const tabId = await tabIdOf(context, page);
+    const popup = await openPopup(context, extensionId, tabId, TWINS);
+    await popup.getByRole("button", { name: "Record this site" }).click();
+    await expect(
+      popup.getByText("Recording · 0 fields", { exact: true }),
+    ).toBeVisible();
+    await page.bringToFront();
+    await page.getByLabel("Address 1").pressSequentially("12 Main St");
+    await page.getByLabel("City").pressSequentially("Springfield");
+    await expect(async () => {
+      await popup.reload();
+      await expect(
+        popup.getByText("Recording · 2 fields", { exact: true }),
+      ).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 15_000 });
+    const opened = context.waitForEvent("page");
+    await popup.getByRole("button", { name: "Finish" }).click();
+    const review = await opened;
+    await rowOf(review, "city").getByRole("combobox").selectOption("skip");
+    await review.getByRole("button", { name: "Save" }).click();
+    await expect(
+      review.getByText(
+        "Saved. Refill will fill this form the next time you open it.",
+      ),
+    ).toBeVisible();
+
+    // The popup counts the saved form's fields (the Don't save one included) and offers View.
+    const after = await openPopup(context, extensionId, tabId, TWINS);
+    await expect(
+      after.getByText("Saved form · 2 fields", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      after.getByRole("button", { name: "Record again" }),
+    ).toBeVisible();
+    const saved = await view(context, after);
+    expect(saved.url()).toMatch(
+      new RegExp(`^chrome-extension://${extensionId}/review\\.html\\?saved=`),
+    );
+    await expect(saved).toHaveTitle("Saved form · Refill");
+
+    // Values are masked; Show reveals one after the worker's check.
+    const address = rowOf(saved, "address 1");
+    const city = rowOf(saved, "city");
+    await expect(saved.getByRole("rowheader")).toHaveCount(2);
+    await expect(address).toContainText("••••••");
+    expect(await saved.locator("body").innerText()).not.toContain("12 Main St");
+    await address.getByRole("button", { name: "Show address 1" }).click();
+    await expect(address.getByText("12 Main St")).toBeVisible();
+
+    // The Don't save field holds no value: Not saved, no Show, and Fill it in is not offered.
+    await expect(city).toContainText("Not saved");
+    await expect(city.getByRole("button")).toHaveCount(0);
+    const policy = city.getByRole("combobox");
+    await expect(policy).toHaveValue("skip");
+    await expect(policy.locator('option[value="save"]')).toBeDisabled();
+    await expect(policy).toHaveAccessibleDescription(
+      "Record again to capture it",
+    );
+    expect(await saved.locator("body").innerText()).not.toContain(
+      "Springfield",
+    );
+    await expect(saved.getByRole("button", { name: "Discard" })).toHaveCount(0);
+    await expect(saved.getByRole("button", { name: "Close" })).toBeVisible();
+
+    // Fill only on a click, then Save.
+    await expect(saved.getByLabel("Name")).toHaveValue("localhost:4510");
+    await expect(saved.getByLabel("Fills on pages under")).toHaveValue(
+      "/billpay/twins",
+    );
+    await saved.getByLabel("Fill only when I click Fill now in Refill").check();
+    await saved.getByRole("button", { name: "Save" }).click();
+    const done = saved.getByText(
+      "Saved. Refill uses your changes the next time you open this form.",
+    );
+    await expect(done).toBeVisible();
+    await expect(done).toBeFocused();
+    await expect(saved.getByRole("rowheader")).toHaveCount(0);
+
+    const stored = await loadSavedProfile(context, FIXTURE_A);
+    expect(stored).toMatchObject({ fillMode: "gesture" });
+    expect(
+      stored!.fields.map((f) => [f.sig.labelText, f.value, f.policy]),
+    ).toEqual([
+      ["address 1", "12 Main St", "save"],
+      ["city", "", "skip"],
+    ]);
+
+    // A plain visit no longer fills.
+    await page.bringToFront();
+    const since = await logMark(context);
+    await page.reload();
+    const scan = await waitForEntry(
+      context,
+      since,
+      "scan-report",
+      (e) => e.tabId === tabId && e.pathname === "/billpay/twins",
+    );
+    expect(scan.plan).toBe("gesture");
+    await expect(page.getByLabel("Address 1")).toHaveValue("");
+    await expect(page.getByLabel("City")).toHaveValue("");
+  });
+
+  /** A saved form for the twins page (city = Springfield), seeded through the e2e seam. */
+  async function seeded(context: BrowserContext, extensionId: string) {
+    const { page, ext } = await setUp(context, extensionId, [FIXTURE_A]);
+    const scan = await recordScan(context, page, TWINS);
+    await saveProfile(
+      context,
+      profileFrom(FIXTURE_A, [{ scan, values: { city: "Springfield" } }]),
+    );
+    const tabId = await tabIdOf(context, page);
+    const popup = await openPopup(context, extensionId, tabId, TWINS);
+    await expect(
+      popup.getByText("Saved form · 1 field", { exact: true }),
+    ).toBeVisible();
+    const saved = await view(context, popup);
+    return { page, ext, tabId, saved };
+  }
+
+  test("Lock now while a value is revealed: it disappears with no action on the page, and a locked open shows no value", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { tabId, saved } = await seeded(context, extensionId);
+    await rowOf(saved, "city")
+      .getByRole("button", { name: "Show city" })
+      .click();
+    await expect(saved.getByText("Springfield")).toBeVisible();
+
+    const popup = await openPopup(context, extensionId, tabId, TWINS);
+    await popup.getByRole("button", { name: "Lock now" }).click();
+    await expect(popup.getByLabel("Passphrase")).toBeVisible();
+    await expect(popup.getByText(/^Saved form ·/)).toHaveCount(0);
+
+    // The saved-mode tab is not touched: no click, no bringToFront.
+    await expect
+      .poll(() => saved.locator("body").innerText())
+      .not.toContain("Springfield");
+    await expect(saved.getByText(SAVED_GONE)).toBeVisible();
+    await expect(saved.getByRole("rowheader")).toHaveCount(0);
+
+    // Opened while locked: the gone copy, no value.
+    const again = await context.newPage();
+    await again.goto(saved.url());
+    await expect(again.getByText(SAVED_GONE)).toBeVisible();
+    await expect(again.getByRole("rowheader")).toHaveCount(0);
+    expect(await again.locator("body").innerText()).not.toContain(
+      "Springfield",
+    );
+  });
+
+  test("removing the site ends the open saved form with no action on it; Close changes nothing", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { tabId, saved } = await seeded(context, extensionId);
+
+    // Close drops the page's copy and changes nothing stored.
+    const closing = await context.newPage();
+    await closing.goto(saved.url());
+    await expect(closing.getByRole("rowheader")).toHaveCount(1);
+    const closed = closing.waitForEvent("close");
+    await closing.getByRole("button", { name: "Close" }).click();
+    await closed;
+    expect(await loadSavedProfile(context, FIXTURE_A)).toMatchObject({
+      name: "Water bill",
+      fillMode: "auto",
+    });
+
+    await rowOf(saved, "city")
+      .getByRole("button", { name: "Show city" })
+      .click();
+    await expect(saved.getByText("Springfield")).toBeVisible();
+    const popup = await openPopup(context, extensionId, tabId, TWINS);
+    await popup.getByRole("button", { name: "Remove site" }).click();
+    await popup.getByRole("button", { name: "Remove", exact: true }).click();
+    await expect(
+      popup.getByRole("button", { name: "Remove site" }),
+    ).toHaveCount(0);
+    await expect
+      .poll(() => saved.locator("body").innerText())
+      .not.toContain("Springfield");
+    await expect(saved.getByText(SAVED_GONE)).toBeVisible();
+  });
+});
