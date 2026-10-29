@@ -2,8 +2,9 @@
 // carries signatures only; the answer carries values only for controls matched on this page whose
 // field policy is `save`. While a session records the tab, the scan is filed into the session and
 // answered from it instead (spec §6.2). The origin and path come from the router's sender context,
-// never from the message, and the clock is the worker's own. Decisions: ADR 0025, ADR 0030.
-import { matchControls, profileApplies } from "../match/match";
+// never from the message, and the clock is the worker's own. Decisions: ADR 0025, ADR 0030,
+// ADR 0034.
+import { matchControls, pathScope } from "../match/match";
 import { loadProfileForOrigin, touchLastUsed } from "../profiles/store";
 import type { Profile } from "../profiles/types";
 import {
@@ -76,15 +77,16 @@ export function createContentHandlers(
     }
     const profile = await loadOrLocked(ctx.origin);
     if (profile === "locked") return LOCKED;
-    if (
-      profile === null ||
-      !profileApplies(profile, ctx.origin, ctx.pathname)
-    ) {
-      return NONE;
-    }
+    if (profile === null) return NONE;
+    // Under the prefix as before; elsewhere on the origin only fields whose step looks like this
+    // page may claim (ADR 0034). Any other origin: nothing.
+    const scope = pathScope(profile, ctx.origin, ctx.pathname);
+    if (scope === null) return NONE;
     // Every field takes part in matching, whatever its policy: an `ask` or `skip` field that is the
     // better claimant for a control must keep a `save` field from taking it.
-    const matched = matchControls(profile.fields, profile.steps, controls);
+    const matched = matchControls(profile.fields, profile.steps, controls, {
+      offPath: scope === "off-path",
+    });
     // Synchronous from here to the return: no lock can land between this check and the reply.
     if (lockEpoch() !== epoch) return LOCKED;
     const items: FillItem[] = [];

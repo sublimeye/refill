@@ -19,7 +19,12 @@ export default ts.config(
     // Plain page scripts of the e2e fixture sites (served to the browser as-is, no bundling).
     files: ["tests/e2e/sites/**/*.js"],
     languageOptions: {
-      globals: { document: "readonly", crypto: "readonly" },
+      globals: {
+        document: "readonly",
+        crypto: "readonly",
+        history: "readonly",
+        location: "readonly",
+      },
     },
   },
   {

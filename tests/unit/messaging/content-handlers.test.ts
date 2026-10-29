@@ -24,6 +24,7 @@ import {
   saveProfile,
 } from "../../../src/lib/profiles/store";
 import type { Profile, ProfileField } from "../../../src/lib/profiles/types";
+import { sigKey } from "../../../src/lib/match/match";
 import { readSites, upsertSite } from "../../../src/lib/sites";
 import { createSiteHandlers } from "../../../src/lib/sites/handlers";
 import {
@@ -131,6 +132,15 @@ const PAGE = [
   { i: 1, kind: "text" as const, sig: PHONE },
   { i: 2, kind: "text" as const, sig: NOTE },
 ];
+
+const pageKey = (c: (typeof PAGE)[number]) => sigKey(c.sig, c.kind);
+
+/** A control that no recorded field resembles. */
+const stranger = (i: number) => ({
+  i,
+  kind: "text" as const,
+  sig: sig({ name: `other${i}`, labelText: `other ${i}`, ordinal: i }),
+});
 
 const scan = (
   controls: Extract<ContentRequest, { type: "scan-report" }>["controls"] = PAGE,
@@ -275,15 +285,43 @@ describe("scan-report", () => {
     expect(reply).toEqual({ state: "none" });
   });
 
-  it.each(["/signupx", "/other", "/", "/Signup"])(
-    "path %s outside the prefix: none",
+  it.each(["/signupx", "/other", "/"])(
+    "path %s outside the prefix, on a page unlike the recorded form: none",
+    async (pathname) => {
+      // The step's fingerprint is the recorded form (email, phone, note); this page shares only
+      // the email control with it among four others (J = 1/7).
+      await saveProfile(
+        profile({
+          steps: [
+            { index: 0, pathHint: "/signup", fingerprint: PAGE.map(pageKey) },
+          ],
+        }),
+      );
+      const unlike = [PAGE[0]!, ...[1, 2, 3, 4].map(stranger)];
+      const handlers = createContentHandlers(now);
+      expect(
+        await handlers["scan-report"](scan(unlike), ctx(pathname)),
+      ).toEqual({ state: "none" });
+      // The same page under the prefix fills the email: only the path made the difference.
+      expect(await handlers["scan-report"](scan(unlike), ctx())).toMatchObject({
+        state: "fill",
+        items: [{ fieldId: "f_email" }],
+      });
+    },
+  );
+
+  it.each(["/Signup", "/SIGNUP/step1", "/signUp/x"])(
+    "path %s is under the prefix in another case: fill (ADR 0034)",
     async (pathname) => {
       await saveProfile(profile());
       const reply = await createContentHandlers(now)["scan-report"](
         scan(),
         ctx(pathname),
       );
-      expect(reply).toEqual({ state: "none" });
+      expect(reply).toMatchObject({
+        state: "fill",
+        items: [{ fieldId: "f_email" }],
+      });
     },
   );
 
@@ -349,6 +387,167 @@ describe("scan-report", () => {
       ctx(),
     );
     expect(reply).toEqual({ state: "none" });
+  });
+});
+
+describe("scan-report off the path prefix (ADR 0034)", () => {
+  const key = pageKey;
+  /** The step's fingerprint is this page: what the recorder files for it. */
+  const recorded = (o: Partial<Profile> = {}) =>
+    profile({
+      steps: [{ index: 0, pathHint: "/signup", fingerprint: PAGE.map(key) }],
+      ...o,
+    });
+  const FILL_EMAIL = {
+    state: "fill",
+    items: [
+      {
+        fieldId: "f_email",
+        i: 0,
+        kind: "text",
+        value: SECRET.email,
+        pageDefault: SECRET.emailDefault,
+      },
+    ],
+  };
+
+  it("a single-step profile fills a page that is the recorded form, off-path (J = 1)", async () => {
+    await saveProfile(recorded());
+    const reply = await createContentHandlers(now)["scan-report"](
+      scan(),
+      ctx("/register/search"),
+    );
+    expect(reply).toEqual(FILL_EMAIL);
+    expectNoSecrets(reply, [SECRET.email, SECRET.emailDefault]);
+  });
+
+  it("gesture mode is kept off-path: a count and no values", async () => {
+    await saveProfile(recorded({ fillMode: "gesture" }));
+    const reply = await createContentHandlers(now)["scan-report"](
+      scan(),
+      ctx("/register/search"),
+    );
+    expect(reply).toEqual({ state: "gesture", count: 1 });
+    expectNoSecrets(reply);
+  });
+
+  it("off-path with one shared key among many different ones (J < 0.5): none", async () => {
+    await saveProfile(recorded());
+    const page = [PAGE[0]!, stranger(1), stranger(2), stranger(3)];
+    const reply = await createContentHandlers(now)["scan-report"](
+      scan(page),
+      ctx("/newsletter"),
+    );
+    expect(reply).toEqual({ state: "none" });
+    expectNoSecrets(reply);
+  });
+
+  it("on-path, the same single shared key still fills as before", async () => {
+    await saveProfile(recorded());
+    const page = [PAGE[0]!, stranger(1), stranger(2), stranger(3)];
+    const reply = await createContentHandlers(now)["scan-report"](
+      scan(page),
+      ctx(),
+    );
+    expect(reply).toEqual(FILL_EMAIL);
+  });
+
+  it("multi-step off-path: only fields whose own step reaches MIN_JACCARD fill", async () => {
+    const zipControl = { i: 3, kind: "text" as const, sig: ZIP };
+    await saveProfile(
+      recorded({
+        steps: [
+          // Step 0 shows email, phone and note: J = 3/4 on the page below.
+          { index: 0, pathHint: "/signup", fingerprint: PAGE.map(key) },
+          // Step 1 shows zip and three controls not on the page: J = 1/7, and not the max.
+          {
+            index: 1,
+            pathHint: "/signup/2",
+            fingerprint: [
+              key(zipControl),
+              "text|a|a|",
+              "text|b|b|",
+              "text|c|c|",
+            ],
+          },
+        ],
+        fields: [
+          field("f_email", EMAIL, SECRET.email, "save", SECRET.emailDefault),
+          { ...field("f_zip", ZIP, SECRET.zip, "save"), step: 1 },
+        ],
+      }),
+    );
+    const reply = await createContentHandlers(now)["scan-report"](
+      scan([...PAGE, zipControl]),
+      ctx("/elsewhere"),
+    );
+    expect(reply).toEqual(FILL_EMAIL);
+    expectNoSecrets(reply, [SECRET.email, SECRET.emailDefault]);
+  });
+
+  it("multi-step, steps tied below MIN_JACCARD: both fill on-path, none off-path", async () => {
+    const zipControl = { i: 3, kind: "text" as const, sig: ZIP };
+    const page = [PAGE[0]!, zipControl, stranger(4), stranger(5)];
+    await saveProfile(
+      recorded({
+        steps: [
+          // Each fingerprint shares one key with the page and has one of its own: J = 1/5 each.
+          {
+            index: 0,
+            pathHint: "/signup",
+            fingerprint: [key(PAGE[0]!), "text|a|a|"],
+          },
+          {
+            index: 1,
+            pathHint: "/signup/2",
+            fingerprint: [key(zipControl), "text|b|b|"],
+          },
+        ],
+        fields: [
+          field("f_email", EMAIL, SECRET.email, "save", SECRET.emailDefault),
+          { ...field("f_zip", ZIP, SECRET.zip, "save"), step: 1 },
+        ],
+      }),
+    );
+    const handlers = createContentHandlers(now);
+    expect(await handlers["scan-report"](scan(page), ctx())).toMatchObject({
+      state: "fill",
+      items: [{ fieldId: "f_email" }, { fieldId: "f_zip" }],
+    });
+    const off = await handlers["scan-report"](scan(page), ctx("/elsewhere"));
+    expect(off).toEqual({ state: "none" });
+    expectNoSecrets(off);
+  });
+
+  it("a different origin: none, even with the recorded form at the prefix", async () => {
+    await saveProfile(recorded());
+    const reply = await createContentHandlers(now)["scan-report"](scan(), {
+      ...ctx("/signup"),
+      origin: "https://b.example",
+    });
+    expect(reply).toEqual({ state: "none" });
+  });
+
+  it("a loaded profile for another origin is never used, on-path or off", async () => {
+    vi.resetModules();
+    vi.doMock("../../../src/lib/vault/vault", () => ({
+      lockEpoch: () => 0,
+      status: async () => ({ state: "unlocked", unlockedAt: 0, lock: {} }),
+    }));
+    vi.doMock("../../../src/lib/profiles/store", () => ({
+      loadProfileForOrigin: async () => recorded(),
+      touchLastUsed: async () => {},
+    }));
+    const mod = await import("../../../src/lib/messaging/content-handlers");
+    const handlers = mod.createContentHandlers(now);
+    for (const pathname of ["/signup", "/elsewhere"]) {
+      expect(
+        await handlers["scan-report"](scan(), {
+          ...ctx(pathname),
+          origin: "https://b.example",
+        }),
+      ).toEqual({ state: "none" });
+    }
   });
 });
 

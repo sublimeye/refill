@@ -235,7 +235,7 @@ test.describe("popup: recording", () => {
     await expect(review.getByText("12 Main St")).toHaveCount(0);
     await expect(city.getByRole("combobox")).toHaveValue("save");
     await expect(review.getByLabel("Name")).toHaveValue("localhost:4510");
-    await expect(review.getByLabel("Applies to pages under")).toHaveValue(
+    await expect(review.getByLabel("Fills on pages under")).toHaveValue(
       "/billpay/twins",
     );
     await expect(
@@ -591,7 +591,7 @@ test.describe("record, review and fill", () => {
       "2 state",
       "2 paperless billing",
     ]);
-    await expect(review.getByLabel("Applies to pages under")).toHaveValue(
+    await expect(review.getByLabel("Fills on pages under")).toHaveValue(
       "/billpay/spa-wizard",
     );
     await save(review);
@@ -753,7 +753,7 @@ test.describe("record, review and fill", () => {
     });
     await amount.getByRole("button", { name: "Show amount" }).click();
     await expect(amount.getByText("55.00")).toBeVisible();
-    await expect(review.getByLabel("Applies to pages under")).toHaveValue(
+    await expect(review.getByLabel("Fills on pages under")).toHaveValue(
       "/billpay/",
     );
     await save(review);
@@ -768,6 +768,119 @@ test.describe("record, review and fill", () => {
     await expect(later.getByLabel("Receipt email")).toHaveValue(
       "ada@example.test",
     );
+  });
+
+  test("SPA that rewrites its URL: the saved form fills after a reload, at the original URL, and not on an unrelated page (ADR 0034)", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const ORIGINAL = `${FIXTURE_A}/BillPay/SpaRewrite`;
+    const REWRITTEN = "/billpay/spa-rewrite-search";
+    const { page } = await setUp(context, extensionId, [FIXTURE_A]);
+    await page.goto(ORIGINAL);
+    const { popup, tabId } = await startRecording(context, extensionId, page);
+
+    // The first edit makes the app's router rewrite the URL: another case, another route, and no
+    // DOM change after it, so the page is not reported again from the new path.
+    await page.getByLabel("Account number").pressSequentially("12345678");
+    await expect.poll(() => new URL(page.url()).pathname).toBe(REWRITTEN);
+    await page.getByLabel("Service ZIP code").pressSequentially("60601");
+    await expectCount(popup, 2);
+
+    // The step was filed at the original path, so the default prefix is that path.
+    const review = await finish(context, popup);
+    expect(await reviewRows(review)).toEqual([
+      "1 account number",
+      "1 service zip code",
+    ]);
+    const prefix = review.getByLabel("Fills on pages under");
+    await expect(prefix).toHaveValue("/BillPay/SpaRewrite");
+    await expect(prefix).toHaveAccessibleDescription(
+      "Elsewhere on localhost:4510, Refill fills only pages that look like this form.",
+    );
+    // At "/" the whole site is in scope, so the hint goes away; the default comes back after.
+    await prefix.fill("/");
+    await expect(review.getByText(/^Elsewhere on /)).toHaveCount(0);
+    await expect(prefix).toHaveAccessibleDescription("");
+    await prefix.fill("/BillPay/SpaRewrite");
+    await expect(review.getByText(/^Elsewhere on /)).toBeVisible();
+    await save(review);
+
+    // Reload at the rewritten URL: outside the prefix, but the page is the recorded form.
+    await page.bringToFront();
+    let since = await logMark(context);
+    await page.reload();
+    expect(new URL(page.url()).pathname).toBe(REWRITTEN);
+    await expect(page.getByLabel("Account number")).toHaveValue("12345678");
+    await expect(page.getByLabel("Service ZIP code")).toHaveValue("60601");
+    expect(
+      (
+        await waitForEntry(
+          context,
+          since,
+          "fill-result",
+          (e) => e.tabId === tabId && e.pathname === REWRITTEN,
+        )
+      ).filled,
+    ).toBe(2);
+
+    // The original mixed-case URL, opened fresh, fills too.
+    const fresh = await context.newPage();
+    since = await logMark(context);
+    await fresh.goto(ORIGINAL);
+    await expect(fresh.getByLabel("Account number")).toHaveValue("12345678");
+    await expect(fresh.getByLabel("Service ZIP code")).toHaveValue("60601");
+    // Planned at the original path, before the fill's input events let the router rewrite it.
+    expect(
+      (
+        await waitForEntry(
+          context,
+          since,
+          "scan-report",
+          (e) => e.pathname === "/BillPay/SpaRewrite",
+        )
+      ).plan,
+    ).toBe("fill");
+
+    // The recorded path in lowercase, where the app adds a contact panel: the page no longer
+    // looks like the form (J = 2/5), so it fills only because the path compare ignores case.
+    const lower = await context.newPage();
+    since = await logMark(context);
+    await lower.goto(`${FIXTURE_A}/billpay/sparewrite`);
+    await expect(lower.getByLabel("Nickname")).toBeVisible();
+    expect(
+      (
+        await waitForEntry(
+          context,
+          since,
+          "scan-report",
+          (e) => e.pathname === "/billpay/sparewrite",
+        )
+      ).plan,
+    ).toBe("fill");
+    await expect(lower.getByLabel("Account number")).toHaveValue("12345678");
+    await expect(lower.getByLabel("Service ZIP code")).toHaveValue("60601");
+    await expect(lower.getByLabel("Nickname")).toHaveValue("");
+
+    // An unrelated page of the same origin with one matching field among others stays empty.
+    const other = await context.newPage();
+    since = await logMark(context);
+    await other.goto(`${FIXTURE_A}/account`);
+    const report = await waitForEntry(
+      context,
+      since,
+      "scan-report",
+      (e) => e.pathname === "/account",
+    );
+    expect(report.controls.map((c) => c.sig.labelText)).toContain(
+      "account number",
+    );
+    expect(report.plan).toBe("none");
+    const inputs = other.locator("input");
+    await expect(inputs).toHaveCount(5);
+    for (const input of await inputs.all()) await expect(input).toHaveValue("");
   });
 
   test("never-capture page: secrets stay out of the review, and a later visit fills the card number but not the CVV", async ({

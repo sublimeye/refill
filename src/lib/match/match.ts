@@ -121,19 +121,47 @@ export interface SavedField {
   kind: ControlKind;
 }
 
+/** The profile is for exactly `origin`, and its prefix is a path. */
+function sameOriginWithPath(
+  profile: { origin: string; pathPrefix: string },
+  origin: string,
+): boolean {
+  return profile.pathPrefix.startsWith("/") && profile.origin === origin;
+}
+
+/**
+ * True when `pathname` on `origin` is under the profile's path prefix. The origin is compared
+ * exactly; the path case-insensitively (SPAs rewrite "/WebPayments/..." to "/webpayments/..."), on
+ * segment boundaries. ADR 0034.
+ */
 export function profileApplies(
   profile: { origin: string; pathPrefix: string },
   origin: string,
   pathname: string,
 ): boolean {
-  const prefix = profile.pathPrefix;
-  if (!prefix.startsWith("/") || profile.origin !== origin) return false;
+  if (!sameOriginWithPath(profile, origin)) return false;
+  const prefix = profile.pathPrefix.toLowerCase();
+  const path = pathname.toLowerCase();
   // Segment boundaries: "/billpay" must not apply to "/billpayment".
   return (
-    pathname === prefix ||
-    (prefix.endsWith("/") && pathname.startsWith(prefix)) ||
-    pathname.startsWith(`${prefix}/`)
+    path === prefix ||
+    (prefix.endsWith("/") && path.startsWith(prefix)) ||
+    path.startsWith(`${prefix}/`)
   );
+}
+
+/**
+ * Where a profile stands on a page: `on-path` under its prefix, `off-path` elsewhere on its own
+ * origin (fields fill there only where their step's fingerprint resembles the page, see
+ * `matchControls`), null on any other origin or for a prefix that is no path. ADR 0034.
+ */
+export function pathScope(
+  profile: { origin: string; pathPrefix: string },
+  origin: string,
+  pathname: string,
+): "on-path" | "off-path" | null {
+  if (!sameOriginWithPath(profile, origin)) return null;
+  return profileApplies(profile, origin, pathname) ? "on-path" : "off-path";
 }
 
 function typesCompatible(
@@ -221,12 +249,18 @@ function claim(saved: SavedField, page: MatchInput[]): number | null {
  * is > 0 (a step-1 field never fills a step-2 page). When several fields still claim one control,
  * the step with the highest similarity wins, provided it is >= MIN_JACCARD and strictly ahead of
  * the others; otherwise every claimant is dropped.
+ *
+ * Off-path gate (`offPath`, ADR 0034): on a page of the profile's origin outside its path prefix, a
+ * field may claim a control only if its own step's fingerprint has Jaccard >= MIN_JACCARD with this
+ * page, single-step profiles included. Scores, margins and conflicts are unchanged.
  */
 export function matchControls(
   saved: SavedField[],
   steps: { index: number; fingerprint: string[] }[],
   page: MatchInput[],
+  opts: { offPath?: boolean } = {},
 ): Map<string, number> {
+  const offPath = opts.offPath === true;
   const pageKeys = page.map((c) => sigKey(c.sig, c.kind));
   const stepJ = new Map<number, number>();
   for (const st of steps)
@@ -246,6 +280,7 @@ export function matchControls(
   const claims = new Map<number, SavedField[]>();
   for (const f of saved) {
     if (gate !== null && !gate.has(f.step)) continue;
+    if (offPath && simOf(f.step) < MIN_JACCARD) continue;
     const i = claim(f, page);
     if (i === null) continue;
     const list = claims.get(i);
