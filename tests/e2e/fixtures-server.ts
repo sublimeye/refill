@@ -84,10 +84,12 @@ function fileFor(pathname: string): string | null {
 
 /**
  * One page at several paths, the way an SPA server answers every route with its shell: the SPA
- * rewrite fixture at its mixed-case path and at the lowercase route its script rewrites to (ADR 0034).
+ * rewrite fixture at its mixed-case path, at that path in lowercase, and at the lowercase route its
+ * script rewrites to (ADR 0034).
  */
 const ALIASES: Record<string, string> = {
   "/BillPay/SpaRewrite": "/billpay/spa-rewrite",
+  "/billpay/sparewrite": "/billpay/spa-rewrite",
   "/billpay/spa-rewrite-search": "/billpay/spa-rewrite",
 };
 

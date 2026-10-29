@@ -800,6 +800,12 @@ test.describe("record, review and fill", () => {
     await expect(prefix).toHaveAccessibleDescription(
       "Elsewhere on localhost:4510, Refill fills only pages that look like this form.",
     );
+    // At "/" the whole site is in scope, so the hint goes away; the default comes back after.
+    await prefix.fill("/");
+    await expect(review.getByText(/^Elsewhere on /)).toHaveCount(0);
+    await expect(prefix).toHaveAccessibleDescription("");
+    await prefix.fill("/BillPay/SpaRewrite");
+    await expect(review.getByText(/^Elsewhere on /)).toBeVisible();
     await save(review);
 
     // Reload at the rewritten URL: outside the prefix, but the page is the recorded form.
@@ -837,6 +843,26 @@ test.describe("record, review and fill", () => {
         )
       ).plan,
     ).toBe("fill");
+
+    // The recorded path in lowercase, where the app adds a contact panel: the page no longer
+    // looks like the form (J = 2/5), so it fills only because the path compare ignores case.
+    const lower = await context.newPage();
+    since = await logMark(context);
+    await lower.goto(`${FIXTURE_A}/billpay/sparewrite`);
+    await expect(lower.getByLabel("Nickname")).toBeVisible();
+    expect(
+      (
+        await waitForEntry(
+          context,
+          since,
+          "scan-report",
+          (e) => e.pathname === "/billpay/sparewrite",
+        )
+      ).plan,
+    ).toBe("fill");
+    await expect(lower.getByLabel("Account number")).toHaveValue("12345678");
+    await expect(lower.getByLabel("Service ZIP code")).toHaveValue("60601");
+    await expect(lower.getByLabel("Nickname")).toHaveValue("");
 
     // An unrelated page of the same origin with one matching field among others stays empty.
     const other = await context.newPage();

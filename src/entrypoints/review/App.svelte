@@ -175,6 +175,8 @@
   {:else if page.model && page.form}
     {@const model = page.model}
     {@const form = page.form}
+    <!-- At "/" the prefix covers the whole site: there is no "elsewhere" to explain. -->
+    {@const wholeSite = form.pathPrefix === "/"}
     <h1>Review what Refill recorded on {model.host}</h1>
     {#if model.fields.length === 0}
       <p>
@@ -283,15 +285,20 @@
             bind:this={prefixInput}
             bind:value={form.pathPrefix}
             aria-invalid={problem === "path" ? "true" : undefined}
-            aria-describedby={problem === "path"
-              ? "prefix-hint prefix-error"
-              : "prefix-hint"}
+            aria-describedby={[
+              wholeSite ? null : "prefix-hint",
+              problem === "path" ? "prefix-error" : null,
+            ]
+              .filter((id) => id !== null)
+              .join(" ") || undefined}
             disabled={busy}
           />
-          <br /><span id="prefix-hint"
-            >Elsewhere on {model.host}, Refill fills only pages that look like
-            this form.</span
-          >
+          {#if !wholeSite}
+            <br /><span id="prefix-hint"
+              >Elsewhere on {model.host}, Refill fills only pages that look like
+              this form.</span
+            >
+          {/if}
           {#if problem === "path"}
             <br /><span id="prefix-error">{PROBLEMS.path}</span>
           {/if}
