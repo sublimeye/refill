@@ -55,10 +55,11 @@ brief left open.
   scan (added since), or no longer means its scanned signature (`stillMeans`, now shared in
   `content/still-means.ts`: a framework re-used the input for the next step), the capture waits for
   `rescan()`, which resolves only once that scan's report was delivered, then uses the new scan or
-  is dropped. Captures and Finish run on one promise chain, in the user's order.
+  is dropped. How captures are ordered against each other and against Finish: see "Capture
+  pipeline" below.
 - **Debounce.** `input` waits 400 ms of quiet per element (`CAPTURE_DEBOUNCE_MS`); a `change`
-  sends at once and replaces the element's pending send; `pagehide` and Finish flush every pending
-  send first.
+  sends at once and replaces the element's pending send; `pagehide`, a trusted `submit` and Finish
+  flush every pending send first.
 - **Over the 4096-character cap** (the worker's, `LIMITS.value`, which rejects the whole message).
   A value over the cap is sent as a revert (`value = pageDefault`, same signature and `fieldId`), so
   the worker drops the field instead of keeping a shorter value captured earlier. A page default
@@ -72,13 +73,55 @@ brief left open.
 - **Starting re-reports the page (P12).** When `sync` moves from not recording to `on`/`full`, it
   calls `rescan(true)`: the runner forgets the delivered fingerprint (as a bfcache restore does) and
   scans, so the worker has filed the current page before any capture (it answers a capture
-  `no-step` until then). The listeners are live from that moment, so in the same task the capture
-  chain is made to wait for that report: an edit during the report's round trip is sent after it.
+  `no-step` until then). The listeners are live from that moment, so in the same task a gate is
+  closed until that report is answered: an edit during the report's round trip is sent after it.
   The runner's `filled` ids keep the second plan from writing again.
 - **The "stopped" notice once per document (open choice).** The worker answers `stopped` for 30
   minutes after a lock or expiry (the tombstone, ADR 0029). Shown on every nudge or restore, the
   notice would reappear for half an hour; it is shown the first time this document hears it, and
   later `stopped` answers only keep the pill hidden.
+
+### Capture pipeline (ruling F4, 2026-10-28)
+The first design put every capture and Finish on one promise chain, and each capture waited for
+the worker's reply to the one before it. A page that submits right after the last edits (tick a
+box, click Pay) unloaded while an earlier capture was unanswered, and the captures queued behind
+it never reached `sendMessage`; `pagehide` only queued more onto the blocked chain. Under load the
+POST wizard lost Amount and the checkbox together. Now:
+- **No waiting on other controls.** A capture calls `sendMessage` as soon as its own
+  preconditions hold, in the event handler itself when they already do (`deliver` is synchronous
+  up to `env.send`). The preconditions:
+  - the start report is answered (P12; a gate set in the same task as `apply`);
+  - the control is in the latest scan, still meaning its signature (else one `rescan()`, which
+    holds back only this capture, ruling P13);
+  - the previous capture of the **same element** is answered (or dropped).
+  Replies are applied (`apply(s, false)`) whenever they arrive.
+- **Same control, normal path.** The worker never holds two captures of one element at once, so
+  their order of application is the user's whatever the worker does. This needs nothing from the
+  worker.
+- **Unload.** On `pagehide` and on a trusted `submit` (capture phase, at the document and at every
+  watched shadow root, since `submit` is not composed), every debounced edit is sent inside that
+  handler, even when an earlier capture of the same element is unanswered: waiting for the reply
+  could outlive the document. Two safeguards keep the older value from winning:
+  - **Content side:** each capture has an increasing number, and the newest sent per element is
+    kept. A capture still waiting (behind its predecessor, the gate or a re-scan) is dropped when it
+    finds a newer one of its element already sent.
+  - **Worker side:** the two captures in flight must be applied in the order they were sent.
+    Chrome delivers one frame's runtime messages in the order they were sent (they are opened on
+    one ordered IPC channel, and a sleeping worker's events are queued in order). In the router,
+    `authorizeContentSender` awaits the site index and the permission check, and those awaits
+    could finish out of order. So `record-capture` handlers are entered in arrival order: each
+    capture waits for the previous capture's turn, which ends once that handler was called (or
+    failed). The capture handler joins the session chain (`withSession`) in the call itself, with
+    no `await` before it, and that chain is FIFO. Other content requests do not wait behind a
+    capture. No protocol change: the request still has no sequence field.
+  A trusted `submit` that the page cancels (an SPA) only sends those edits early, with the same
+  ordering.
+- **Finish and `refill-flush`.** Both flush, then wait until the start report and every capture
+  made so far are answered or dropped. Only then does the pill send `record-finish` and the flush
+  listener ack. A capture made after that point is not waited for; after the finish the worker
+  answers it `off`, as before.
+- What is not sent at unload: an edit whose control the latest scan does not know (it needs a
+  re-scan's round trip), and an edit made before the start report was answered (P12 comes first).
 
 ### Runner (`src/lib/content/runner.ts`)
 - `ContentRun.rescan()`; `scan()` now returns the promise of the running scan loop, so a caller that
@@ -105,8 +148,8 @@ not reach the debounce.
 - **`refill-flush`**, a content-bound message: exactly `{ type: "refill-flush" }`, with the nudge's
   sender checks (`sender.id === runtime.id`, no `sender.tab`). Unlike the nudge it gets a
   **data-free ack** `{ ok: true }`. The listener calls `Recording.flushed()`, which sends every
-  debounced edit and resolves once the capture chain queued so far has settled (at once when not
-  recording), then replies; it returns `true` so the reply can be async. Any other message still
+  debounced edit and resolves once every capture made so far has been answered or dropped (at once
+  when not recording), then replies; it returns `true` so the reply can be async. Any other message still
   gets no reply, and **the nudge still never gets one**.
 - **Worker:** the popup's `record-finish` reads the tab's session metadata (`peekMeta`, no DEK);
   for an unfinished one it sends `refill-flush` to frame 0 of the tab (`flushTab`) and awaits the
@@ -141,7 +184,15 @@ not reach the debounce.
   event path); Finish stays available in the popup. It cannot read the pill's nodes, make it
   finish, or make a capture out of its own events.
 - An edit made less than 400 ms before a navigation that skips `pagehide` (a crash) is lost. A
-  capture queued behind a `rescan()` when the page unloads may not get out.
+  capture waiting for a `rescan()` (a control added or re-used since the last scan) or for the start
+  report when the page unloads may not get out. An edit whose `change` was sent before a submit is
+  no longer lost because an earlier capture of another control was still unanswered (ruling F4).
+- Captures of one element at an unload rely on Chrome delivering one frame's messages in the order
+  they were sent. The router and the session chain keep that order from there; if delivery ever
+  reordered them, the worker could keep the older of the two values. Away from an unload, a second
+  capture of an element is not sent before the first is answered, so this does not apply.
+- A trusted `submit` is heard while recording only; it reads no value and sends only edits the
+  user already made.
 - A page that rewrites a value right after the user's keystroke has the user's keystroke recorded,
   and its rewrite only if the following `change` carries it.
 - Text inside a closed root that is only reachable through `dom.openOrClosedShadowRoot` is captured
@@ -165,4 +216,4 @@ not reach the debounce.
   matched by signature.
 
 ## Status
-Accepted (2026-10-27). Amended by the Task 8 review (fix round 1): meaning-bound edited marks, page defaults and `fieldId` link; over-cap reverts; captures wait for the P12 report. Amended by Task 11 (ruling P17): `refill-flush` before a popup Finish. Task 12 (2026-10-28): the pill-Finish race during the flush wait noted under Consequences. Plan 3 final review (2026-10-28): that race opens one review tab (M9); while recording the runner fills a field id once per element (ruling P20, ADR 0026).
+Accepted (2026-10-27). Amended by the Task 8 review (fix round 1): meaning-bound edited marks, page defaults and `fieldId` link; over-cap reverts; captures wait for the P12 report. Amended by Task 11 (ruling P17): `refill-flush` before a popup Finish. Task 12 (2026-10-28): the pill-Finish race during the flush wait noted under Consequences. Plan 3 final review (2026-10-28): that race opens one review tab (M9); while recording the runner fills a field id once per element (ruling P20, ADR 0026). Plan 3 follow-up (2026-10-28, ruling F4): the capture pipeline replaces the single chain (no head-of-line blocking on replies, per-element order, synchronous sends on `pagehide` and a trusted `submit`, captures entered in arrival order in the router).
