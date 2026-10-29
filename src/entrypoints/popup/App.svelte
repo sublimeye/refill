@@ -256,6 +256,9 @@
       if (res.ok) {
         restored = res.warning === "integrity-restored";
         await refresh();
+        // The site view was read while locked: its saved-form line (ADR 0035) needs the
+        // unlocked vault, so read it again.
+        if (view === "unlocked") await loadSite();
         return;
       }
       switch (res.reason) {

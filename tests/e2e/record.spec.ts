@@ -16,6 +16,7 @@ import {
 } from "./content-helpers";
 import { expect, test } from "./fixtures";
 import { FIXTURE_A, FIXTURE_B } from "./fixtures-server";
+import { PASSPHRASE } from "./vault-helpers";
 
 test.setTimeout(90_000); // vault creation runs real Argon2id calibration
 
@@ -1305,6 +1306,41 @@ test.describe("view the saved form from the popup", () => {
     const saved = await view(context, popup);
     return { page, ext, tabId, saved };
   }
+
+  test("a popup opened while locked shows the line once unlocked there", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { page, ext } = await setUp(context, extensionId, [FIXTURE_A]);
+    const scan = await recordScan(context, page, TWINS);
+    await saveProfile(
+      context,
+      profileFrom(FIXTURE_A, [{ scan, values: { city: "Springfield" } }]),
+    );
+    await lockVault(ext);
+    const popup = await openPopup(
+      context,
+      extensionId,
+      await tabIdOf(context, page),
+      TWINS,
+    );
+    const field = popup.getByLabel("Passphrase");
+    await expect(field).toBeVisible();
+    await expect(popup.getByText(/^Saved form ·/)).toHaveCount(0);
+    await field.fill(PASSPHRASE);
+    await field.press("Enter");
+    await expect(popup.getByText("Unlocked", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(
+      popup.getByText("Saved form · 1 field", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      popup.getByRole("button", { name: "View", exact: true }),
+    ).toBeVisible();
+  });
 
   test("Lock now while a value is revealed: it disappears with no action on the page, and a locked open shows no value", async ({
     context,
