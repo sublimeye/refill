@@ -64,6 +64,10 @@ function spyHandlers() {
     "review-save": vi.fn(async () => ({ ok: true })),
     "review-discard": vi.fn(async () => ({ ok: true })),
     "review-check": vi.fn(async () => ({ state: "gone" })),
+    "saved-summary": vi.fn(async () => ({ state: "none" })),
+    "saved-load": vi.fn(async () => ({ state: "gone" })),
+    "saved-save": vi.fn(async () => ({ ok: true })),
+    "saved-check": vi.fn(async () => ({ state: "gone" })),
   };
   const c = {
     "scan-report": vi.fn(async () => ({ state: "none" })),
@@ -629,6 +633,18 @@ describe("content senders", () => {
       {
         type: "review-save",
         sessionId: "abc",
+        name: "n",
+        fillMode: "auto",
+        pathPrefix: "/",
+        policies: [],
+      },
+      // Saved mode (ADR 0035): page-only too.
+      { type: "saved-summary", origin: SITE },
+      { type: "saved-load", profileId: "abc" },
+      { type: "saved-check", profileId: "abc" },
+      {
+        type: "saved-save",
+        profileId: "abc",
         name: "n",
         fillMode: "auto",
         pathPrefix: "/",

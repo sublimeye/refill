@@ -49,7 +49,18 @@ export type PageRequest =
       policies: { fieldId: string; policy: FieldPolicy }[];
     }
   | { type: "review-discard"; sessionId: string }
-  | { type: "review-check"; sessionId: string };
+  | { type: "review-check"; sessionId: string }
+  | { type: "saved-summary"; origin: string }
+  | { type: "saved-load"; profileId: string }
+  | {
+      type: "saved-save";
+      profileId: string;
+      name: string;
+      fillMode: "auto" | "gesture";
+      pathPrefix: string;
+      policies: { fieldId: string; policy: FieldPolicy }[];
+    }
+  | { type: "saved-check"; profileId: string };
 
 /** What the review page learns about a finished recording (ADR 0033). */
 export type ReviewLoadResult =
@@ -61,6 +72,17 @@ export type ReviewCheckResult = { state: "ready" } | { state: "gone" };
 
 export type ReviewSaveResult =
   { ok: true } | { ok: false; error: "gone" | "invalid" };
+
+/**
+ * The popup's "Saved form" line (ADR 0035): the site's saved form id and its field count, no value.
+ * `none` when there is none, or the vault is locked (the count is inside the sealed record).
+ */
+export type SavedSummary =
+  { state: "saved"; profileId: string; count: number } | { state: "none" };
+
+/** Saved mode of the review page (ADR 0035): the saved form as a review model, or `gone`. */
+export type SavedLoadResult =
+  { state: "ready"; model: ReviewModel } | { state: "gone" };
 
 export type {
   ContentRequest,
@@ -111,7 +133,15 @@ export type PageResponse<R extends PageRequest> = R extends {
                               ? { ok: true }
                               : R extends { type: "review-check" }
                                 ? ReviewCheckResult
-                                : never;
+                                : R extends { type: "saved-summary" }
+                                  ? SavedSummary
+                                  : R extends { type: "saved-load" }
+                                    ? SavedLoadResult
+                                    : R extends { type: "saved-save" }
+                                      ? ReviewSaveResult
+                                      : R extends { type: "saved-check" }
+                                        ? ReviewCheckResult
+                                        : never;
 
 /** What the router resolves for a message it refuses or whose handler threw. Never carries detail. */
 export type RouterError = { ok: false; error: "rejected" | "internal" };
@@ -143,6 +173,17 @@ const KEYS_BY_TYPE: Readonly<Record<PageRequest["type"], readonly string[]>> = {
   ],
   "review-discard": ["type", "sessionId"],
   "review-check": ["type", "sessionId"],
+  "saved-summary": ["type", "origin"],
+  "saved-load": ["type", "profileId"],
+  "saved-save": [
+    "type",
+    "profileId",
+    "name",
+    "fillMode",
+    "pathPrefix",
+    "policies",
+  ],
+  "saved-check": ["type", "profileId"],
 };
 
 /** Origins are short: a longer string cannot be a canonical https origin worth handling. */
@@ -185,6 +226,28 @@ function parsePolicies(
     out.push({ fieldId, policy });
   }
   return out;
+}
+
+/** The editable part of `review-save` and `saved-save`: same keys, same caps. */
+function parseFormEdit(raw: Record<string, unknown>): {
+  name: string;
+  fillMode: "auto" | "gesture";
+  pathPrefix: string;
+  policies: { fieldId: string; policy: FieldPolicy }[];
+} | null {
+  const { name, fillMode, pathPrefix } = raw;
+  const policies = parsePolicies(raw["policies"]);
+  if (
+    policies === null ||
+    typeof name !== "string" ||
+    name.length > LIMITS.name ||
+    (fillMode !== "auto" && fillMode !== "gesture") ||
+    typeof pathPrefix !== "string" ||
+    pathPrefix.length > LIMITS.pathPrefix
+  ) {
+    return null;
+  }
+  return { name, fillMode, pathPrefix, policies };
 }
 
 export function isPlainObject(x: unknown): x is Record<string, unknown> {
@@ -263,27 +326,26 @@ export function parsePageRequest(raw: unknown): PageRequest | null {
     }
     case "review-save": {
       const sessionId = parseId(raw["sessionId"]);
-      const { name, fillMode, pathPrefix } = raw;
-      const policies = parsePolicies(raw["policies"]);
-      if (
-        sessionId === null ||
-        policies === null ||
-        typeof name !== "string" ||
-        name.length > LIMITS.name ||
-        (fillMode !== "auto" && fillMode !== "gesture") ||
-        typeof pathPrefix !== "string" ||
-        pathPrefix.length > LIMITS.pathPrefix
-      ) {
-        return null;
-      }
-      return {
-        type: "review-save",
-        sessionId,
-        name,
-        fillMode,
-        pathPrefix,
-        policies,
-      };
+      const edit = parseFormEdit(raw);
+      if (sessionId === null || edit === null) return null;
+      return { type: "review-save", sessionId, ...edit };
+    }
+    case "saved-summary": {
+      const origin = parseOrigin(raw["origin"]);
+      if (origin === null) return null;
+      return { type: "saved-summary", origin };
+    }
+    case "saved-load":
+    case "saved-check": {
+      const profileId = parseId(raw["profileId"]);
+      if (profileId === null) return null;
+      return { type: type as "saved-load" | "saved-check", profileId };
+    }
+    case "saved-save": {
+      const profileId = parseId(raw["profileId"]);
+      const edit = parseFormEdit(raw);
+      if (profileId === null || edit === null) return null;
+      return { type: "saved-save", profileId, ...edit };
     }
   }
 }

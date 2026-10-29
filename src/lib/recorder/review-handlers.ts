@@ -3,16 +3,30 @@
 // only a finished session is answered. A save re-checks the session and the vault at save time, so
 // a lock while the page is open ends it with nothing written (Review Focus 4), and the page asks
 // `review-check` before every reveal (ruling P15). Decisions: ADR 0033.
+//
+// Saved mode (ADR 0035): the same page shows the site's saved form, keyed by its profile id. The
+// popup learns the id and the field count (`saved-summary`, no value); the page loads the form
+// (`saved-load`), checks before every reveal (`saved-check`) and saves a new name, fill mode,
+// prefix and policies (`saved-save`), never a value.
 import type { PageHandlers } from "../messaging/router";
-import { loadProfileForOrigin, newId, saveProfile } from "../profiles/store";
+import {
+  editProfile,
+  loadProfileForOrigin,
+  newId,
+  originOfProfile,
+  saveProfile,
+} from "../profiles/store";
 import type { FieldPolicy, Profile } from "../profiles/types";
+import { normalizeOrigin } from "../sites/origin";
 import { LockedError } from "../vault/types";
 import { lockEpoch, status } from "../vault/vault";
-import { buildProfile, reviewModel } from "./profile";
+import { buildProfile, editSaved, reviewModel, savedModel } from "./profile";
 import { discardSession, peekSession, withSession } from "./session";
 import type { RecBody } from "./types";
 
 const GONE = { state: "gone" } as const;
+const READY = { state: "ready" } as const;
+const NONE = { state: "none" } as const;
 const SAVE_GONE = { ok: false, error: "gone" } as const;
 // The page shows `invalid` as the path error: it checks the name itself, and the policies come from
 // the model. A new cause of `invalid` must update that mapping (`saveReview` in review-flow.ts).
@@ -61,9 +75,24 @@ function policyMap(
   return map;
 }
 
+/** The saved form `id`, or `null` when no site points at it, or `"locked"`. */
+async function savedById(id: string): Promise<Profile | null | "locked"> {
+  const origin = await originOfProfile(id);
+  if (origin === null) return null;
+  const p = await currentProfile(origin);
+  return p === "locked" || (p !== null && p.id === id) ? p : null;
+}
+
 type ReviewPageHandlers = Pick<
   PageHandlers,
-  "review-load" | "review-save" | "review-discard" | "review-check"
+  | "review-load"
+  | "review-save"
+  | "review-discard"
+  | "review-check"
+  | "saved-summary"
+  | "saved-load"
+  | "saved-save"
+  | "saved-check"
 >;
 
 /** `now` is injected for tests; it is the worker's clock and never comes from a message. */
@@ -142,6 +171,62 @@ export function createReviewPageHandlers(
     "review-discard": async ({ sessionId }) => {
       await discardSession("cancelled", sessionId);
       return { ok: true };
+    },
+
+    // The popup's "Saved form · N fields" line: the id it opens the page with and a count, no value.
+    // The count is inside the sealed record, so a locked vault answers `none`.
+    "saved-summary": async ({ origin }) => {
+      if (normalizeOrigin(origin) !== origin) return NONE;
+      const p = await currentProfile(origin);
+      if (p === null || p === "locked") return NONE;
+      return { state: "saved", profileId: p.id, count: p.fields.length };
+    },
+
+    // As review-load: values go out only if no lock landed between the epoch read and the reply.
+    "saved-load": async ({ profileId }) => {
+      const epoch = lockEpoch();
+      const p = await savedById(profileId);
+      if (p === null || p === "locked") return GONE;
+      const model = savedModel(p);
+      if (lockEpoch() !== epoch) return GONE;
+      return { state: "ready", model };
+    },
+
+    // Before every reveal, on a return to the page and on the worker's signal: unlocked, and a site
+    // still points at the id. The plaintext index only: no record is opened.
+    "saved-check": async ({ profileId }) => {
+      const epoch = lockEpoch();
+      if ((await status()).state !== "unlocked") return GONE;
+      const origin = await originOfProfile(profileId);
+      if (origin === null || lockEpoch() !== epoch) return GONE;
+      return READY;
+    },
+
+    // One compare-and-set under the store lock: the stored form is re-read there, so a removal or a
+    // Record again queued first is seen (gone or invalid), and no removed site is recreated.
+    "saved-save": async (req) => {
+      const origin = await originOfProfile(req.profileId);
+      if (origin === null) return SAVE_GONE;
+      const policies = policyMap(req.policies);
+      if (policies === null) return INVALID; // see INVALID
+      let out;
+      try {
+        out = await editProfile(origin, req.profileId, (p) =>
+          editSaved(p, {
+            name: req.name,
+            fillMode: req.fillMode,
+            pathPrefix: req.pathPrefix,
+            policies,
+          }),
+        );
+      } catch (err) {
+        if (err instanceof LockedError) return SAVE_GONE;
+        throw err;
+      }
+      if (out === "saved") return { ok: true };
+      // `invalid` here is the prefix (see INVALID), or a skip field set to save, which the page
+      // does not offer.
+      return out === "gone" ? SAVE_GONE : INVALID;
     },
   };
 }
