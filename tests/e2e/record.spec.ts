@@ -771,6 +771,33 @@ test.describe("record, review and fill", () => {
     );
   });
 
+  test("POST wizard: an edit made right before Pay is recorded, even while an earlier capture is unanswered (ruling F4)", async ({
+    context,
+    extensionId,
+    sites,
+  }) => {
+    void sites;
+    const { page } = await setUp(context, extensionId, [FIXTURE_A]);
+    await page.goto(POST);
+    const { popup } = await startRecording(context, extensionId, page);
+
+    // Each edit's capture leaves on blur or change; Pay posts right after the last one, so the
+    // document unloads while the worker may still be filing the ones before it.
+    await page.getByLabel("Account number").pressSequentially("12345678");
+    await page.getByLabel("Amount").pressSequentially("42.00");
+    await page.getByLabel("I authorize this payment").check();
+    await page.getByRole("button", { name: "Pay" }).click();
+    await expect(page.getByRole("heading", { name: "Receipt" })).toBeVisible();
+    await expectCount(popup, 3);
+
+    const review = await finish(context, popup);
+    expect((await reviewRows(review)).sort()).toEqual([
+      "1 account number",
+      "1 amount",
+      "1 i authorize this payment",
+    ]);
+  });
+
   test("SPA that rewrites its URL: the saved form fills after a reload, at the original URL, and not on an unrelated page (ADR 0034)", async ({
     context,
     extensionId,
