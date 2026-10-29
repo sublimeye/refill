@@ -55,10 +55,20 @@ Options weighed (controller ruling F1):
 - The e2e `/account` fixture was a copy of the twins form and now legitimately fills off-path. It
   became a distinct page with one matching field among others (stays empty), and `/lookalike` is the
   copy that must fill.
-- Residual: markup injected on an off-path page of the same origin can copy a step's fingerprint and
-  so obtain that step's plan. This adds nothing to the accepted "`pathPrefix` is scope, not isolation"
-  residual (ADR 0025): same-origin script could already `history.pushState` to the prefix before a
-  scan.
+- Residual (accepted under ruling F1): markup-only injection now reaches a step's plan anywhere on
+  the origin, not only under the prefix. Script injection could already do that through
+  `history.pushState` to the prefix before a scan (ADR 0025), but markup alone cannot call
+  `pushState`. So a page that lets an attacker place `form`, `input` and `label` without script (for
+  example sanitized user content that allows those elements, or HTML injection under a
+  script-blocking CSP) can copy a step's fingerprint and, in auto mode, have that step's `save`
+  values filled into its controls. Limits:
+  - the copy must reach step-level J >= 0.5 with the page;
+  - the fill rules hold: the form's action must resolve to the page origin and no submitter may
+    carry a cross-origin `formaction` (ADR 0024);
+  - each field is filled at most once per document;
+  - gesture mode returns a count and no values;
+  - without script the attacker cannot read the filled values, so a value reaches a third party only
+    if the user submits the form to a same-origin endpoint that publishes what it receives.
 - Cost if wrong: a site that randomizes field names and labels AND rewrites its URL stays unfilled
   off-path (no worse than before).
 - Two paths that differ only in case are one scope. A site that serves different forms at
