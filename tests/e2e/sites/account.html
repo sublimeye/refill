@@ -6,17 +6,23 @@
   </head>
   <body>
     <h1>Account settings</h1>
-    <!-- Served at /account: same origin as the bill pages, outside the profile's /billpay/ prefix.
-         The fields are the twins page's, so only the path rule keeps them from filling. -->
+    <!-- Served at /account: same origin as the bill pages, outside every e2e profile's path prefix.
+         One control matches a recorded field (City on the twins page, Account number on the SPA
+         rewrite page) among controls no recording has, so the page does not look like either form
+         (Jaccard < 0.5) and nothing fills here (ADR 0034). -->
     <form action="/account" method="post">
       <p>
-        <label>Address 1 <input name="address" /></label>
+        <label>Display name <input name="display" /></label>
       </p>
       <p>
-        <label>Address 2 <input name="address" /></label>
+        <label>Email <input type="email" name="email" /></label>
       </p>
+      <p><label for="id1">Account number</label> <input id="id1" /></p>
       <p>
         <label>City <input name="city" /></label>
+      </p>
+      <p>
+        <label>Phone <input type="tel" name="phone" /></label>
       </p>
     </form>
   </body>

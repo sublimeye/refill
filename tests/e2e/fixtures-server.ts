@@ -63,7 +63,10 @@ function listen(server: Server, port: number): Promise<void> {
   });
 }
 
-/** Pages live under `/billpay/` (the e2e profiles' path prefix); `/account` is outside it. */
+/**
+ * Pages live under `/billpay/` (the e2e profiles' path prefix); `/account` and `/lookalike` are
+ * outside it.
+ */
 const BILLPAY = /^\/billpay(?=\/)/;
 
 /**
@@ -78,6 +81,15 @@ function fileFor(pathname: string): string | null {
   const file = resolve(SITES_DIR, "." + rel);
   return file === SITES_DIR || file.startsWith(SITES_DIR + sep) ? file : null;
 }
+
+/**
+ * One page at several paths, the way an SPA server answers every route with its shell: the SPA
+ * rewrite fixture at its mixed-case path and at the lowercase route its script rewrites to (ADR 0034).
+ */
+const ALIASES: Record<string, string> = {
+  "/BillPay/SpaRewrite": "/billpay/spa-rewrite",
+  "/billpay/spa-rewrite-search": "/billpay/spa-rewrite",
+};
 
 const MAX_BODY = 64 * 1024;
 
@@ -132,7 +144,10 @@ async function serve(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const pathname = decodeURIComponent(
       new URL(req.url ?? "/", "https://localhost").pathname,
     );
-    let file = fileFor(pathname);
+    const routed = Object.hasOwn(ALIASES, pathname)
+      ? ALIASES[pathname]!
+      : pathname;
+    let file = fileFor(routed);
     if (file === null) {
       res.writeHead(403).end();
       return;

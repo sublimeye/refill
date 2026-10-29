@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SPA rewrite</title>
+  </head>
+  <body>
+    <!-- Served at /BillPay/SpaRewrite and at /billpay/spa-rewrite-search (fixtures-server ALIASES).
+         The script renders the form, then the app's router rewrites the URL to the lowercase search
+         route on the first edit, with history.replaceState and no DOM change (ADR 0034). -->
+    <h1>Pay your water bill</h1>
+    <div id="app"></div>
+    <script src="/billpay/spa-rewrite.js"></script>
+  </body>
+</html>

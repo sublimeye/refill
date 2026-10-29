@@ -440,6 +440,8 @@ test("same origin outside the profile's path prefix (/account) is not filled", a
   await page.reload();
   await expectTwinsFilled(page); // the profile works under /billpay/
 
+  // /account shares City with the twins form among controls the recording never saw: it does not
+  // look like the recorded form, so off the prefix nothing fills (ADR 0034).
   const since = await logMark(context);
   await page.goto(`${FIXTURE_A}/account`);
   const report = await waitForEntry(
@@ -448,8 +450,32 @@ test("same origin outside the profile's path prefix (/account) is not filled", a
     "scan-report",
     (e) => e.pathname === "/account",
   );
+  expect(report.controls.map((c) => c.sig.labelText)).toContain("city");
   expect(report.plan).toBe("none");
-  await expectTwinsEmpty(page);
+  const inputs = page.locator("input");
+  await expect(inputs).toHaveCount(5);
+  for (const input of await inputs.all()) await expect(input).toHaveValue("");
+});
+
+test("same origin outside the prefix, a page that looks like the recorded form (/lookalike) fills", async ({
+  context,
+  extensionId,
+  sites,
+}) => {
+  void sites;
+  const { page } = await setUp(context, extensionId, [FIXTURE_A]);
+  await seedTwins(context, page);
+
+  const since = await logMark(context);
+  await page.goto(`${FIXTURE_A}/lookalike`);
+  const report = await waitForEntry(
+    context,
+    since,
+    "scan-report",
+    (e) => e.pathname === "/lookalike",
+  );
+  expect(report.plan).toBe("fill");
+  await expectTwinsFilled(page);
 });
 
 test("locked vault fills nothing; unlock and reload fills", async ({

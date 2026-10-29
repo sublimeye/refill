@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Lookalike</title>
+  </head>
+  <body>
+    <h1>Billing address</h1>
+    <!-- Served at /lookalike: same origin as the bill pages, outside the e2e profiles' /billpay/
+         prefix. The fields are the twins page's, so the page looks like that recorded form
+         (Jaccard 1) and fills off-path (ADR 0034). -->
+    <form action="/lookalike" method="post">
+      <p>
+        <label>Address 1 <input name="address" /></label>
+      </p>
+      <p>
+        <label>Address 2 <input name="address" /></label>
+      </p>
+      <p>
+        <label>City <input name="city" /></label>
+      </p>
+    </form>
+  </body>
+</html>
