@@ -133,6 +133,15 @@ const PAGE = [
   { i: 2, kind: "text" as const, sig: NOTE },
 ];
 
+const pageKey = (c: (typeof PAGE)[number]) => sigKey(c.sig, c.kind);
+
+/** A control that no recorded field resembles. */
+const stranger = (i: number) => ({
+  i,
+  kind: "text" as const,
+  sig: sig({ name: `other${i}`, labelText: `other ${i}`, ordinal: i }),
+});
+
 const scan = (
   controls: Extract<ContentRequest, { type: "scan-report" }>["controls"] = PAGE,
 ): Extract<ContentRequest, { type: "scan-report" }> => ({
@@ -279,12 +288,25 @@ describe("scan-report", () => {
   it.each(["/signupx", "/other", "/"])(
     "path %s outside the prefix, on a page unlike the recorded form: none",
     async (pathname) => {
-      await saveProfile(profile());
-      const reply = await createContentHandlers(now)["scan-report"](
-        scan(),
-        ctx(pathname),
+      // The step's fingerprint is the recorded form (email, phone, note); this page shares only
+      // the email control with it among four others (J = 1/7).
+      await saveProfile(
+        profile({
+          steps: [
+            { index: 0, pathHint: "/signup", fingerprint: PAGE.map(pageKey) },
+          ],
+        }),
       );
-      expect(reply).toEqual({ state: "none" });
+      const unlike = [PAGE[0]!, ...[1, 2, 3, 4].map(stranger)];
+      const handlers = createContentHandlers(now);
+      expect(
+        await handlers["scan-report"](scan(unlike), ctx(pathname)),
+      ).toEqual({ state: "none" });
+      // The same page under the prefix fills the email: only the path made the difference.
+      expect(await handlers["scan-report"](scan(unlike), ctx())).toMatchObject({
+        state: "fill",
+        items: [{ fieldId: "f_email" }],
+      });
     },
   );
 
@@ -369,18 +391,13 @@ describe("scan-report", () => {
 });
 
 describe("scan-report off the path prefix (ADR 0034)", () => {
-  const key = (c: (typeof PAGE)[number]) => sigKey(c.sig, c.kind);
+  const key = pageKey;
   /** The step's fingerprint is this page: what the recorder files for it. */
   const recorded = (o: Partial<Profile> = {}) =>
     profile({
       steps: [{ index: 0, pathHint: "/signup", fingerprint: PAGE.map(key) }],
       ...o,
     });
-  const stranger = (i: number) => ({
-    i,
-    kind: "text" as const,
-    sig: sig({ name: `other${i}`, labelText: `other ${i}`, ordinal: i }),
-  });
   const FILL_EMAIL = {
     state: "fill",
     items: [

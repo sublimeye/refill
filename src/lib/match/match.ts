@@ -121,6 +121,14 @@ export interface SavedField {
   kind: ControlKind;
 }
 
+/** The profile is for exactly `origin`, and its prefix is a path. */
+function sameOriginWithPath(
+  profile: { origin: string; pathPrefix: string },
+  origin: string,
+): boolean {
+  return profile.pathPrefix.startsWith("/") && profile.origin === origin;
+}
+
 /**
  * True when `pathname` on `origin` is under the profile's path prefix. The origin is compared
  * exactly; the path case-insensitively (SPAs rewrite "/WebPayments/..." to "/webpayments/..."), on
@@ -131,9 +139,7 @@ export function profileApplies(
   origin: string,
   pathname: string,
 ): boolean {
-  if (!profile.pathPrefix.startsWith("/") || profile.origin !== origin) {
-    return false;
-  }
+  if (!sameOriginWithPath(profile, origin)) return false;
   const prefix = profile.pathPrefix.toLowerCase();
   const path = pathname.toLowerCase();
   // Segment boundaries: "/billpay" must not apply to "/billpayment".
@@ -154,9 +160,7 @@ export function pathScope(
   origin: string,
   pathname: string,
 ): "on-path" | "off-path" | null {
-  if (!profile.pathPrefix.startsWith("/") || profile.origin !== origin) {
-    return null;
-  }
+  if (!sameOriginWithPath(profile, origin)) return null;
   return profileApplies(profile, origin, pathname) ? "on-path" : "off-path";
 }
 
