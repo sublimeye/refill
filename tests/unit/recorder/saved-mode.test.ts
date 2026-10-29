@@ -341,9 +341,9 @@ describe("wiring and parsing", () => {
       type: "saved-check",
       profileId: ID,
     });
-    expect(
-      parsePageRequest({ type: "saved-summary", origin: ORIGIN }),
-    ).toEqual({ type: "saved-summary", origin: ORIGIN });
+    expect(parsePageRequest({ type: "saved-summary", origin: ORIGIN })).toEqual(
+      { type: "saved-summary", origin: ORIGIN },
+    );
     const parsed = parsePageRequest(good);
     expect(parsed).toEqual(good);
     expect(parsed).not.toBe(good);

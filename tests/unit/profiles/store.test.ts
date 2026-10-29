@@ -429,9 +429,9 @@ describe("originOfProfile", { timeout: 30_000 }, () => {
 describe("editProfile", { timeout: 30_000 }, () => {
   it("rewrites the record from the stored one, under the store lock", async () => {
     await saveProfile(profile("p1"));
-    expect(
-      await editProfile(A, "p1", (p) => ({ ...p, name: "Edited" })),
-    ).toBe("saved");
+    expect(await editProfile(A, "p1", (p) => ({ ...p, name: "Edited" }))).toBe(
+      "saved",
+    );
     expect(await loadProfileForOrigin(A)).toEqual({
       ...profile("p1"),
       name: "Edited",

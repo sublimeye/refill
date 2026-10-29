@@ -376,6 +376,21 @@ describe("site-remove ends a recording of that origin (M7)", () => {
     },
   );
 
+  it("tells open extension pages to check again once the site is gone, with or without a recording (ADR 0035)", async () => {
+    await upsertSite(A, { profileId: "p1" });
+    const sitesAtSignal: boolean[] = [];
+    const pages = vi
+      .spyOn(fakeBrowser.runtime, "sendMessage")
+      .mockImplementation((async () => {
+        // The signal must come after the removal: a page that checks then sees no site.
+        sitesAtSignal.push(Object.hasOwn(await readSites(), A));
+      }) as never);
+    expect(await remove(A)).toEqual({ ok: true });
+    expect(pages).toHaveBeenCalledWith({ type: "refill-recheck" });
+    await vi.waitFor(() => expect(sitesAtSignal.length).toBeGreaterThan(0));
+    expect(sitesAtSignal.at(-1)).toBe(false);
+  });
+
   it("leaves a recording of another origin alone", async () => {
     await upsertSite(A, {});
     await startSession(TAB, B, NOW, null);

@@ -3,9 +3,12 @@
   // user asks, a policy per field, the form's name, fill mode and path prefix, then Save or
   // Discard. Values are rendered as text only. Every reveal, and every return to the page, is
   // re-confirmed with the worker first (ruling P15): after a lock, an expiry or a cancel the page
-  // drops the recording and shows the gone copy. The worker's data-free "recording ended" message
+  // drops the recording and shows the gone copy. The worker's data-free "check again" message
   // triggers the same check, so a lock elsewhere hides a revealed value with no action here (I3).
+  // Saved mode (ADR 0035, `?saved=<profile id>`): the same page for the site's saved form, with
+  // Close instead of Discard; a lock or the site's removal ends it the same way.
   import { onMount, tick } from "svelte";
+  import { onRecheck } from "../../lib/messaging/recheck";
   import {
     applyLoad,
     discardReview,
@@ -13,25 +16,31 @@
     endReview,
     loadReview,
     newPage,
+    notSaved,
+    pageKeyFrom,
     recheckReview,
     saveReview,
-    sessionIdFrom,
     stepNumber,
     toggleValue,
-    onRecordingEnded,
     type FormProblem,
   } from "../../lib/recorder/review-flow";
 
   const MASK = "••••••";
   const GENERIC = "Something went wrong — try again";
-  const GONE =
-    "This recording is no longer available. Recordings end when Refill locks, after 30 minutes, or when you cancel them.";
   const PROBLEMS: Record<FormProblem, string> = {
     name: "Enter a name",
     path: "The path must start with / and cover every recorded page",
   };
 
-  const sessionId = sessionIdFrom(globalThis.location?.search ?? "");
+  const key = pageKeyFrom(globalThis.location?.search ?? "");
+  const savedMode = key?.mode === "saved";
+  const GONE = savedMode
+    ? "This saved form is no longer shown. Refill hides it when it locks or when the site is removed. Unlock, then open it again from the Refill button."
+    : "This recording is no longer available. Recordings end when Refill locks, after 30 minutes, or when you cancel them.";
+  const SAVED = savedMode
+    ? "Saved. Refill uses your changes the next time you open this form."
+    : "Saved. Refill will fill this form the next time you open it.";
+  if (savedMode) document.title = "Saved form · Refill";
 
   const page = $state(newPage());
   let busy = $state(false);
@@ -52,7 +61,7 @@
   }
 
   async function load() {
-    applyLoad(page, await loadReview(sessionId));
+    applyLoad(page, await loadReview(key));
     if (page.view !== "ready") await focusMessage();
   }
 
@@ -61,12 +70,12 @@
    * While a save or discard is in flight its own answer settles the page; the check runs after it.
    */
   function recheck() {
-    if (sessionId === null) return;
+    if (key === null) return;
     if (busy) {
       recheckWhenIdle = true;
       return;
     }
-    void recheckReview(page, sessionId).then((ended) =>
+    void recheckReview(page, key).then((ended) =>
       ended ? focusMessage() : undefined,
     );
   }
@@ -80,9 +89,9 @@
 
   onMount(() => {
     void load();
-    // A recording ended somewhere (a lock in another window, an expiry, a new recording): check
-    // now, so a revealed value does not stay on screen (I3).
-    const stop = onRecordingEnded(recheck);
+    // The worker's signal (a lock in another window, an expiry, a new recording, a removed site):
+    // check now, so a revealed value does not stay on screen (I3, ADR 0035).
+    const stop = onRecheck(recheck);
     // Back to the page (another tab, the screen unlocked): drop the recording if it is gone.
     const onVisible = () => {
       if (document.visibilityState === "visible") recheck();
@@ -106,21 +115,21 @@
   }
 
   async function toggle(i: number) {
-    if (sessionId === null) return;
+    if (key === null) return;
     failed = false;
-    const out = await toggleValue(page, sessionId, i);
+    const out = await toggleValue(page, key, i);
     if (out === "gone") await focusMessage();
     else if (out === "failed") await announceFailure();
   }
 
   async function save(event: SubmitEvent) {
     event.preventDefault();
-    if (busy || page.form === null || sessionId === null) return;
+    if (busy || page.form === null || key === null) return;
     busy = true;
     problem = null;
     failed = false;
     // saveReview never throws. The controls are enabled again before focus moves to one of them.
-    const out = await saveReview(sessionId, page.form);
+    const out = await saveReview(key, page.form);
     busy = false;
     switch (out) {
       case "saved":
@@ -140,11 +149,11 @@
   }
 
   async function discard() {
-    if (busy || sessionId === null) return;
+    if (busy || key === null || key.mode !== "review") return;
     busy = true;
     problem = null;
     failed = false;
-    const ok = await discardReview(sessionId); // never throws
+    const ok = await discardReview(key.id); // never throws
     busy = false;
     if (ok) {
       endReview(page, "discarded");
@@ -154,20 +163,31 @@
     }
     idle();
   }
+
+  // Saved mode: nothing to undo on the worker. The page drops the form and its values, then closes
+  // its tab (a tab with one history entry may close itself); if it cannot, the copy stays.
+  async function close() {
+    if (busy) return;
+    endReview(page, "closed");
+    await focusMessage();
+    window.close();
+  }
 </script>
 
 <main>
   {#if page.view === "loading"}
     <p>Loading…</p>
   {:else if page.view === "saved"}
-    <p bind:this={message} tabindex="-1" role="status">
-      Saved. Refill will fill this form the next time you open it.
-    </p>
+    <p bind:this={message} tabindex="-1" role="status">{SAVED}</p>
   {:else if page.view === "gone"}
     <p bind:this={message} tabindex="-1" role="status">{GONE}</p>
   {:else if page.view === "discarded"}
     <p bind:this={message} tabindex="-1" role="status">
       Discarded. Nothing was saved.
+    </p>
+  {:else if page.view === "closed"}
+    <p bind:this={message} tabindex="-1" role="status">
+      Closed. Nothing was changed.
     </p>
   {:else if page.view === "failed"}
     <p bind:this={message} tabindex="-1" role="status">{GENERIC}</p>
@@ -177,8 +197,12 @@
     {@const form = page.form}
     <!-- At "/" the prefix covers the whole site: there is no "elsewhere" to explain. -->
     {@const wholeSite = form.pathPrefix === "/"}
-    <h1>Review what Refill recorded on {model.host}</h1>
-    {#if model.fields.length === 0}
+    {#if savedMode}
+      <h1>Saved form for {model.host}</h1>
+    {:else}
+      <h1>Review what Refill recorded on {model.host}</h1>
+    {/if}
+    {#if model.fields.length === 0 && !savedMode}
       <p>
         Nothing was recorded. Type into the form while recording, then finish.
       </p>
@@ -199,33 +223,45 @@
           </thead>
           <tbody>
             {#each model.fields as field, i (field.id)}
+              <!-- Saved mode: a "Don't save" field holds no value (ADR 0035). -->
+              {@const empty = notSaved(key, field)}
               <tr>
                 <td>{stepNumber(model, field.step)}</td>
                 <th scope="row" id={`field-${i}`}>{field.label}</th>
                 <td>
-                  <span class="value"
-                    >{page.shown[i] ? displayValue(field) : MASK}</span
-                  >
-                  <!-- A visible Show/Hide label, no aria-pressed (ruling P16); the accessible name
-                       carries the field's label so each button says what it reveals. -->
-                  <button
-                    type="button"
-                    aria-label={`${page.shown[i] ? "Hide" : "Show"} ${field.label}`}
-                    onclick={() => toggle(i)}
-                  >
-                    {page.shown[i] ? "Hide" : "Show"}
-                  </button>
+                  {#if empty}
+                    <span class="value">Not saved</span>
+                  {:else}
+                    <span class="value"
+                      >{page.shown[i] ? displayValue(field) : MASK}</span
+                    >
+                    <!-- A visible Show/Hide label, no aria-pressed (ruling P16); the accessible name
+                         carries the field's label so each button says what it reveals. -->
+                    <button
+                      type="button"
+                      aria-label={`${page.shown[i] ? "Hide" : "Show"} ${field.label}`}
+                      onclick={() => toggle(i)}
+                    >
+                      {page.shown[i] ? "Hide" : "Show"}
+                    </button>
+                  {/if}
                 </td>
                 <td>
                   <select
                     aria-labelledby={`col-when field-${i}`}
+                    aria-describedby={empty ? `hint-${i}` : undefined}
                     bind:value={form.policies[i]!.policy}
                     disabled={busy}
                   >
-                    <option value="save">Fill it in</option>
+                    <option value="save" disabled={empty}>Fill it in</option>
                     <option value="ask">Ask me</option>
                     <option value="skip">Don't save</option>
                   </select>
+                  {#if empty}
+                    <br /><span id={`hint-${i}`} class="hint"
+                      >Record again to capture it</span
+                    >
+                  {/if}
                 </td>
               </tr>
             {/each}
@@ -305,9 +341,13 @@
         </p>
 
         <button type="submit" disabled={busy}>Save</button>
-        <button type="button" onclick={discard} disabled={busy}>
-          Discard
-        </button>
+        {#if savedMode}
+          <button type="button" onclick={close} disabled={busy}>Close</button>
+        {:else}
+          <button type="button" onclick={discard} disabled={busy}>
+            Discard
+          </button>
+        {/if}
       </form>
     {/if}
     <div aria-live="polite">
@@ -344,6 +384,9 @@
   }
   fieldset {
     margin: 0 0 1rem;
+  }
+  .hint {
+    font-size: 0.85em;
   }
   input[type="text"] {
     width: 100%;

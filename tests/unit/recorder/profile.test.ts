@@ -318,9 +318,9 @@ describe("savedModel (ADR 0035)", () => {
   });
 
   it("keeps the stored prefix as it is, even one that would not be the default", () => {
-    expect(savedModel(savedProfile({ pathPrefix: "/BillPay/" })).pathPrefix).toBe(
-      "/BillPay/",
-    );
+    expect(
+      savedModel(savedProfile({ pathPrefix: "/BillPay/" })).pathPrefix,
+    ).toBe("/BillPay/");
   });
 
   it("a Don't save field carries no value, even one stored before C1", () => {
@@ -376,7 +376,9 @@ describe("editSaved (ADR 0035)", () => {
 
   it("a Don't save field cannot become Fill it in", () => {
     const p = withSkip();
-    expect(edit(p, { policies: { f1: "save", f4: "ask", f5: "save" } })).toBeNull();
+    expect(
+      edit(p, { policies: { f1: "save", f4: "ask", f5: "save" } }),
+    ).toBeNull();
   });
 
   it("a Don't save field may become Ask me, still empty (a value stored before C1 is not revived)", () => {
