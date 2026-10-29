@@ -1,8 +1,12 @@
 import { readFileSync } from "node:fs";
 import { fakeBrowser } from "wxt/testing/fake-browser";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { upsertSite } from "../../../src/lib/sites";
 import { createSiteHandlers } from "../../../src/lib/sites/handlers";
-import type { RecordPageState } from "../../../src/lib/messaging/protocol";
+import type {
+  RecordPageState,
+  SavedSummary,
+} from "../../../src/lib/messaging/protocol";
 import {
   cancelRecordingFor,
   enableSite,
@@ -12,7 +16,9 @@ import {
   recordingLine,
   removeSiteFor,
   resolveTarget,
+  savedLine,
   viewOf,
+  viewSavedFor,
 } from "../../../src/lib/sites/popup-site";
 import { installShims } from "../helpers/browser-shims";
 
@@ -26,6 +32,9 @@ let shims: ReturnType<typeof installShims>;
 let recordState: RecordPageState;
 let recordCalls: { type: string; tabId?: number; origin?: string }[];
 let recordStart: { ok: true } | { ok: false; error: string };
+// The saved form's summary needs a sealed profile; the popup only needs the worker's answer.
+let summary: SavedSummary | Error;
+let summaryCalls: unknown[];
 
 beforeEach(() => {
   fakeBrowser.reset();
@@ -33,6 +42,8 @@ beforeEach(() => {
   recordState = OFF;
   recordCalls = [];
   recordStart = { ok: true };
+  summary = { state: "none" };
+  summaryCalls = [];
   vi.spyOn(console, "error").mockImplementation(() => {});
   const handlers = createSiteHandlers(() => 1_000_000);
   vi.spyOn(fakeBrowser.runtime, "sendMessage").mockImplementation(((msg: {
@@ -40,6 +51,12 @@ beforeEach(() => {
     tabId?: number;
     origin?: string;
   }) => {
+    if (msg.type === "saved-summary") {
+      summaryCalls.push(msg);
+      return summary instanceof Error
+        ? Promise.reject(summary)
+        : Promise.resolve(summary);
+    }
     if (msg.type.startsWith("record-")) {
       recordCalls.push(msg);
       switch (msg.type) {
@@ -192,6 +209,44 @@ describe("viewOf / loadSiteView", () => {
       recording: { state: "on", count: 3, here: true },
     });
     expect(recordCalls).toContainEqual({ type: "record-state", tabId: 3 });
+  });
+
+  it("an enabled site with a saved form: the popup learns its id and field count (ADR 0035)", async () => {
+    shims.grant(PA);
+    await enableSite(target);
+    // No saved form: the summary is not asked for.
+    expect(await loadSiteView(target)).toMatchObject({ saved: null });
+    expect(summaryCalls).toEqual([]);
+    await upsertSite(A, { profileId: "p1" });
+    summary = { state: "saved", profileId: "p1", count: 2 };
+    const view = await loadSiteView(target);
+    expect(view).toMatchObject({
+      kind: "on",
+      hasProfile: true,
+      saved: { profileId: "p1", count: 2 },
+    });
+    expect(summaryCalls).toEqual([{ type: "saved-summary", origin: A }]);
+    // Locked (or gone meanwhile): no line.
+    summary = { state: "none" };
+    expect(await loadSiteView(target)).toMatchObject({ saved: null });
+    // A failed summary costs the line, not the site section.
+    summary = new Error("x");
+    expect(await loadSiteView(target)).toMatchObject({
+      kind: "on",
+      saved: null,
+    });
+  });
+
+  it("viewOf keeps the summary only for a site that is on", () => {
+    const saved: SavedSummary = { state: "saved", profileId: "p1", count: 3 };
+    const on = status({ enabled: true, granted: true, hasProfile: true });
+    expect(viewOf(target, on, OFF, saved)).toMatchObject({
+      saved: { profileId: "p1", count: 3 },
+    });
+    expect(viewOf(target, on, OFF)).toMatchObject({ saved: null });
+    expect(
+      viewOf(target, status({ enabled: true, hasProfile: true }), OFF, saved),
+    ).toMatchObject({ kind: "revoked", saved: null });
   });
 
   it("is unsupported without an https origin, and never asks the service worker", async () => {
@@ -379,6 +434,32 @@ describe("removeSiteFor", () => {
     const res = await removeSiteFor({ tabId: 3, origin: A });
     expect(res.ok).toBe(false);
     expect(res.view.kind).not.toBe("error");
+  });
+});
+
+describe("savedLine and View (ADR 0035)", () => {
+  it("counts fields with the same plural rule as the recording line", () => {
+    expect(savedLine(1)).toBe("Saved form · 1 field");
+    expect(savedLine(2)).toBe("Saved form · 2 fields");
+    expect(savedLine(0)).toBe("Saved form · 0 fields");
+  });
+
+  it("View opens the review page in saved mode for that profile id", async () => {
+    const create = vi
+      .spyOn(fakeBrowser.tabs, "create")
+      .mockResolvedValue({} as never);
+    expect(await viewSavedFor({ profileId: "p1", count: 2 })).toBe(true);
+    expect(create).toHaveBeenCalledWith({
+      url: "chrome-extension://test-extension-id/review.html?saved=p1",
+    });
+    create.mockRejectedValue(new Error("x"));
+    expect(await viewSavedFor({ profileId: "p1", count: 2 })).toBe(false);
+  });
+
+  it("the popup shows the line and View only while unlocked, through savedLine", () => {
+    const src = readFileSync("src/entrypoints/popup/App.svelte", "utf8");
+    expect(src).toMatch(/\{savedLine\(s\.saved\.count\)\}/);
+    expect(src).toMatch(/view === "unlocked" && s\.saved/);
   });
 });
 

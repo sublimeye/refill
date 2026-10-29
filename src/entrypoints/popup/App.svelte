@@ -12,6 +12,8 @@
     recordingLine,
     removeSiteFor,
     resolveTarget,
+    savedLine,
+    viewSavedFor,
     type SiteView,
   } from "../../lib/sites/popup-site";
 
@@ -149,6 +151,22 @@
     siteError = "";
     try {
       if (await finishRecordingFor(s)) {
+        window.close();
+        return;
+      }
+      await announceSite(GENERIC);
+    } finally {
+      siteBusy = false;
+    }
+  }
+
+  // "View": the review page in saved mode for this site's saved form (ADR 0035); this popup is done.
+  async function viewSaved(s: Active) {
+    if (siteBusy || s.saved === null) return;
+    siteBusy = true;
+    siteError = "";
+    try {
+      if (await viewSavedFor(s.saved)) {
         window.close();
         return;
       }
@@ -381,6 +399,19 @@
           </button>
         {:else}
           <p bind:this={siteStatus} tabindex="-1">Enabled on {s.host}</p>
+          <!-- The saved form's line (ADR 0035). Its count is read from the sealed record, so it
+               shows only while unlocked; a Lock now in this popup hides it at once. -->
+          {#if view === "unlocked" && s.saved}
+            <p id="saved-line">{savedLine(s.saved.count)}</p>
+            <button
+              type="button"
+              aria-describedby="saved-line"
+              onclick={() => viewSaved(s)}
+              disabled={siteBusy}
+            >
+              View
+            </button>
+          {/if}
           {@render recordControls(s)}
           <button
             type="button"
