@@ -273,7 +273,7 @@
         </fieldset>
 
         <p>
-          <label for="prefix">Applies to pages under</label><br />
+          <label for="prefix">Fills on pages under</label><br />
           <input
             id="prefix"
             type="text"
@@ -283,9 +283,15 @@
             bind:this={prefixInput}
             bind:value={form.pathPrefix}
             aria-invalid={problem === "path" ? "true" : undefined}
-            aria-describedby={problem === "path" ? "prefix-error" : undefined}
+            aria-describedby={problem === "path"
+              ? "prefix-hint prefix-error"
+              : "prefix-hint"}
             disabled={busy}
           />
+          <br /><span id="prefix-hint"
+            >Elsewhere on {model.host}, Refill fills only pages that look like
+            this form.</span
+          >
           {#if problem === "path"}
             <br /><span id="prefix-error">{PROBLEMS.path}</span>
           {/if}
