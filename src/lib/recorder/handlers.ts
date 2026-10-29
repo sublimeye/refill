@@ -157,6 +157,8 @@ export function createRecorderContentHandlers(
     ctx: ContentContext,
   ): Promise<RecordState> {
     const t = now();
+    // No `await` before `withSession`: the router enters capture handlers in arrival order, and
+    // joining the session chain in this call keeps that order for the writes (ADR 0032).
     const state = await withSession(scope(ctx), t, (meta, body) => {
       if (meta.finished) return { result: OFF };
       const { body: next } = applyCapture(body, {

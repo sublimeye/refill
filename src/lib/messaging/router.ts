@@ -131,10 +131,16 @@ function logFailure(type: string, err: unknown): void {
   );
 }
 
+/** The turn of the latest `record-capture`: settled once its handler was entered (or it failed). */
+interface CaptureTurns {
+  last: Promise<void>;
+}
+
 function routeContent(
   handlers: ContentHandlers,
   msg: unknown,
   sender: Browser.runtime.MessageSender,
+  turns: CaptureTurns,
 ): Promise<unknown> {
   // Parsed before any store read: malformed traffic costs no IO.
   const req = parseContentRequest(msg);
@@ -143,14 +149,32 @@ function routeContent(
     r: ContentRequest,
     ctx: ContentContext,
   ) => Promise<unknown>;
+  // Captures enter their handler in the order they arrived, whatever order their sender checks
+  // finish in: the handler joins the session chain synchronously, so the worker applies them in
+  // that order too. A content script may send a newer capture of a control while an older one is
+  // still unanswered (at page hide or submit), and the older must not land last (ADR 0032).
+  const ordered = req.type === "record-capture";
+  const before = turns.last;
+  let release = (): void => undefined;
+  if (ordered) {
+    const mine = new Promise<void>((r) => (release = r));
+    // A turn ends only once the turns before it have: a capture whose check fails at once must not
+    // let the next one overtake an earlier capture whose check is still running.
+    turns.last = before.then(() => mine);
+  }
   return (async () => {
     try {
       const ctx = await authorizeContentSender(sender);
+      if (ordered) await before;
       if (ctx === null) return REJECTED;
-      return await handler(req, ctx);
+      const answer = handler(req, ctx);
+      release();
+      return await answer;
     } catch (err) {
       logFailure(req.type, err);
       return INTERNAL;
+    } finally {
+      release();
     }
   })();
 }
@@ -162,10 +186,13 @@ export function createRouter(handlers: {
   msg: unknown,
   sender: Browser.runtime.MessageSender,
 ) => Promise<unknown> | undefined {
+  const turns: CaptureTurns = { last: Promise.resolve() };
   return (msg, sender) => {
     if (tooLarge(msg)) return Promise.resolve(REJECTED);
     const kind = classifySender(sender, browser.runtime.id);
-    if (kind === "content") return routeContent(handlers.content, msg, sender);
+    if (kind === "content") {
+      return routeContent(handlers.content, msg, sender, turns);
+    }
     if (kind !== "page") return Promise.resolve(REJECTED);
     const req = parsePageRequest(msg);
     if (req === null) return Promise.resolve(REJECTED);

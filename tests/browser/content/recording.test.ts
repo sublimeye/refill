@@ -491,9 +491,9 @@ describe("in-recording fill", () => {
     });
     // Back; the user types into the new input and clears it before the re-scan runs.
     render(step, "a");
-    type(input("a"), "x");
-    type(input("a"), "");
     const n = h.reports().length;
+    type(input("a"), "x"); // the capture asks for that re-scan at once
+    type(input("a"), "");
     await vi.waitFor(() => expect(h.reports().length).toBe(n + 1), {
       timeout: RESCAN_DEBOUNCE_MS + 1500,
     });
@@ -722,6 +722,403 @@ describe("shadow roots and ordering", () => {
     await vi.waitFor(() => expect(h.captures()).toHaveLength(1), {
       timeout: CAPTURE_DEBOUNCE_MS / 2,
     });
+  });
+});
+
+interface Held {
+  name: string | null;
+  value: string;
+  /** Lets the fake worker apply the capture (into `applied`) and answer it. */
+  release(): void;
+}
+
+/**
+ * A slow worker: each capture is logged when sent (synchronously, at `sendMessage`), and is applied
+ * and answered only when the test releases it, in whatever order the test picks.
+ */
+function holdCaptures(h: Harness): {
+  held: Held[];
+  applied: Map<string | null, string>;
+  releaseAll(): void;
+} {
+  const send = h.env.send;
+  const held: Held[] = [];
+  const applied = new Map<string | null, string>();
+  h.env.send = vi.fn((msg: ContentRequest) => {
+    const answer = send(msg); // logged in `sent` now
+    if (msg.type !== "record-capture") return answer;
+    const { value } = msg;
+    const name = msg.sig.name;
+    return new Promise<unknown>((resolve) => {
+      held.push({
+        name,
+        value,
+        release: () => {
+          applied.set(name, value);
+          resolve(answer);
+        },
+      });
+    });
+  });
+  return {
+    held,
+    applied,
+    releaseAll: () => {
+      for (const c of held.splice(0)) c.release();
+    },
+  };
+}
+
+const sentOf = (h: Harness, name: string) =>
+  h
+    .captures()
+    .filter((c) => c.sig.name === name)
+    .map((c) => c.value);
+
+describe("pipeline (a slow worker, ruling F4)", () => {
+  it("a capture is sent without waiting for the reply to another control's capture", async () => {
+    mount(`<input name="a"><input name="b">`);
+    const h = harness();
+    const w = holdCaptures(h);
+    start(h);
+    await started(h);
+    type(input("a"), "1");
+    type(input("b"), "2");
+    await vi.waitFor(() => expect(h.captures()).toHaveLength(2), {
+      timeout: 200,
+    });
+    expect(w.applied.size).toBe(0); // no reply has come back yet
+    w.releaseAll();
+  });
+
+  it("captures of one control reach the worker one at a time, in the user's order", async () => {
+    mount(`<input name="a">`);
+    const h = harness();
+    const w = holdCaptures(h);
+    start(h);
+    await started(h);
+    type(input("a"), "1");
+    type(input("a"), "2");
+    type(input("a"), "3");
+    await vi.waitFor(() => expect(w.held).toHaveLength(1));
+    await sleep(50);
+    // The next one waits for this reply: the worker never holds two of them at once.
+    expect(sentOf(h, "a")).toEqual(["1"]);
+    w.held.shift()!.release();
+    await vi.waitFor(() => expect(w.held).toHaveLength(1));
+    await sleep(20);
+    expect(sentOf(h, "a")).toEqual(["1", "2"]);
+    w.held.shift()!.release();
+    await vi.waitFor(() => expect(w.held).toHaveLength(1));
+    w.held.shift()!.release();
+    await sleep(20);
+    expect(sentOf(h, "a")).toEqual(["1", "2", "3"]);
+    expect(w.applied.get("a")).toBe("3");
+  });
+
+  it("a worker that would apply concurrent captures newest first still ends with the newest value", async () => {
+    mount(`<input name="a"><input name="b">`);
+    const h = harness();
+    const w = holdCaptures(h);
+    start(h);
+    await started(h);
+    type(input("a"), "old");
+    type(input("b"), "x");
+    type(input("a"), "new");
+    await vi.waitFor(() => expect(w.held).toHaveLength(2));
+    await sleep(20);
+    // Release newest first, every time: only "a: old" and "b" are in flight.
+    while (w.held.length > 0) {
+      w.held.pop()!.release();
+      await sleep(20);
+    }
+    expect(w.applied.get("a")).toBe("new");
+    expect(w.applied.get("b")).toBe("x");
+  });
+
+  it("a capture on an unknown control waits for its scan without holding back a known control's", async () => {
+    const root = mount(`<input name="city">`);
+    const h = harness();
+    const send = h.env.send;
+    let release: () => void = () => undefined;
+    let hold = false;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      const answer = await send(msg); // logged in `sent` now
+      if (msg.type === "scan-report" && hold) {
+        await new Promise<void>((r) => (release = r)); // the worker is filing the new page
+      }
+      return answer;
+    });
+    start(h);
+    await started(h);
+    hold = true;
+    const zip = document.createElement("input");
+    zip.name = "zip";
+    root.append(zip);
+    type(zip, "75001"); // waits for a report that lists it
+    type(input("city"), "Lyon");
+    await vi.waitFor(() => expect(sentOf(h, "city")).toEqual(["Lyon"]), {
+      timeout: 200,
+    });
+    expect(sentOf(h, "zip")).toEqual([]);
+    hold = false;
+    release();
+    await vi.waitFor(() => expect(sentOf(h, "zip")).toEqual(["75001"]));
+  });
+
+  it("pagehide sends every pending edit synchronously, even with replies outstanding", async () => {
+    mount(`<input name="a"><input name="b"><input name="c">`);
+    const h = harness();
+    const w = holdCaptures(h);
+    start(h);
+    await started(h);
+    type(input("a"), "sent"); // in flight, its reply held
+    type(input("b"), "sent"); // in flight, its reply held
+    await vi.waitFor(() => expect(w.held).toHaveLength(2));
+    type(input("a"), "newest", "input"); // same control as an outstanding capture
+    type(input("c"), "typed", "input");
+    const before = h.captures().length;
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+    // No await: the page may be gone after this task.
+    expect(h.captures().length - before).toBe(2);
+    expect(sentOf(h, "a")).toEqual(["sent", "newest"]);
+    expect(sentOf(h, "c")).toEqual(["typed"]);
+    w.releaseAll();
+  });
+
+  it("an older edit queued behind an outstanding one is never sent after a newer one went out at pagehide", async () => {
+    mount(`<input name="a">`);
+    const h = harness();
+    const w = holdCaptures(h);
+    start(h);
+    await started(h);
+    type(input("a"), "1"); // in flight
+    await vi.waitFor(() => expect(w.held).toHaveLength(1));
+    type(input("a"), "2"); // queued behind "1"
+    type(input("a"), "3", "input"); // debounced
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+    expect(sentOf(h, "a")).toEqual(["1", "3"]);
+    // The page stayed (a bfcache-able hide): "1" is answered, and "2" must not follow "3".
+    w.releaseAll();
+    await sleep(50);
+    w.releaseAll();
+    await sleep(50);
+    expect(sentOf(h, "a")).toEqual(["1", "3"]);
+  });
+
+  it("a submit nothing cancelled sends every pending edit synchronously", async () => {
+    mount(`<form><input name="a"><input name="b"></form>`);
+    const form = document.querySelector("form")!;
+    const h = harness();
+    const w = holdCaptures(h);
+    start(h);
+    await started(h);
+    type(input("a"), "sent"); // in flight, its reply held
+    await vi.waitFor(() => expect(w.held).toHaveLength(1));
+    type(input("a"), "newest", "input");
+    type(input("b"), "typed", "input");
+    const before = h.captures().length;
+    // A dispatched submit event submits nothing; the harness counts it as the user's.
+    form.dispatchEvent(
+      new SubmitEvent("submit", { bubbles: true, cancelable: true }),
+    );
+    expect(h.captures().length - before).toBe(2);
+    expect(sentOf(h, "a")).toEqual(["sent", "newest"]);
+    w.releaseAll();
+  });
+
+  it("a submit nothing cancelled inside a shadow root sends pending edits synchronously", async () => {
+    const host = mount(`<div id="h"></div>`).querySelector("#h")!;
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `<form><input name="a"></form>`; // test-only markup
+    const h = harness();
+    start(h);
+    await started(h);
+    type(input("a", shadow), "typed", "input");
+    shadow
+      .querySelector("form")!
+      .dispatchEvent(
+        new SubmitEvent("submit", { bubbles: true, cancelable: true }),
+      );
+    expect(sentOf(h, "a")).toEqual(["typed"]);
+  });
+
+  it("a submit the page cancels (its own requestSubmit) does not send early or overtake a reply", async () => {
+    mount(`<form><input name="a"><input name="b"></form>`);
+    const form = document.querySelector("form")!;
+    form.addEventListener("submit", (e) => e.preventDefault()); // an SPA, or the page's own call
+    const h = harness();
+    const w = holdCaptures(h);
+    start(h);
+    await started(h);
+    type(input("a"), "sent"); // in flight, its reply held
+    await vi.waitFor(() => expect(w.held).toHaveLength(1));
+    type(input("a"), "newest", "input");
+    type(input("b"), "typed", "input");
+    const before = h.captures().length;
+    form.requestSubmit(); // a trusted submit event, cancelled by the page
+    expect(h.captures().length).toBe(before);
+    await afterDebounce();
+    // "b" after its quiet period; "a: newest" still waits for the reply to "a: sent".
+    expect(sentOf(h, "b")).toEqual(["typed"]);
+    expect(sentOf(h, "a")).toEqual(["sent"]);
+    w.releaseAll();
+    await vi.waitFor(() => expect(sentOf(h, "a")).toEqual(["sent", "newest"]));
+    w.releaseAll();
+  });
+
+  it("an untrusted submit sends nothing early", async () => {
+    mount(`<form><input name="a"></form>`);
+    const form = document.querySelector("form")!;
+    const h = harness(
+      {},
+      { isTrusted: (e: Event) => e.type !== "submit" }, // a submit event made by dispatchEvent
+    );
+    start(h);
+    await started(h);
+    type(input("a"), "typed", "input");
+    form.dispatchEvent(
+      new SubmitEvent("submit", { bubbles: true, cancelable: true }),
+    );
+    await sleep(CAPTURE_DEBOUNCE_MS / 2);
+    expect(h.captures()).toEqual([]);
+    await vi.waitFor(() => expect(h.captures()).toHaveLength(1));
+  });
+
+  it("after a pagehide send, the next capture of the control waits for every earlier one still unanswered", async () => {
+    mount(`<input name="a">`);
+    const h = harness();
+    const w = holdCaptures(h);
+    start(h);
+    await started(h);
+    type(input("a"), "1"); // in flight
+    await vi.waitFor(() => expect(w.held).toHaveLength(1));
+    type(input("a"), "2", "input");
+    window.dispatchEvent(new PageTransitionEvent("pagehide")); // "2" goes out beside "1"
+    expect(sentOf(h, "a")).toEqual(["1", "2"]);
+    // The page stayed (bfcache); the user edits again.
+    type(input("a"), "3");
+    w.held.find((c) => c.value === "2")!.release();
+    await sleep(50);
+    expect(sentOf(h, "a")).toEqual(["1", "2"]); // "1" is still unanswered
+    w.releaseAll();
+    await vi.waitFor(() => expect(sentOf(h, "a")).toEqual(["1", "2", "3"]));
+    w.releaseAll();
+  });
+
+  it("a capture still waiting when the recording ends is not sent into the next one", async () => {
+    const root = mount(`<input name="city">`);
+    const h = harness();
+    const send = h.env.send;
+    let release: () => void = () => undefined;
+    let hold = false;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      const answer = await send(msg); // logged in `sent` now
+      if (msg.type === "scan-report" && hold) {
+        hold = false;
+        await new Promise<void>((r) => (release = r)); // the re-scan the capture waits for
+      }
+      return answer;
+    });
+    start(h);
+    await started(h);
+    hold = true;
+    const zip = document.createElement("input");
+    zip.name = "zip";
+    root.append(zip);
+    type(zip, "old session"); // waits for a report that lists it
+    const statuses = () =>
+      h.sent.filter((m) => m.type === "record-status").length;
+    // Cancel (or Finish) in the popup, then Record again, while that capture waits.
+    h.status.value = { state: "off" };
+    h.nudge();
+    await vi.waitFor(() => expect(statuses()).toBe(2));
+    await sleep(10);
+    h.status.value = { state: "on", count: 0 };
+    h.nudge();
+    await vi.waitFor(() => expect(statuses()).toBe(3));
+    await sleep(10);
+    release();
+    await sleep(100);
+    expect(sentOf(h, "zip")).toEqual([]);
+    // The new recording captures as usual.
+    type(zip, "new session");
+    await vi.waitFor(() => expect(sentOf(h, "zip")).toEqual(["new session"]));
+  });
+
+  it("pagehide during the start report sends nothing before that report is answered (P12)", async () => {
+    mount(`<input name="a">`);
+    const h = harness();
+    const send = h.env.send;
+    let release: () => void = () => undefined;
+    let reports = 0;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      const answer = await send(msg); // logged in `sent` now
+      if (msg.type === "scan-report" && ++reports === 2) {
+        await new Promise<void>((r) => (release = r)); // the P12 report, held
+      }
+      return answer;
+    });
+    start(h);
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2));
+    type(input("a"), "typed", "input");
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
+    await sleep(50);
+    expect(h.captures()).toEqual([]);
+    release();
+    await vi.waitFor(() => expect(h.captures()).toHaveLength(1));
+  });
+
+  it("refill-flush resolves only once every capture made so far is answered", async () => {
+    mount(`<input name="a"><input name="b">`);
+    const h = harness();
+    const w = holdCaptures(h);
+    start(h);
+    await started(h);
+    type(input("a"), "1");
+    type(input("a"), "2"); // queued behind "1"
+    type(input("b"), "typed", "input");
+    let settled = false;
+    const done = h.flush().then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(w.held).toHaveLength(2));
+    w.held.shift()!.release(); // "a: 1"; "a: 2" goes out next
+    await vi.waitFor(() => expect(sentOf(h, "a")).toEqual(["1", "2"]));
+    await sleep(20);
+    expect(settled).toBe(false);
+    w.held.find((c) => c.name === "b")!.release();
+    await sleep(20);
+    expect(settled).toBe(false); // "a: 2" is still unanswered
+    w.releaseAll();
+    await done;
+    expect(w.applied.get("a")).toBe("2");
+    expect(w.applied.get("b")).toBe("typed");
+  });
+
+  it("the pill's Finish sends record-finish only after every capture is answered", async () => {
+    mount(`<input name="a"><input name="b">`);
+    const h = harness();
+    const w = holdCaptures(h);
+    start(h);
+    await started(h);
+    type(input("a"), "typed a");
+    type(input("b"), "typed b", "input");
+    const host = document.querySelector<HTMLElement>("[popover]")!;
+    const box = host.getBoundingClientRect();
+    await userEvent.click(host, {
+      position: { x: box.width - 24, y: box.height / 2 },
+    });
+    await vi.waitFor(() => expect(w.held).toHaveLength(2));
+    await sleep(30);
+    expect(h.sent.some((m) => m.type === "record-finish")).toBe(false);
+    w.held.pop()!.release();
+    await sleep(30);
+    expect(h.sent.some((m) => m.type === "record-finish")).toBe(false);
+    w.releaseAll();
+    await vi.waitFor(() =>
+      expect(h.sent.some((m) => m.type === "record-finish")).toBe(true),
+    );
   });
 });
 

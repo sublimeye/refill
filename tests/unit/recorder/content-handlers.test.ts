@@ -344,6 +344,23 @@ describe("recording content handlers", { timeout: 30_000 }, () => {
       expect((await body()).fields.map((f) => f.value)).toEqual(["4111-VALUE"]);
     });
 
+    it("joins the session chain in the call itself, so captures apply in the order they arrive (ruling F4)", async () => {
+      await startSession(TAB, ORIGIN, T0, null);
+      const h = createContentHandlers(now);
+      const acct = page("acct");
+      await h["scan-report"](scan(acct), ctx());
+      // The router enters capture handlers in arrival order (ADR 0032); nothing may reorder them
+      // between that call and the session chain.
+      const older = h["record-capture"](cap(acct[0]!, "older"), ctx());
+      const between = peek(); // queued in the same task, right after the first capture
+      const newer = h["record-capture"](cap(acct[0]!, "newer"), ctx());
+      await Promise.all([older, newer]);
+      const seen = await between;
+      if (seen === "off") throw new Error("no session");
+      expect(seen.body.fields.map((f) => f.value)).toEqual(["older"]);
+      expect((await body()).fields.map((f) => f.value)).toEqual(["newer"]);
+    });
+
     it("before any scan the capture is not filed and the state is on", async () => {
       await startSession(TAB, ORIGIN, T0, null);
       expect(
