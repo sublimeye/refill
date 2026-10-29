@@ -77,6 +77,7 @@ const addListener = EventTarget.prototype.addEventListener;
 const removeListener = EventTarget.prototype.removeEventListener;
 const composedPathFn = Event.prototype.composedPath;
 const eventType = getter<string>(Event.prototype, "type");
+const defaultPrevented = getter<boolean>(Event.prototype, "defaultPrevented");
 const defaultView = getter<Window | null>(Document.prototype, "defaultView");
 
 type Active = "on" | "full";
@@ -183,6 +184,8 @@ export function createRecording(env: RecordingEnv): Recording {
   /** Per element, the number of the newest capture sent: an older one is never sent after it. */
   const sentSeq = new WeakMap<Element, number>();
   let seq = 0;
+  /** Bumped when capturing stops: a capture made before must not reach a later recording. */
+  let epoch = 0;
 
   const onEdit = (e: Event): void => {
     handle(e);
@@ -191,14 +194,16 @@ export function createRecording(env: RecordingEnv): Recording {
   const onPageHide = (): void => {
     flush(true);
   };
+  // Heard late (bubble phase, at the window or a shadow root): a submit the page cancelled (an SPA,
+  // or its own `requestSubmit()`, which is trusted too) unloads nothing and changes nothing here.
   const onSubmit = (e: Event): void => {
-    let trusted: boolean;
+    let go: boolean;
     try {
-      trusted = isTrusted(e);
+      go = isTrusted(e) && !defaultPrevented(e);
     } catch {
       return;
     }
-    if (trusted) flush(true);
+    if (go) flush(true);
   };
 
   function win(): Window | null {
@@ -215,17 +220,17 @@ export function createRecording(env: RecordingEnv): Recording {
       capture: true,
       passive: true,
     });
-    // `submit` is not composed either: a form in a shadow tree is heard on its root.
-    addListener.call(target, "submit", onSubmit, {
-      capture: true,
-      passive: true,
-    });
+  }
+  /** `submit` is not composed either: a form in a shadow tree is heard last on its root. */
+  function attachRoot(root: ShadowRoot): void {
+    attach(root);
+    addListener.call(root, "submit", onSubmit, { passive: true });
   }
   function detachFrom(target: EventTarget): void {
     try {
       removeListener.call(target, "input", onEdit, true);
       removeListener.call(target, "change", onEdit, true);
-      removeListener.call(target, "submit", onSubmit, true);
+      removeListener.call(target, "submit", onSubmit, false);
     } catch {
       // nothing more to undo
     }
@@ -233,20 +238,25 @@ export function createRecording(env: RecordingEnv): Recording {
 
   function activate(): void {
     attach(doc);
-    for (const root of roots) attach(root);
+    for (const root of roots) attachRoot(root);
     const w = win();
-    if (w !== null) addListener.call(w, "pagehide", onPageHide, true);
+    if (w !== null) {
+      addListener.call(w, "pagehide", onPageHide, true);
+      addListener.call(w, "submit", onSubmit, { passive: true });
+    }
   }
 
   function deactivate(): void {
     if (state === null) return;
     state = null;
+    epoch++;
     detachFrom(doc);
     for (const root of roots) detachFrom(root);
     const w = win();
     if (w !== null) {
       try {
         removeListener.call(w, "pagehide", onPageHide, true);
+        removeListener.call(w, "submit", onSubmit, false);
       } catch {
         // nothing more to undo
       }
@@ -390,10 +400,17 @@ export function createRecording(env: RecordingEnv): Recording {
    */
   function enqueue(p: Pending, unloading = false): void {
     if (p.value.length > MAX_VALUE || p.pageDefault.length > MAX_VALUE) return;
-    const prev = unloading ? undefined : lastOf.get(p.el);
-    const g = gate(deliver(p, ++seq, prev));
+    const last = lastOf.get(p.el);
+    const prev = unloading ? undefined : last;
+    const g = gate(deliver(p, ++seq, prev, epoch));
     pending.add(g);
-    lastOf.set(p.el, g);
+    // Sent beside an earlier capture still in flight (unloading): the next one waits for both.
+    lastOf.set(
+      p.el,
+      unloading && last !== undefined && !last.settled
+        ? gate(Promise.all([last.done, g.done]))
+        : g,
+    );
     void g.done.then(() => pending.delete(g));
   }
 
@@ -419,10 +436,12 @@ export function createRecording(env: RecordingEnv): Recording {
     p: Pending,
     mine: number,
     prev: Gate | undefined,
+    session: number,
   ): Promise<void> {
     let rescanned = false;
     for (;;) {
-      if (stopped || state === null) return;
+      // Capturing stopped since (Cancel or Finish, maybe then Record again): this edit is dropped.
+      if (stopped || state === null || epoch !== session) return;
       if (!filed.settled) {
         await filed.done;
         continue;
@@ -484,7 +503,7 @@ export function createRecording(env: RecordingEnv): Recording {
     observeRoot(root) {
       if (stopped || roots.has(root)) return;
       roots.add(root);
-      if (state !== null) attach(root);
+      if (state !== null) attachRoot(root);
     },
     noteScan(r) {
       defaults.note(r.controls);
