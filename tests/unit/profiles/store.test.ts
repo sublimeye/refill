@@ -454,6 +454,16 @@ describe("editProfile", { timeout: 30_000 }, () => {
     expect(set).not.toHaveBeenCalled();
   });
 
+  it("gone, writing nothing, when the pointer moved while the old record is still there", async () => {
+    await saveProfile(profile("p1"));
+    await upsertSite(A, { profileId: "p2" });
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    const edit = vi.fn((p: Profile) => ({ ...p, name: "Edited" }));
+    expect(await editProfile(A, "p1", edit)).toBe("gone");
+    expect(edit).not.toHaveBeenCalled();
+    expect(set).not.toHaveBeenCalled();
+  });
+
   it("gone when the record is missing or unreadable", async () => {
     await upsertSite(A, { profileId: "ghost" });
     expect(await editProfile(A, "ghost", (p) => p)).toBe("gone");
