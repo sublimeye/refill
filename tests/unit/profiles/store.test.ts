@@ -11,8 +11,10 @@ import {
 import { aad } from "../../../src/lib/crypto/aad";
 import { newKdfParams } from "../../../src/lib/crypto/kdf";
 import {
+  editProfile,
   loadProfileForOrigin,
   newId,
+  originOfProfile,
   saveProfile,
   touchLastUsed,
 } from "../../../src/lib/profiles/store";
@@ -400,6 +402,99 @@ describe("touchLastUsed", { timeout: 30_000 }, () => {
     const set = vi.spyOn(fakeBrowser.storage.local, "set");
     await touchLastUsed("https://A.example", "p1", T);
     await touchLastUsed(A, "p|1", T);
+    expect(set).not.toHaveBeenCalled();
+  });
+});
+
+describe("originOfProfile", { timeout: 30_000 }, () => {
+  it("is the site that points at the id, from the plaintext index (works while locked)", async () => {
+    await saveProfile(profile("p1"));
+    await saveProfile(profile("p2", B));
+    expect(await originOfProfile("p1")).toBe(A);
+    expect(await originOfProfile("p2")).toBe(B);
+    await lock();
+    expect(await originOfProfile("p1")).toBe(A);
+  });
+
+  it("is null for an unknown id, a removed site, or a string that is not an id", async () => {
+    await saveProfile(profile("p1"));
+    expect(await originOfProfile("p9")).toBeNull();
+    expect(await originOfProfile("a|b")).toBeNull();
+    expect(await originOfProfile("__proto__")).toBeNull();
+    await removeSite(A);
+    expect(await originOfProfile("p1")).toBeNull();
+  });
+});
+
+describe("editProfile", { timeout: 30_000 }, () => {
+  it("rewrites the record from the stored one, under the store lock", async () => {
+    await saveProfile(profile("p1"));
+    expect(
+      await editProfile(A, "p1", (p) => ({ ...p, name: "Edited" })),
+    ).toBe("saved");
+    expect(await loadProfileForOrigin(A)).toEqual({
+      ...profile("p1"),
+      name: "Edited",
+    });
+    const stored = JSON.stringify(await getItem(profileKey("p1")));
+    expect(stored).not.toContain("Edited");
+  });
+
+  it("gone, writing nothing, when the site is missing or points at another profile", async () => {
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    const edit = vi.fn((p: Profile) => p);
+    expect(await editProfile(A, "p1", edit)).toBe("gone");
+    await saveProfile(profile("p2"));
+    set.mockClear();
+    expect(await editProfile(A, "p1", edit)).toBe("gone");
+    expect(await editProfile(B, "p2", edit)).toBe("gone");
+    expect(await editProfile("https://A.example", "p2", edit)).toBe("gone");
+    expect(await editProfile(A, "a|b", edit)).toBe("gone");
+    expect(edit).not.toHaveBeenCalled();
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it("gone when the record is missing or unreadable", async () => {
+    await upsertSite(A, { profileId: "ghost" });
+    expect(await editProfile(A, "ghost", (p) => p)).toBe("gone");
+    await saveProfile(profile("p1"));
+    await withStoreLock((tx) =>
+      putEncrypted(profileKey("p1"), aad.profile("p1", B), profile("p1"), tx),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await editProfile(A, "p1", (p) => p)).toBe("gone");
+  });
+
+  it("invalid, writing nothing, when the edit refuses or breaks the profile, or moves it", async () => {
+    await saveProfile(profile("p1"));
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    for (const edit of [
+      () => null,
+      (p: Profile) => ({ ...p, name: "" }),
+      (p: Profile) => ({ ...p, id: "p2" }),
+      (p: Profile) => ({ ...p, origin: B }),
+    ]) {
+      expect(await editProfile(A, "p1", edit)).toBe("invalid");
+    }
+    expect(set).not.toHaveBeenCalled();
+    expect(await loadProfileForOrigin(A)).toEqual(profile("p1"));
+  });
+
+  it("a removal queued first wins: the edit never recreates the site", async () => {
+    await saveProfile(profile("p1"));
+    const removal = withStoreLock((tx) => removeSite(A, tx));
+    expect(await editProfile(A, "p1", (p) => p)).toBe("gone");
+    await removal;
+    expect((await readSites())[A]).toBeUndefined();
+  });
+
+  it("locked: throws LockedError and writes nothing", async () => {
+    await saveProfile(profile("p1"));
+    await lock();
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    await expect(editProfile(A, "p1", (p) => p)).rejects.toBeInstanceOf(
+      LockedError,
+    );
     expect(set).not.toHaveBeenCalled();
   });
 });

@@ -56,6 +56,65 @@ export async function saveProfile(p: Profile): Promise<void> {
 /** How often a load follows a moved pointer before it gives up (each needs a write in between). */
 const MAX_REREADS = 3;
 
+/**
+ * The site whose index record points at profile `id`, or `null` (an unknown id, a removed site, a
+ * string that is not an id). Plaintext index only, so it works while locked. A profile id belongs to
+ * one site (`saveProfile` refuses a second), so the answer is unique. The saved-form page is keyed
+ * by profile id (ADR 0035).
+ */
+export async function originOfProfile(id: string): Promise<string | null> {
+  if (!ID_RE.test(id)) return null;
+  for (const [origin, site] of Object.entries(await readSites())) {
+    if (site.profileId === id) return origin;
+  }
+  return null;
+}
+
+export type EditOutcome = "saved" | "gone" | "invalid";
+
+/**
+ * Rewrites profile `id` of `origin` as `edit` returns it, as one compare-and-set under the store
+ * lock (the saved-form page's Save, ADR 0035). The site record and the profile are read through
+ * `tx`, so a removal, a replacement or another write queued first is seen: `gone` when the site is
+ * missing, points at another profile, or the record is missing or unreadable, and nothing is
+ * written (no site is ever created). `invalid` when `edit` returns null, or a profile that does not
+ * parse or has another id or origin; nothing is written then either. `edit` is synchronous and does
+ * no IO (ADR 0011). Throws `LockedError` when locked (nothing is written then).
+ */
+export async function editProfile(
+  origin: string,
+  id: string,
+  edit: (p: Profile) => Profile | null,
+): Promise<EditOutcome> {
+  if (normalizeOrigin(origin) !== origin || !ID_RE.test(id)) return "gone";
+  return withStoreLock(async (tx): Promise<EditOutcome> => {
+    const sites = await readSites(tx);
+    const site = Object.hasOwn(sites, origin) ? sites[origin]! : null;
+    if (site === null || site.profileId !== id) return "gone";
+    const key = profileKey(id);
+    const ad = aad.profile(id, origin);
+    let raw: unknown;
+    try {
+      raw = await getEncrypted<unknown>(key, ad, tx);
+    } catch (err) {
+      if (err instanceof DecryptError || err instanceof SyntaxError) {
+        console.error("[refill] profile record unreadable:", err.name);
+        return "gone";
+      }
+      throw err;
+    }
+    const current = raw === undefined ? null : parseProfile(raw);
+    if (!current || current.id !== id || current.origin !== origin) {
+      return "gone";
+    }
+    const edited = edit(current);
+    const next = edited === null ? null : parseProfile(edited);
+    if (!next || next.id !== id || next.origin !== origin) return "invalid";
+    await putEncrypted(key, ad, next, tx);
+    return "saved";
+  });
+}
+
 async function profileIdOf(origin: string): Promise<string | null> {
   const sites = await readSites();
   const id = Object.hasOwn(sites, origin) ? sites[origin]!.profileId : null;
