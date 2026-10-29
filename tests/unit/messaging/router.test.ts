@@ -770,6 +770,34 @@ describe("content senders", () => {
       expect(values(c)).toEqual(["c"]);
     });
 
+    it("a capture whose sender check throws still waits for the one before it, so the next cannot overtake", async () => {
+      const shims = await enabled();
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      let release: () => void = () => undefined;
+      const first = new Promise<void>((r) => (release = r));
+      let calls = 0;
+      shims.permissions.contains.mockImplementation(async () => {
+        calls++;
+        if (calls === 1) await first; // A: slow
+        if (calls === 2) throw new Error("boom"); // B: fails at once
+        return true; // C: fast
+      });
+      const { c, handlers } = spyHandlers();
+      const r = createRouter(handlers);
+      const a = r(capture("A"), content);
+      const b = r(capture("B"), content);
+      const cc = r(capture("C"), content);
+      expect(await b).toEqual(INTERNAL);
+      await vi.waitFor(() =>
+        expect(shims.permissions.contains).toHaveBeenCalledTimes(3),
+      );
+      await new Promise((res) => setTimeout(res, 20));
+      expect(values(c)).toEqual([]);
+      release();
+      await Promise.all([a, cc]);
+      expect(values(c)).toEqual(["A", "C"]);
+    });
+
     it("other content requests are not held behind a capture", async () => {
       const shims = await enabled();
       const release = slowFirstCheck(shims);

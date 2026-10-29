@@ -156,7 +156,12 @@ function routeContent(
   const ordered = req.type === "record-capture";
   const before = turns.last;
   let release = (): void => undefined;
-  if (ordered) turns.last = new Promise<void>((r) => (release = r));
+  if (ordered) {
+    const mine = new Promise<void>((r) => (release = r));
+    // A turn ends only once the turns before it have: a capture whose check fails at once must not
+    // let the next one overtake an earlier capture whose check is still running.
+    turns.last = before.then(() => mine);
+  }
   return (async () => {
     try {
       const ctx = await authorizeContentSender(sender);
