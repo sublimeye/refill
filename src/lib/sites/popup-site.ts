@@ -4,6 +4,7 @@ import { browser } from "wxt/browser";
 import {
   sendToSw,
   type RecordPageState,
+  type SavedSummary,
   type SiteStatus,
 } from "../messaging/protocol";
 import { normalizeOrigin } from "./origin";
@@ -36,12 +37,25 @@ export type SiteView =
       host: string;
       /** The origin has a saved form (Record again starts from it). */
       hasProfile: boolean;
+      /**
+       * The saved form's id and field count, for the "Saved form · N fields" line and View
+       * (ADR 0035): only for a site that is on, while unlocked. No value reaches the popup.
+       */
+      saved: SavedForm | null;
       recording: RecordingView;
     };
 
+export type SavedForm = { profileId: string; count: number };
+
 const RECORDING_OFF: RecordingView = { state: "off" };
+const NO_SUMMARY: SavedSummary = { state: "none" };
 
 const fields = (n: number): string => `${n} ${n === 1 ? "field" : "fields"}`;
+
+/** The popup's line for the site's saved form (ADR 0035), with the recording line's plural rule. */
+export function savedLine(count: number): string {
+  return `Saved form · ${fields(count)}`;
+}
 
 /** The popup's status line for a recording on this tab; `full` reads as the pill does (M5). */
 export function recordingLine(
@@ -97,6 +111,7 @@ export function viewOf(
   target: Target,
   status: SiteStatus,
   recording: RecordPageState,
+  summary: SavedSummary = NO_SUMMARY,
 ): SiteView {
   if (target.origin === null || status.origin === null) {
     return { kind: "unsupported" };
@@ -112,8 +127,36 @@ export function viewOf(
     origin: status.origin,
     host: new URL(status.origin).host,
     hasProfile: status.hasProfile,
+    saved:
+      kind === "on" && summary.state === "saved"
+        ? { profileId: summary.profileId, count: summary.count }
+        : null,
     recording: recordingOf(recording),
   };
+}
+
+/**
+ * The saved form's summary for an enabled, granted site that has one; `none` otherwise, and when
+ * the request fails: the line is a convenience, so a failure costs the line, not the section.
+ */
+async function summaryOf(status: SiteStatus): Promise<SavedSummary> {
+  if (
+    status.origin === null ||
+    !status.enabled ||
+    !status.granted ||
+    !status.hasProfile
+  ) {
+    return NO_SUMMARY;
+  }
+  try {
+    const res = await sendToSw({
+      type: "saved-summary",
+      origin: status.origin,
+    });
+    return res.state === "saved" ? res : NO_SUMMARY;
+  } catch {
+    return NO_SUMMARY;
+  }
 }
 
 /** Never throws: a failed query is the `error` view. */
@@ -124,7 +167,7 @@ export async function loadSiteView(target: Target): Promise<SiteView> {
       sendToSw({ type: "site-status", origin: target.origin }),
       sendToSw({ type: "record-state", tabId: target.tabId }),
     ]);
-    return viewOf(target, status, recording);
+    return viewOf(target, status, recording, await summaryOf(status));
   } catch {
     return { kind: "error" };
   }
@@ -171,6 +214,21 @@ export function recordSite(target: Target & { origin: string }) {
 export async function finishRecordingFor(target: Target): Promise<boolean> {
   try {
     return (await sendToSw({ type: "record-finish", tabId: target.tabId })).ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * "View": opens the review page in saved mode for the site's saved form, keyed by its profile id
+ * (ADR 0035). The caller closes the popup on `true`. Never throws.
+ */
+export async function viewSavedFor(saved: SavedForm): Promise<boolean> {
+  try {
+    await browser.tabs.create({
+      url: `${browser.runtime.getURL("/review.html")}?saved=${encodeURIComponent(saved.profileId)}`,
+    });
+    return true;
   } catch {
     return false;
   }

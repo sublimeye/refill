@@ -20,6 +20,11 @@ The return-visit toast and drafts arrive in later plans. Not on the Chrome Web S
   you show them) and Save. Everything you type is saved, encrypted, except passwords, one-time codes,
   card security codes and captchas; card numbers and SSNs included unless you set them to "Don't
   save". "Record again" starts from the saved form, so you change only what differs.
+- View the saved form from the popup: on a site with a saved form, the popup shows "Saved form · N
+  fields" and View. View opens the form with its values masked until you show them. You can change
+  its name, the fill mode, the pages it fills under and each field's "When I return", then Save. A
+  "Don't save" field stays empty: record again to capture it. Locking Refill or removing the site
+  hides the form at once.
 - Fill from a saved profile: on an enabled site with a profile, once the vault is unlocked, Refill
   fills the matching fields of the current page (including multi-step forms that change without a
   reload). It skips fields it detects as passwords, one-time codes or card security codes (judged by

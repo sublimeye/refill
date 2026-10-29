@@ -8,6 +8,7 @@ import { browser } from "wxt/browser";
 import { aad } from "../crypto/aad";
 import { DecryptError, open, seal, type Sealed } from "../crypto/aead";
 import { fromUtf8, utf8 } from "../crypto/bytes";
+import { announceRecheck } from "../messaging/recheck";
 import { newId } from "../profiles/store";
 import { ID_RE, type Profile } from "../profiles/types";
 import { normalizeOrigin } from "../sites/origin";
@@ -208,22 +209,6 @@ export async function nudge(tabId: number): Promise<void> {
   }
 }
 
-/**
- * Tells open extension pages that a recording ended, with a data-free runtime message (content
- * scripts do not get runtime messages). The review page answers it with `review-check` and ends if
- * its recording is gone, so a revealed value does not stay on screen after a lock (I3, ADR 0033).
- * Not awaited; with no page listening the send fails, which is the usual case and not logged.
- */
-function announceEnded(): void {
-  try {
-    browser.runtime
-      .sendMessage({ type: "refill-recording-ended" })
-      .catch(() => undefined);
-  } catch {
-    // no runtime messaging here: nothing to tell
-  }
-}
-
 /** How long a popup Finish waits for the tab's pending captures (ADR 0032). */
 export const FLUSH_TIMEOUT_MS = 1_000;
 
@@ -262,7 +247,9 @@ function serialized<T>(job: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Inside a chain job: removes the record, tells open extension pages, leaves a tombstone for a lock
+ * Inside a chain job: removes the record, tells open extension pages to check again (the review page
+ * ends if its recording is gone, so a revealed value does not stay on screen; I3, ADR 0033), leaves
+ * a tombstone for a lock
  * or expiry of an unfinished session, clears the badge and nudges the tab.
  */
 async function drop(
@@ -271,7 +258,7 @@ async function drop(
   at: number,
 ): Promise<void> {
   await removeRecord();
-  announceEnded();
+  announceRecheck();
   // A finished session ended on the user's own Finish: its tab must not say "Recording stopped".
   if ((reason === "locked" || reason === "expired") && !meta.finished) {
     const t: Tombstone = {
@@ -574,6 +561,9 @@ export function installRecorderListeners(): void {
   stopLockListener?.();
   stopLockListener = onLockChange((unlocked) => {
     if (unlocked) return;
+    // Every lock, with or without a recording: a saved form open on the review page hides its values
+    // (ADR 0035). The vault already reads as locked here, so the page's check answers gone.
+    announceRecheck();
     discardSession("locked").catch((err: unknown) => {
       console.error("[refill] discard on lock failed:", errName(err));
     });

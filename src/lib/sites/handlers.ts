@@ -1,6 +1,7 @@
 // Page-request handlers for site enablement (spec §3.1). Decisions: ADR 0018.
 import { browser } from "wxt/browser";
 import { profileKey, withStoreLock } from "../store/local";
+import { announceRecheck } from "../messaging/recheck";
 import type { PageHandlers } from "../messaging/router";
 import { discardOrigin } from "../recorder/session";
 import { normalizeOrigin, originPattern } from "./origin";
@@ -64,6 +65,9 @@ export function createSiteHandlers(now: () => number = Date.now): SiteHandlers {
           await tx.removeItems([profileKey(rec.profileId)]);
         }
       });
+      // After the removal, so the check it prompts finds no site: a saved form open on the review
+      // page hides its values (ADR 0035).
+      announceRecheck();
       try {
         await browser.permissions.remove({ origins: [originPattern(origin)] });
       } catch (err) {

@@ -3,7 +3,7 @@
 import { aad } from "../crypto/aad";
 import { DecryptError } from "../crypto/aead";
 import { randomBytes, toB64 } from "../crypto/bytes";
-import { profileKey, withStoreLock } from "../store/local";
+import { profileKey, withStoreLock, type StoreTx } from "../store/local";
 import { normalizeOrigin } from "../sites/origin";
 import { readSites, upsertSite } from "../sites";
 import { getEncrypted, putEncrypted } from "../vault/records";
@@ -55,6 +55,84 @@ export async function saveProfile(p: Profile): Promise<void> {
 
 /** How often a load follows a moved pointer before it gives up (each needs a write in between). */
 const MAX_REREADS = 3;
+
+/**
+ * The site whose index record points at profile `id`, or `null` (an unknown id, a removed site, a
+ * string that is not an id). Plaintext index only, so it works while locked. A profile id belongs to
+ * one site (`saveProfile` refuses a second), so the answer is unique. The saved-form page is keyed
+ * by profile id (ADR 0035).
+ */
+export async function originOfProfile(id: string): Promise<string | null> {
+  if (!ID_RE.test(id)) return null;
+  for (const [origin, site] of Object.entries(await readSites())) {
+    if (site.profileId === id) return origin;
+  }
+  return null;
+}
+
+export type EditOutcome = "saved" | "gone" | "invalid";
+
+/**
+ * Inside a store-lock job: the profile `id` of `origin`, read through `tx`, or `null` when the site
+ * is missing (or revoked, with `requireAccess`), points at another profile, or the record is missing,
+ * unreadable (logged by error name) or not that profile. Throws `LockedError` when locked. Shared by
+ * the compare-and-set writers `editProfile` and `touchLastUsed`.
+ */
+async function readCurrent(
+  tx: StoreTx,
+  origin: string,
+  id: string,
+  requireAccess: boolean,
+): Promise<Profile | null> {
+  const sites = await readSites(tx);
+  const site = Object.hasOwn(sites, origin) ? sites[origin]! : null;
+  if (site === null || site.profileId !== id) return null;
+  if (requireAccess && site.accessRevoked) return null;
+  let raw: unknown;
+  try {
+    raw = await getEncrypted<unknown>(
+      profileKey(id),
+      aad.profile(id, origin),
+      tx,
+    );
+  } catch (err) {
+    if (err instanceof DecryptError || err instanceof SyntaxError) {
+      console.error("[refill] profile record unreadable:", err.name);
+      return null;
+    }
+    throw err;
+  }
+  const profile = raw === undefined ? null : parseProfile(raw);
+  return profile && profile.id === id && profile.origin === origin
+    ? profile
+    : null;
+}
+
+/**
+ * Rewrites profile `id` of `origin` as `edit` returns it, as one compare-and-set under the store
+ * lock (the saved-form page's Save, ADR 0035). The site record and the profile are read through
+ * `tx`, so a removal, a replacement or another write queued first is seen: `gone` when the site is
+ * missing, points at another profile, or the record is missing or unreadable, and nothing is
+ * written (no site is ever created). `invalid` when `edit` returns null, or a profile that does not
+ * parse or has another id or origin; nothing is written then either. `edit` is synchronous and does
+ * no IO (ADR 0011). Throws `LockedError` when locked (nothing is written then).
+ */
+export async function editProfile(
+  origin: string,
+  id: string,
+  edit: (p: Profile) => Profile | null,
+): Promise<EditOutcome> {
+  if (normalizeOrigin(origin) !== origin || !ID_RE.test(id)) return "gone";
+  return withStoreLock(async (tx): Promise<EditOutcome> => {
+    const current = await readCurrent(tx, origin, id, false);
+    if (current === null) return "gone";
+    const edited = edit(current);
+    const next = edited === null ? null : parseProfile(edited);
+    if (!next || next.id !== id || next.origin !== origin) return "invalid";
+    await putEncrypted(profileKey(id), aad.profile(id, origin), next, tx);
+    return "saved";
+  });
+}
 
 async function profileIdOf(origin: string): Promise<string | null> {
   const sites = await readSites();
@@ -122,22 +200,10 @@ export async function touchLastUsed(
 ): Promise<void> {
   if (normalizeOrigin(origin) !== origin || !ID_RE.test(id)) return;
   await withStoreLock(async (tx) => {
-    const sites = await readSites(tx);
-    const site = Object.hasOwn(sites, origin) ? sites[origin]! : null;
-    if (site === null || site.accessRevoked || site.profileId !== id) return;
-    const key = profileKey(id);
-    const ad = aad.profile(id, origin);
-    let raw: unknown;
-    try {
-      raw = await getEncrypted<unknown>(key, ad, tx);
-    } catch (err) {
-      if (err instanceof DecryptError || err instanceof SyntaxError) return;
-      throw err;
-    }
-    const profile = raw === undefined ? null : parseProfile(raw);
-    if (!profile || profile.id !== id || profile.origin !== origin) return;
+    const profile = await readCurrent(tx, origin, id, true);
+    if (profile === null) return;
     const next = parseProfile({ ...profile, lastUsedAt: t });
     if (!next) return; // `t` not a valid timestamp
-    await putEncrypted(key, ad, next, tx);
+    await putEncrypted(profileKey(id), aad.profile(id, origin), next, tx);
   });
 }

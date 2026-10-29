@@ -1,32 +1,60 @@
 // Review-page logic (spec §6.2), kept out of the Svelte component so it is unit-testable: the
-// session id from the page URL, loading, the page state and the reveal check, the form checks the
-// page can make itself, the save request and what the worker's answers mean. Decisions: ADR 0033.
-import { browser } from "wxt/browser";
+// page key from the URL, loading, the page state and the reveal check, the form checks the page can
+// make itself, the save request and what the worker's answers mean. Decisions: ADR 0033. The same
+// page shows the site's saved form in saved mode (ADR 0035): the same helpers, other requests.
 import { sendToSw, type ReviewLoadResult } from "../messaging/protocol";
 import { ID_RE, type FieldPolicy } from "../profiles/types";
-import type { ReviewModel } from "./profile";
+import { holdsNothing, type ReviewModel } from "./profile";
 
-/** The `session` query parameter when it is a session id, else null. */
-export function sessionIdFrom(search: string): string | null {
-  const id = new URLSearchParams(search).get("session");
-  return id !== null && ID_RE.test(id) ? id : null;
+/**
+ * What the page shows: a finished recording (`review.html?session=<id>`) or the site's saved form
+ * (`review.html?saved=<profile id>`, ADR 0035).
+ */
+export type PageKey = { mode: "review" | "saved"; id: string };
+
+/** Exactly one `session` or one `saved` parameter holding an id, else null. */
+export function pageKeyFrom(search: string): PageKey | null {
+  const q = new URLSearchParams(search);
+  const sessions = q.getAll("session");
+  const saved = q.getAll("saved");
+  if (sessions.length + saved.length !== 1) return null;
+  const mode = sessions.length === 1 ? "review" : "saved";
+  const id = (sessions[0] ?? saved[0])!;
+  return ID_RE.test(id) ? { mode, id } : null;
 }
 
 export type ReviewLoad = ReviewLoadResult | { state: "failed" };
 
-/** No id, or a session the worker no longer has, is `gone`; a messaging failure is `failed`. */
-export async function loadReview(
-  sessionId: string | null,
-): Promise<ReviewLoad> {
-  if (sessionId === null) return { state: "gone" };
+/** No key, or a session or saved form the worker no longer has, is `gone`; a messaging failure is `failed`. */
+export async function loadReview(key: PageKey | null): Promise<ReviewLoad> {
+  if (key === null) return { state: "gone" };
   try {
-    const res = await sendToSw({ type: "review-load", sessionId });
+    if (key.mode === "saved") {
+      const res = await sendToSw({ type: "saved-load", profileId: key.id });
+      if (res.state === "ready") {
+        return { state: "ready", model: res.model, replacesProfile: false };
+      }
+      return res.state === "gone" ? res : { state: "failed" };
+    }
+    const res = await sendToSw({ type: "review-load", sessionId: key.id });
     return res.state === "ready" || res.state === "gone"
       ? res
       : { state: "failed" };
   } catch {
     return { state: "failed" };
   }
+}
+
+/**
+ * Saved mode: a field with nothing to fill, a "Don't save" one or one set from "Don't save" to "Ask
+ * me" (`holdsNothing`, ADR 0035). It reads "Not saved", has no Show, and cannot be set to "Fill it
+ * in" (the worker refuses that too).
+ */
+export function notSaved(
+  key: PageKey | null,
+  field: Pick<ReviewModel["fields"][number], "policy" | "value">,
+): boolean {
+  return key?.mode === "saved" && holdsNothing(field);
 }
 
 export interface ReviewForm {
@@ -63,26 +91,29 @@ export function checkForm(form: ReviewForm): FormProblem | null {
 export type SaveOutcome = "saved" | "gone" | "failed" | FormProblem;
 
 export async function saveReview(
-  sessionId: string,
+  key: PageKey,
   form: ReviewForm,
 ): Promise<SaveOutcome> {
   const problem = checkForm(form);
   if (problem !== null) return problem;
+  const edit = {
+    name: form.name.trim(),
+    fillMode: form.fillMode,
+    pathPrefix: form.pathPrefix,
+    policies: form.policies.map((p) => ({
+      fieldId: p.fieldId,
+      policy: p.policy,
+    })),
+  };
   try {
-    const res = await sendToSw({
-      type: "review-save",
-      sessionId,
-      name: form.name.trim(),
-      fillMode: form.fillMode,
-      pathPrefix: form.pathPrefix,
-      policies: form.policies.map((p) => ({
-        fieldId: p.fieldId,
-        policy: p.policy,
-      })),
-    });
+    const res =
+      key.mode === "saved"
+        ? await sendToSw({ type: "saved-save", profileId: key.id, ...edit })
+        : await sendToSw({ type: "review-save", sessionId: key.id, ...edit });
     if (res.ok) return "saved";
-    // The name and the policies were checked here and come from the model, so an invalid save is
-    // a prefix that does not cover every recorded page.
+    // The name and the policies were checked here and come from the model (saved mode does not
+    // offer "Fill it in" for a Don't save field), so an invalid save is a prefix that does not
+    // cover every recorded page.
     if (res.error === "gone") return "gone";
     if (res.error === "invalid") return "path";
     return "failed";
@@ -111,7 +142,7 @@ export function displayValue(field: ReviewModel["fields"][number]): string {
 }
 
 export type ReviewView =
-  "loading" | "ready" | "saved" | "gone" | "discarded" | "failed";
+  "loading" | "ready" | "saved" | "gone" | "discarded" | "closed" | "failed";
 
 /** What the page holds. The component keeps it in one `$state` object and renders from it. */
 export interface ReviewPage {
@@ -157,12 +188,13 @@ export function applyLoad(page: ReviewPage, res: ReviewLoad): void {
   page.shown = res.model.fields.map(() => false);
 }
 
-/** Whether the page may still show the recording; `failed` on a messaging failure. */
-async function checkReview(
-  sessionId: string,
-): Promise<"ready" | "gone" | "failed"> {
+/** Whether the page may still show the recording or saved form; `failed` on a messaging failure. */
+async function checkReview(key: PageKey): Promise<"ready" | "gone" | "failed"> {
   try {
-    const res = await sendToSw({ type: "review-check", sessionId });
+    const res =
+      key.mode === "saved"
+        ? await sendToSw({ type: "saved-check", profileId: key.id })
+        : await sendToSw({ type: "review-check", sessionId: key.id });
     return res.state === "ready" || res.state === "gone" ? res.state : "failed";
   } catch {
     return "failed";
@@ -176,7 +208,7 @@ async function checkReview(
  */
 export async function toggleValue(
   page: ReviewPage,
-  sessionId: string,
+  key: PageKey,
   i: number,
 ): Promise<"shown" | "hidden" | "gone" | "failed"> {
   if (page.view !== "ready" || i < 0 || i >= page.shown.length) return "hidden";
@@ -184,7 +216,9 @@ export async function toggleValue(
     page.shown[i] = false;
     return "hidden";
   }
-  const res = await checkReview(sessionId);
+  const field = page.model?.fields[i];
+  if (field === undefined || notSaved(key, field)) return "hidden";
+  const res = await checkReview(key);
   if (res === "gone") {
     endReview(page, "gone");
     return "gone";
@@ -196,42 +230,17 @@ export async function toggleValue(
 }
 
 /**
- * When the page becomes visible again: a review the worker no longer backs ends (`true`). A
- * messaging failure keeps the page; the next Show asks again.
+ * When the page becomes visible again, or on the worker's signal: a review (or saved form) the
+ * worker no longer backs ends (`true`). A messaging failure keeps the page; the next Show asks again.
  */
 export async function recheckReview(
   page: ReviewPage,
-  sessionId: string,
+  key: PageKey,
 ): Promise<boolean> {
   if (page.view !== "ready") return false;
-  if ((await checkReview(sessionId)) !== "gone" || page.view !== "ready") {
+  if ((await checkReview(key)) !== "gone" || page.view !== "ready") {
     return false;
   }
   endReview(page, "gone");
   return true;
-}
-
-/**
- * Calls `onSignal` for each `{ type: "refill-recording-ended" }` from this extension: the worker's
- * data-free word that a recording ended (a lock, an expiry, a save, a cancel, a replace). It proves
- * nothing, so the page answers it with `review-check`, as on a return to the page; a forged one
- * costs one check. The page does not watch `storage.session` instead: its change events would hand
- * the page the DEK mirror on every unlock (spec §4.3, ADR 0033). Returns the unsubscribe.
- */
-export function onRecordingEnded(onSignal: () => void): () => void {
-  const listener = (msg: unknown, sender: { id?: string }): undefined => {
-    if (
-      typeof sender.id === "string" &&
-      sender.id === browser.runtime.id &&
-      typeof msg === "object" &&
-      msg !== null &&
-      Object.keys(msg).length === 1 &&
-      (msg as Record<string, unknown>)["type"] === "refill-recording-ended"
-    ) {
-      onSignal();
-    }
-    return undefined; // never answers: the worker does not wait for pages
-  };
-  browser.runtime.onMessage.addListener(listener);
-  return () => browser.runtime.onMessage.removeListener(listener);
 }

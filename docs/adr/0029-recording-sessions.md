@@ -112,7 +112,9 @@ and how a body is kept.
 ## Status
 Accepted (2026-10-27). Amended by the Plan 3 final review (2026-10-28): no tombstone for a finished
 session (M1), the `"site-removed"` reason and `discardOrigin` (M7), and the data-free
-`refill-recording-ended` message to extension pages on every discard (I3). Amended by Plan 3 Task 6 (2026-10-27): the lock-epoch check around `fn`, the
+`refill-recording-ended` message to extension pages on every discard (I3). Amended by ADR 0035 (2026-10-28):
+that message is now `{ type: "refill-recheck" }` (`announceRecheck`, `src/lib/messaging/recheck.ts`),
+and the lock listener also sends it on every lock, with or without a session. Amended by Plan 3 Task 6 (2026-10-27): the lock-epoch check around `fn`, the
 `expiresAt` ceiling, discard by id, a copy of the metadata for `fn`, and `clearBadge`. Amended by
 Task 7 (2026-10-27): the tombstone carries `origin` and `stoppedReason` takes it (ruling P10), and
 `SessionMatch` gains a tab-only and an any-session form. A job whose `fn` returns no `body` writes

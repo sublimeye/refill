@@ -433,6 +433,14 @@ describe("recording session", { timeout: 30_000 }, () => {
     );
   });
 
+  it("tells open extension pages to check again on a lock with no recording (ADR 0035)", async () => {
+    const pages = vi
+      .spyOn(fakeBrowser.runtime, "sendMessage")
+      .mockImplementation((async () => undefined) as never);
+    await lock();
+    expect(pages).toHaveBeenCalledWith({ type: "refill-recheck" });
+  });
+
   it("tells open extension pages, data-free, that the recording ended (I3)", async () => {
     const pages = vi
       .spyOn(fakeBrowser.runtime, "sendMessage")
@@ -442,7 +450,7 @@ describe("recording session", { timeout: 30_000 }, () => {
       pages.mockClear();
       await end();
       await vi.waitFor(() =>
-        expect(pages).toHaveBeenCalledWith({ type: "refill-recording-ended" }),
+        expect(pages).toHaveBeenCalledWith({ type: "refill-recheck" }),
       );
       expect((await unlockWithPassphrase(P)).ok).toBe(true);
     }
@@ -450,10 +458,10 @@ describe("recording session", { timeout: 30_000 }, () => {
     await startSession(TAB, ORIGIN, T0, null);
     pages.mockClear();
     await startSession(TAB + 1, ORIGIN, T0, null);
-    expect(pages).toHaveBeenCalledWith({ type: "refill-recording-ended" });
+    expect(pages).toHaveBeenCalledWith({ type: "refill-recheck" });
     pages.mockClear();
     expect(await read({ any: true }, T0 + RECORDING_TTL_MS)).toBe("off");
-    expect(pages).toHaveBeenCalledWith({ type: "refill-recording-ended" });
+    expect(pages).toHaveBeenCalledWith({ type: "refill-recheck" });
   });
 
   it("no extension page to tell is not an error, and nothing is logged", async () => {
