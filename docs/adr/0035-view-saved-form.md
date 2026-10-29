@@ -22,7 +22,8 @@ Cost if wrong: one more page-only message pair.
   - It counts every field of the saved form, "Don't save" ones included. That is the number of rows
     View shows, and the same count as "Recording finished · N fields".
   - The line shows only while the popup is unlocked. A Lock now in the popup hides it at once,
-    without reloading the site view.
+    without reloading the site view. An unlock in the popup reads the site view again, so a popup
+    opened while locked shows the line once unlocked there (fix round 1).
 - **`saved-summary { origin }`.** Page-only. The answer is
   `{ state: "saved", profileId, count }` or `{ state: "none" }`, and it carries no value.
   - The count is inside the sealed record, so a locked vault answers `none`.
@@ -97,21 +98,31 @@ one store-lock job, like `touchLastUsed`:
 - `edit` is synchronous and does no IO (ADR 0011).
 - `invalid` when `edit` refuses, or returns a profile that does not parse or has another id or
   origin. Nothing is written then.
+- `readCurrent(tx, origin, id, requireAccess)` is the read shared with `touchLastUsed` (which also
+  requires the site not to be revoked).
 - A `LockedError` means nothing was written, and the handler answers `gone`.
 
-`edit` is `editSaved(p, …)`:
+`edit` first compares the request's field ids with the stored ones. A mismatch means a Record again
+was saved since the page loaded (the id is kept, the fields changed), so the page is stale and the
+answer is `gone`: the page shows the gone copy instead of a misleading path error. Then it is
+`editSaved(p, …)`:
 
-- It refuses (`invalid`) a field stored as "Don't save" set to "Fill it in". That field holds no
-  value, so only Record again can capture one.
+- **A field that holds nothing never becomes "Fill it in"** (`holdsNothing`: its stored policy is
+  not `save` and its value, after the blanking below, is empty). That is a "Don't save" field, and
+  also one set from "Don't save" to "Ask me" in an earlier Save. Filling it would write an empty
+  value, which can blank a control or uncheck a box, so only Record again can capture one (ruling
+  F2). Checking only the stored "Don't save" policy let two Saves (Don't save → Ask me → Fill it in)
+  get around it (fix round 1).
 - It allows "Don't save" ⇄ "Ask me", and the value stays empty: the edit starts from the same
-  blanked body as the model, so "Ask me" never revives a value stored before C1.
+  blanked body as the model, so "Ask me" never revives a value stored before C1. An "Ask me" field
+  that holds a value may become "Fill it in".
 - `buildProfile` then checks the policies (one per field, no unknown id), the trimmed name and the
   prefix coverage (case-insensitive, ADR 0034). A field newly set to "Don't save" loses its value.
 - It keeps the id, origin, steps, signatures, values, `createdAt` and `lastUsedAt` (`buildProfile`
   takes an optional `lastUsedAt`).
 
 On the page, an `invalid` answer is shown as the path error, as in the recording review. The page
-checks the name itself and never offers "Fill it in" for a "Don't save" field.
+checks the name itself and never offers "Fill it in" for a field that holds nothing.
 
 The save checks no epoch. It carries no value, it writes only under an unlocked DEK, and a lock
 while the page is open has already ended the page (below).
@@ -122,8 +133,9 @@ The same component and the same `review-flow.ts` helpers serve both modes, with 
 deciding the request. Only these differ:
 
 - **Heading and title.** "Saved form for {host}", and the tab title "Saved form · Refill".
-- **Table.** As in the recording review. A field stored as "Don't save" reads "Not saved" and has no
-  Show button (`notSaved`; `toggleValue` refuses it too).
+- **Table.** As in the recording review. A field that holds nothing (`notSaved`, the same
+  `holdsNothing` rule as the worker's) reads "Not saved" and has no Show button (`toggleValue`
+  refuses it too).
   - Its "Fill it in" option is disabled.
   - The hint "Record again to capture it" is tied to its select through `aria-describedby`.
 - **Close** replaces Discard. It drops the model and every shown value, then closes the tab (a tab
@@ -172,10 +184,10 @@ The message still proves nothing: it only prompts a check. Pages still never wat
   on the page. An open page whose form was removed in another way is noticed at its next check:
   a Show, a return to the page or a signal.
 - Each popup open on a site with a saved form costs one record decryption (`saved-summary`).
-- Two saved pages for one form, or a saved page next to a Record again review, are last-writer-wins
-  on name, fill mode, prefix and policies. If Record again changed the field set, a stale saved
-  page's Save is `invalid` and reads as the path error. Its next Show or return to the page does not
-  catch that, because the id is unchanged. The user reloads the page.
+- Two saved pages for one form, or a saved page next to a Record again review with the same fields,
+  are last-writer-wins on name, fill mode, prefix and policies. If Record again changed the field
+  set, a stale saved page's Save answers `gone` and the page shows the gone copy; its Show and
+  return-to-page checks do not catch it earlier, because the id is unchanged.
 - Saved mode cannot change values, add or delete fields, or delete the form. Record again and Remove
   site do those.
 
@@ -183,4 +195,6 @@ The message still proves nothing: it only prompts a check. Pages still never wat
 
 Accepted (2026-10-28, Plan 3 follow-up, ruling F2). Amends ADR 0033 (the review page gains saved
 mode, and its signal is renamed `refill-recheck` with the sender limited to the service worker) and
-ADR 0029 (the signal's name, and that it is also sent on every lock).
+ADR 0029 (the signal's name, and that it is also sent on every lock). Fix round 1 (2026-10-28): the
+"holds nothing" rule for Fill it in and "Not saved", `gone` for a stale page, the popup line after an
+unlock in the popup, one gone copy, the worker URL through `runtime.getURL`, and `readCurrent`.
