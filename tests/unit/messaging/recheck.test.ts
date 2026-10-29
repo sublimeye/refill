@@ -87,6 +87,30 @@ describe("onRecheck (pages)", () => {
     expect(signal).not.toHaveBeenCalled();
   });
 
+  it("a nested worker path with a ./ prefix: only that normalized URL passes", async () => {
+    vi.spyOn(fakeBrowser.runtime, "getManifest").mockReturnValue({
+      manifest_version: 3,
+      name: "Refill",
+      version: "0.0.0",
+      background: { service_worker: "./sw/background.js" },
+    } as never);
+    const signal = vi.fn();
+    onRecheck(signal);
+    const id = fakeBrowser.runtime.id;
+    await fakeBrowser.runtime.onMessage.trigger(
+      SIGNAL,
+      { id, url: `chrome-extension://${id}/background.js` },
+      noReply,
+    );
+    expect(signal).not.toHaveBeenCalled();
+    await fakeBrowser.runtime.onMessage.trigger(
+      SIGNAL,
+      { id, url: `chrome-extension://${id}/sw/background.js` },
+      noReply,
+    );
+    expect(signal).toHaveBeenCalledOnce();
+  });
+
   it("a manifest it cannot read accepts nothing", async () => {
     vi.spyOn(fakeBrowser.runtime, "getManifest").mockImplementation(() => {
       throw new Error("no manifest");

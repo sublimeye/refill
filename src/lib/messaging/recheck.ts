@@ -26,10 +26,12 @@ function workerUrl(): string | null {
     const bg = browser.runtime.getManifest().background;
     const path =
       bg !== undefined && "service_worker" in bg ? bg.service_worker : null;
-    // As `runtime.getURL`, whose types allow only the extension's pages (Chromium only, ADR 0017).
-    return typeof path === "string"
-      ? `chrome-extension://${browser.runtime.id}/${path.replace(/^\//, "")}`
-      : null;
+    if (typeof path !== "string") return null;
+    // WXT types `getURL` to the extension's pages only; the worker script is not one of them. The
+    // parenthesized member call keeps `runtime` as `this`. Normalized as Chrome reports a sender
+    // URL ("./sw/x.js" → "/sw/x.js").
+    return new URL((browser.runtime.getURL as (p: string) => string)(path))
+      .href;
   } catch {
     return null;
   }
