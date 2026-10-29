@@ -166,6 +166,18 @@ function savedBody(p: Profile): RecBody {
   };
 }
 
+/**
+ * A saved field with nothing to fill: it does not fill ("Don't save" or "Ask me") and its value is
+ * empty (a "Don't save" one always is, through `savedBody`). Saved mode shows it as "Not saved" and
+ * never lets it become "Fill it in" (ADR 0035). The page's `notSaved` applies the same rule.
+ */
+export function holdsNothing(f: {
+  policy: FieldPolicy;
+  value: string;
+}): boolean {
+  return f.policy !== "save" && f.value === "";
+}
+
 /** The review page's model for the saved form itself (saved mode, ADR 0035): its prefix as stored. */
 export function savedModel(p: Profile): ReviewModel {
   return {
@@ -178,8 +190,10 @@ export function savedModel(p: Profile): ReviewModel {
  * The saved form `p` with a new name, fill mode, prefix and policies (saved mode's Save, ADR 0035):
  * same id, origin, steps, fields, values, `createdAt` and `lastUsedAt`. `null` when `buildProfile`
  * refuses it (a missing or unknown policy, a blank name, a prefix that misses a step with fields),
- * or when a "Don't save" field would become "Fill it in": it holds no value, so only Record again
- * can capture one. It may become "Ask me", still empty.
+ * or when a field that holds nothing and does not fill would become "Fill it in": a "Don't save"
+ * field, or one set from "Don't save" to "Ask me" earlier. Filling it would write an empty value
+ * (blank a control, uncheck a box), so only Record again can capture one (ruling F2). Such a field
+ * may move between "Don't save" and "Ask me", still empty.
  */
 export function editSaved(
   p: Profile,
@@ -191,10 +205,11 @@ export function editSaved(
   },
 ): Profile | null {
   const { policies } = edit;
+  const body = savedBody(p);
   if (
-    p.fields.some(
+    body.fields.some(
       (f) =>
-        f.policy === "skip" &&
+        holdsNothing(f) &&
         Object.hasOwn(policies, f.id) &&
         policies[f.id] === "save",
     )
@@ -210,7 +225,7 @@ export function editSaved(
     now: p.createdAt,
     createdAt: p.createdAt,
     lastUsedAt: p.lastUsedAt,
-    body: savedBody(p),
+    body,
     policies,
   });
 }

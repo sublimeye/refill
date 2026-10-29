@@ -337,13 +337,30 @@ describe("saved mode on the page (ADR 0035)", () => {
     });
   });
 
-  it("a field saved as Don't save is Not saved only in saved mode", () => {
+  it("a field that holds nothing and does not fill is Not saved, only in saved mode", () => {
     const skip = { ...model.fields[0]!, value: "", policy: "skip" as const };
+    const emptyAsk = { ...model.fields[1]!, value: "", policy: "ask" as const };
     expect(notSaved(SAVED, skip)).toBe(true);
+    // Don't save, then Ask me: still nothing to fill (F2).
+    expect(notSaved(SAVED, emptyAsk)).toBe(true);
     expect(notSaved(SAVED, model.fields[0]!)).toBe(false);
-    expect(notSaved(SAVED, model.fields[1]!)).toBe(false); // ask
+    expect(notSaved(SAVED, model.fields[1]!)).toBe(false); // ask with a value
+    // A Fill it in field keeps its row as it is, even an empty one.
+    expect(notSaved(SAVED, { ...model.fields[0]!, value: "" })).toBe(false);
     expect(notSaved(REVIEW, skip)).toBe(false);
+    expect(notSaved(REVIEW, emptyAsk)).toBe(false);
     expect(notSaved(null, skip)).toBe(false);
+  });
+
+  it("Show of an Ask me field that holds nothing reveals nothing and asks nothing", async () => {
+    const page = newPage();
+    const m = {
+      ...model,
+      fields: [{ ...model.fields[1]!, value: "", policy: "ask" as const }],
+    };
+    applyLoad(page, { state: "ready", model: m, replacesProfile: false });
+    expect(await toggleValue(page, SAVED, 0)).toBe("hidden");
+    expect(sent).toEqual([]);
   });
 
   it("Show of a Not saved field reveals nothing and asks nothing", async () => {

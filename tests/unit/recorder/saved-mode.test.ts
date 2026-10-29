@@ -258,7 +258,7 @@ describe("saved-save", () => {
     expect(f5).toMatchObject({ id: "f5", value: "", policy: "ask" });
   });
 
-  it("invalid: a prefix that misses a step, a blank name, a missing, unknown or repeated policy", async () => {
+  it("invalid: a prefix that misses a step, a blank name, a repeated policy", async () => {
     await saveProfile(stored());
     const set = vi.spyOn(fakeBrowser.storage.local, "set");
     const bad: Partial<SaveReq>[] = [
@@ -266,8 +266,6 @@ describe("saved-save", () => {
       { pathPrefix: "/other/" },
       { pathPrefix: "billpay/" },
       { name: "   " },
-      { policies: POLICIES.slice(1) },
-      { policies: [...POLICIES, { fieldId: "f9", policy: "save" }] },
       { policies: [...POLICIES, { fieldId: "f1", policy: "skip" }] },
     ];
     for (const over of bad) {
@@ -276,6 +274,63 @@ describe("saved-save", () => {
     expect(profileWrites(set)).toEqual([]);
     // The prefix compares as the matcher does: case-insensitive (ADR 0034).
     expect(await save({ pathPrefix: "/BillPay/" })).toEqual({ ok: true });
+  });
+
+  it("Don't save, then Ask me, then Fill it in: the second save is refused, nothing filled (F2)", async () => {
+    await saveProfile(stored());
+    const toAsk = [
+      ...POLICIES.slice(0, 2),
+      { fieldId: "f5", policy: "ask" as const },
+    ];
+    expect(await save({ policies: toAsk })).toEqual({ ok: true });
+    // The page reloads the form: f5 is now "ask" and still holds nothing.
+    const res = await load("p1");
+    if (res.state !== "ready") throw new Error("not ready");
+    expect(res.model.fields[2]).toMatchObject({ value: "", policy: "ask" });
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    const toSave = [
+      ...POLICIES.slice(0, 2),
+      { fieldId: "f5", policy: "save" as const },
+    ];
+    expect(await save({ policies: toSave })).toEqual({
+      ok: false,
+      error: "invalid",
+    });
+    expect(profileWrites(set)).toEqual([]);
+    expect((await loadProfileForOrigin(ORIGIN))!.fields[2]).toMatchObject({
+      value: "",
+      policy: "ask",
+    });
+  });
+
+  it("an Ask me field that holds a value may become Fill it in", async () => {
+    await saveProfile(stored());
+    expect(
+      await save({
+        policies: [
+          POLICIES[0]!,
+          { fieldId: "f4", policy: "save" },
+          POLICIES[2]!,
+        ],
+      }),
+    ).toEqual({ ok: true });
+    expect((await loadProfileForOrigin(ORIGIN))!.fields[1]).toMatchObject({
+      value: "45.12",
+      policy: "save",
+    });
+  });
+
+  it("gone: the stored fields are not the page's (Record again changed them meanwhile), nothing written", async () => {
+    await saveProfile(stored());
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    for (const policies of [
+      POLICIES.slice(1),
+      [...POLICIES, { fieldId: "f9", policy: "save" as const }],
+      [POLICIES[0]!, POLICIES[1]!, { fieldId: "f9", policy: "skip" as const }],
+    ]) {
+      expect(await save({ policies })).toEqual({ ok: false, error: "gone" });
+    }
+    expect(profileWrites(set)).toEqual([]);
   });
 
   it("gone: an unknown id or a removed site; the site is not recreated", async () => {

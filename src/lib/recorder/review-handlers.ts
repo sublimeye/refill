@@ -75,6 +75,17 @@ function policyMap(
   return map;
 }
 
+/** Whether `policies` names exactly the fields of `p` (own keys only). */
+function sameFieldIds(
+  p: Profile,
+  policies: Record<string, FieldPolicy>,
+): boolean {
+  return (
+    Object.keys(policies).length === p.fields.length &&
+    p.fields.every((f) => Object.hasOwn(policies, f.id))
+  );
+}
+
 /** The saved form `id`, or `null` when no site points at it, or `"locked"`. */
 async function savedById(id: string): Promise<Profile | null | "locked"> {
   const origin = await originOfProfile(id);
@@ -209,24 +220,30 @@ export function createReviewPageHandlers(
       if (origin === null) return SAVE_GONE;
       const policies = policyMap(req.policies);
       if (policies === null) return INVALID; // see INVALID
+      // The page edits the fields it loaded. A Record again saved since then (same id) may have
+      // changed them: that page is stale, so it ends (`gone`) instead of reading as a path error.
+      let stale = false;
       let out;
       try {
-        out = await editProfile(origin, req.profileId, (p) =>
-          editSaved(p, {
+        out = await editProfile(origin, req.profileId, (p) => {
+          stale = !sameFieldIds(p, policies);
+          if (stale) return null;
+          return editSaved(p, {
             name: req.name,
             fillMode: req.fillMode,
             pathPrefix: req.pathPrefix,
             policies,
-          }),
-        );
+          });
+        });
       } catch (err) {
         if (err instanceof LockedError) return SAVE_GONE;
         throw err;
       }
       if (out === "saved") return { ok: true };
-      // `invalid` here is the prefix (see INVALID), or a skip field set to save, which the page
-      // does not offer.
-      return out === "gone" ? SAVE_GONE : INVALID;
+      if (out === "gone" || stale) return SAVE_GONE;
+      // `invalid` here is the prefix (see INVALID), or a field that holds nothing set to save,
+      // which the page does not offer.
+      return INVALID;
     },
   };
 }

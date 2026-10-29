@@ -381,6 +381,21 @@ describe("editSaved (ADR 0035)", () => {
     ).toBeNull();
   });
 
+  it("a field that holds nothing cannot become Fill it in: Don't save, then Ask me, then Fill it in (F2)", () => {
+    const asked = edit(withSkip(), {
+      policies: { f1: "save", f4: "ask", f5: "ask" },
+    })!;
+    expect(asked.fields[2]).toMatchObject({ value: "", policy: "ask" });
+    expect(
+      edit(asked, { policies: { f1: "save", f4: "ask", f5: "save" } }),
+    ).toBeNull();
+    // An Ask me field that holds a value may.
+    expect(
+      edit(asked, { policies: { f1: "save", f4: "save", f5: "ask" } })!
+        .fields[1],
+    ).toMatchObject({ value: "45.12", policy: "save" });
+  });
+
   it("a Don't save field may become Ask me, still empty (a value stored before C1 is not revived)", () => {
     const next = edit(withSkip(), {
       policies: { f1: "save", f4: "ask", f5: "ask" },

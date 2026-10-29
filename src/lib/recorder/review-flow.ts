@@ -4,7 +4,7 @@
 // page shows the site's saved form in saved mode (ADR 0035): the same helpers, other requests.
 import { sendToSw, type ReviewLoadResult } from "../messaging/protocol";
 import { ID_RE, type FieldPolicy } from "../profiles/types";
-import type { ReviewModel } from "./profile";
+import { holdsNothing, type ReviewModel } from "./profile";
 
 /**
  * What the page shows: a finished recording (`review.html?session=<id>`) or the site's saved form
@@ -46,14 +46,15 @@ export async function loadReview(key: PageKey | null): Promise<ReviewLoad> {
 }
 
 /**
- * Saved mode: a field the saved form keeps as "Don't save". It holds no value, so it reads "Not
- * saved", has no Show, and cannot be set to "Fill it in" (the worker refuses that too).
+ * Saved mode: a field with nothing to fill, a "Don't save" one or one set from "Don't save" to "Ask
+ * me" (`holdsNothing`, ADR 0035). It reads "Not saved", has no Show, and cannot be set to "Fill it
+ * in" (the worker refuses that too).
  */
 export function notSaved(
   key: PageKey | null,
-  field: Pick<ReviewModel["fields"][number], "policy">,
+  field: Pick<ReviewModel["fields"][number], "policy" | "value">,
 ): boolean {
-  return key?.mode === "saved" && field.policy === "skip";
+  return key?.mode === "saved" && holdsNothing(field);
 }
 
 export interface ReviewForm {
