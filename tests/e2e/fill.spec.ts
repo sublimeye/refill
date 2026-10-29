@@ -96,6 +96,7 @@ test("SPA wizard: each step fills on the same URL once it appears", async ({
   await expect(page.getByLabel("Full name")).toHaveValue("Ada Lovelace");
   await expect(page.getByLabel("Email")).toHaveValue("ada@example.test");
 
+  const toStep2 = await logMark(context);
   await page.getByRole("button", { name: "Next" }).click();
   await expect(page.getByText("Step 2 of 2")).toBeVisible();
   expect(page.url()).toBe(url);
@@ -105,6 +106,9 @@ test("SPA wizard: each step fills on the same URL once it appears", async ({
   await expect(page.getByLabel("City")).toHaveValue("London");
   await expect(page.getByLabel("State")).toHaveValue("NY");
   await expect(page.getByLabel("Paperless billing")).toBeChecked();
+  // The values show before step 2's fill-result is logged: wait for it, or it can land after the
+  // mark below and count as a refill.
+  await waitForEntry(context, toStep2, "fill-result", (e) => e.filled === 4);
 
   // Back and Next re-render both steps with empty fields in the same document. The page is
   // re-scanned and reported, but every field was filled once already: nothing is filled again.
