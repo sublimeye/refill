@@ -65,8 +65,8 @@ export interface Recording {
   /** True for the pill's own host element, which the runner leaves out of its scans. */
   ownsHost(el: Element): boolean;
   /**
-   * Sends every debounced edit now and resolves once the captures queued so far (and anything they
-   * wait on) are out (a popup Finish, ADR 0032). Resolves at once when not recording.
+   * Sends every debounced edit now and resolves once every capture made so far has been answered,
+   * or dropped (a popup Finish, ADR 0032). Resolves at once when not recording.
    */
   flushed(): Promise<void>;
   /** Detaches everything and removes the pill; idempotent. */
@@ -135,6 +135,24 @@ interface Pending {
   fieldId: string | null;
 }
 
+/** Something a capture may wait for: settled once its promise has. */
+interface Gate {
+  settled: boolean;
+  done: Promise<void>;
+}
+
+const OPEN: Gate = { settled: true, done: Promise.resolve() };
+
+function gate(p: Promise<unknown>): Gate {
+  const g: Gate = { settled: false, done: Promise.resolve() };
+  const settle = (): void => {
+    g.settled = true;
+  };
+  // `settled` is set before anything awaiting `done` resumes.
+  g.done = p.then(settle, settle);
+  return g;
+}
+
 export function createRecording(env: RecordingEnv): Recording {
   const { doc, history, isTopWindow } = env;
   const isTrusted = env.isTrusted ?? ((e: Event) => e.isTrusted);
@@ -153,14 +171,34 @@ export function createRecording(env: RecordingEnv): Recording {
   /** The worker keeps answering `stopped` for 30 min (ADR 0029): the notice shows once per document. */
   let stoppedShown = false;
   let pill: Pill | null = null;
-  /** Captures and Finish go out one at a time, in the order the user made them. */
-  let chain: Promise<void> = Promise.resolve();
+  /**
+   * The start report (P12): no capture is sent before it is answered. Captures of different
+   * controls do not wait for each other (ruling F4); see `enqueue`.
+   */
+  let filed: Gate = OPEN;
+  /** Every capture not yet answered or dropped: what Finish and `flushed()` wait for. */
+  const pending = new Set<Gate>();
+  /** Per element, its newest capture: the next one waits for it to be answered. */
+  const lastOf = new WeakMap<Element, Gate>();
+  /** Per element, the number of the newest capture sent: an older one is never sent after it. */
+  const sentSeq = new WeakMap<Element, number>();
+  let seq = 0;
 
   const onEdit = (e: Event): void => {
     handle(e);
   };
+  // The document may be gone once these handlers return: pending edits are sent in the handler.
   const onPageHide = (): void => {
-    flush();
+    flush(true);
+  };
+  const onSubmit = (e: Event): void => {
+    let trusted: boolean;
+    try {
+      trusted = isTrusted(e);
+    } catch {
+      return;
+    }
+    if (trusted) flush(true);
   };
 
   function win(): Window | null {
@@ -177,11 +215,17 @@ export function createRecording(env: RecordingEnv): Recording {
       capture: true,
       passive: true,
     });
+    // `submit` is not composed either: a form in a shadow tree is heard on its root.
+    addListener.call(target, "submit", onSubmit, {
+      capture: true,
+      passive: true,
+    });
   }
   function detachFrom(target: EventTarget): void {
     try {
       removeListener.call(target, "input", onEdit, true);
       removeListener.call(target, "change", onEdit, true);
+      removeListener.call(target, "submit", onSubmit, true);
     } catch {
       // nothing more to undo
     }
@@ -255,16 +299,11 @@ export function createRecording(env: RecordingEnv): Recording {
     if (s === null || stopped) return; // a failed send keeps the current state
     // Starting: file the current page with the worker before any capture, even when the runner
     // already reported this page (Plan 3 ruling P12). The listeners are live from `apply` on, so the
-    // capture chain waits for that report too, in the same task: no capture can overtake it.
+    // gate closes in the same task: no capture can overtake that report.
     if (!apply(s, true)) return;
-    const filed = env.rescan(true);
-    chain = chain
-      .then(() => filed)
-      .then(
-        () => undefined,
-        () => undefined,
-      );
-    await filed;
+    const report = env.rescan(true);
+    filed = gate(report);
+    await report;
   }
 
   function handle(e: Event): void {
@@ -330,19 +369,38 @@ export function createRecording(env: RecordingEnv): Recording {
     }
   }
 
-  /** Sends every debounced edit now (page hide, Finish). */
-  function flush(): void {
+  /**
+   * Sends every debounced edit now (Finish, and with `unloading` a page hide or a submit). While
+   * unloading, an edit is sent in this call even when an earlier capture of its control is still
+   * unanswered: later would be too late.
+   */
+  function flush(unloading = false): void {
     const all = [...timers.values()];
     timers.clear();
     for (const { timer, p } of all) {
       clearTimeout(timer);
-      enqueue(p);
+      enqueue(p, unloading);
     }
   }
 
-  function enqueue(p: Pending): void {
+  /**
+   * Starts a capture: sent at once (in this call) unless the start report is unanswered, the
+   * control is not in the latest scan, or (unless `unloading`) an earlier capture of the same
+   * control is unanswered. Captures of other controls never wait for each other's replies.
+   */
+  function enqueue(p: Pending, unloading = false): void {
     if (p.value.length > MAX_VALUE || p.pageDefault.length > MAX_VALUE) return;
-    chain = chain.then(() => deliver(p)).catch(() => undefined);
+    const prev = unloading ? undefined : lastOf.get(p.el);
+    const g = gate(deliver(p, ++seq, prev));
+    pending.add(g);
+    lastOf.set(p.el, g);
+    void g.done.then(() => pending.delete(g));
+  }
+
+  /** Resolves once the start report and every capture made so far are answered or dropped. */
+  function settled(): Promise<void> {
+    const all = [filed, ...pending].map((g) => g.done);
+    return Promise.all(all).then(() => undefined);
   }
 
   function find(r: ScanResult | null, el: Element): ScannedControl | null {
@@ -353,15 +411,38 @@ export function createRecording(env: RecordingEnv): Recording {
     return null;
   }
 
-  async function deliver(p: Pending): Promise<void> {
-    if (stopped || state === null) return;
-    // The worker files a capture under the page it last saw: a control the last scan did not report
-    // (added since, or re-used in place for another field) waits for a scan that does.
-    let control = find(env.latest(), p.el);
-    if (control === null) {
-      control = find(await env.rescan(), p.el);
-      if (control === null || stopped || state === null) return;
+  /**
+   * Synchronous up to `env.send` when nothing is to be waited for (an async function runs its body
+   * until the first `await`): a page hide or submit gets its edits out before the handler returns.
+   */
+  async function deliver(
+    p: Pending,
+    mine: number,
+    prev: Gate | undefined,
+  ): Promise<void> {
+    let rescanned = false;
+    for (;;) {
+      if (stopped || state === null) return;
+      if (!filed.settled) {
+        await filed.done;
+        continue;
+      }
+      // One capture of a control at a time: the worker applies it before the next is sent.
+      if (prev !== undefined && !prev.settled) {
+        await prev.done;
+        continue;
+      }
+      // The worker files a capture under the page it last saw: a control the last scan did not
+      // report (added since, or re-used in place for another field) waits for a scan that does.
+      if (find(env.latest(), p.el) !== null || rescanned) break;
+      rescanned = true;
+      await env.rescan();
     }
+    const control = find(env.latest(), p.el);
+    if (control === null) return;
+    // A newer edit of this control went out first (a page hide while this one waited): it stands.
+    if ((sentSeq.get(p.el) ?? 0) > mine) return;
+    sentSeq.set(p.el, mine);
     const reply = await env.send({
       type: "record-capture",
       kind: control.kind,
@@ -378,7 +459,7 @@ export function createRecording(env: RecordingEnv): Recording {
     if (stopped || finishing) return;
     finishing = true;
     flush();
-    chain = chain
+    settled()
       .then(async () => {
         const reply = await env.send({ type: "record-finish" });
         if (
@@ -419,7 +500,7 @@ export function createRecording(env: RecordingEnv): Recording {
     flushed() {
       if (stopped || state === null) return Promise.resolve();
       flush();
-      return chain;
+      return settled();
     },
     stop() {
       if (stopped) return;
