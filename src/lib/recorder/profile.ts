@@ -7,7 +7,7 @@ import {
   type FieldPolicy,
   type Profile,
 } from "../profiles/types";
-import type { RecBody } from "./types";
+import { seedBody, type RecBody } from "./types";
 
 const covers = (origin: string, pathPrefix: string, paths: string[]): boolean =>
   paths.every((p) => profileApplies({ origin, pathPrefix }, origin, p));
@@ -101,6 +101,8 @@ export function buildProfile(input: {
   fillMode: "auto" | "gesture";
   now: number;
   createdAt: number | null;
+  /** Kept by an edit of the saved form (ADR 0035); a recording's save starts unused. */
+  lastUsedAt?: number | null;
   body: RecBody;
   policies: Record<string, FieldPolicy>;
 }): Profile | null {
@@ -126,7 +128,7 @@ export function buildProfile(input: {
     pathPrefix: input.pathPrefix,
     fillMode: input.fillMode,
     createdAt: input.createdAt ?? input.now,
-    lastUsedAt: null,
+    lastUsedAt: input.lastUsedAt ?? null,
     steps: body.steps.map((s) => ({
       index: s.index,
       pathHint: s.pathHint,
@@ -147,5 +149,68 @@ export function buildProfile(input: {
         policy,
       };
     }),
+  });
+}
+
+/**
+ * The saved form as a recording body. A "Don't save" field keeps no value or page default, even
+ * one stored before C1 (ADR 0033): saved mode never shows it, nor revives it on an edit.
+ */
+function savedBody(p: Profile): RecBody {
+  const body = seedBody(p);
+  return {
+    ...body,
+    fields: body.fields.map((f) =>
+      f.policy === "skip" ? { ...f, value: "", pageDefault: "" } : f,
+    ),
+  };
+}
+
+/** The review page's model for the saved form itself (saved mode, ADR 0035): its prefix as stored. */
+export function savedModel(p: Profile): ReviewModel {
+  return {
+    ...reviewModel(p.origin, savedBody(p), p),
+    pathPrefix: p.pathPrefix,
+  };
+}
+
+/**
+ * The saved form `p` with a new name, fill mode, prefix and policies (saved mode's Save, ADR 0035):
+ * same id, origin, steps, fields, values, `createdAt` and `lastUsedAt`. `null` when `buildProfile`
+ * refuses it (a missing or unknown policy, a blank name, a prefix that misses a step with fields),
+ * or when a "Don't save" field would become "Fill it in": it holds no value, so only Record again
+ * can capture one. It may become "Ask me", still empty.
+ */
+export function editSaved(
+  p: Profile,
+  edit: {
+    name: string;
+    fillMode: "auto" | "gesture";
+    pathPrefix: string;
+    policies: Record<string, FieldPolicy>;
+  },
+): Profile | null {
+  const { policies } = edit;
+  if (
+    p.fields.some(
+      (f) =>
+        f.policy === "skip" &&
+        Object.hasOwn(policies, f.id) &&
+        policies[f.id] === "save",
+    )
+  ) {
+    return null;
+  }
+  return buildProfile({
+    id: p.id,
+    origin: p.origin,
+    name: edit.name,
+    pathPrefix: edit.pathPrefix,
+    fillMode: edit.fillMode,
+    now: p.createdAt,
+    createdAt: p.createdAt,
+    lastUsedAt: p.lastUsedAt,
+    body: savedBody(p),
+    policies,
   });
 }

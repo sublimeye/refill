@@ -4,7 +4,9 @@ import { applyCapture } from "../../../src/lib/recorder/fields";
 import {
   buildProfile,
   defaultPathPrefix,
+  editSaved,
   reviewModel,
+  savedModel,
 } from "../../../src/lib/recorder/profile";
 import { observePage } from "../../../src/lib/recorder/steps";
 import type { RecBody } from "../../../src/lib/recorder/types";
@@ -273,5 +275,135 @@ describe("buildProfile", () => {
   it("rejects what parseProfile rejects (bad id, bad origin)", () => {
     expect(build({ id: "bad id" })).toBeNull();
     expect(build({ origin: "http://pay.example.com" })).toBeNull();
+  });
+});
+
+/** The helpers' saved form plus a "Don't save" field (f5) stored before C1, value and default kept. */
+function withSkip(): Profile {
+  const p = savedProfile();
+  return {
+    ...p,
+    fields: [
+      ...p.fields,
+      {
+        ...p.fields[0]!,
+        id: "f5",
+        sig: STEP1[1]!.sig,
+        value: "90210",
+        pageDefault: "00000",
+        policy: "skip",
+      },
+    ],
+  };
+}
+
+describe("savedModel (ADR 0035)", () => {
+  it("is the saved form as the review shows it: its name, prefix, fill mode and values", () => {
+    const m = savedModel(savedProfile());
+    expect(m).toMatchObject({
+      origin: ORIGIN,
+      host: "pay.example.com",
+      name: "Bill pay",
+      pathPrefix: "/billpay/",
+      fillMode: "gesture",
+      steps: [
+        { index: 0, pathHint: "/billpay/one" },
+        { index: 1, pathHint: "/billpay/two" },
+      ],
+    });
+    expect(m.fields.map((f) => [f.id, f.label, f.value, f.policy])).toEqual([
+      ["f1", "acct", "12345", "save"],
+      ["f4", "amount", "45.12", "ask"],
+    ]);
+  });
+
+  it("keeps the stored prefix as it is, even one that would not be the default", () => {
+    expect(savedModel(savedProfile({ pathPrefix: "/BillPay/" })).pathPrefix).toBe(
+      "/BillPay/",
+    );
+  });
+
+  it("a Don't save field carries no value, even one stored before C1", () => {
+    const m = savedModel(withSkip());
+    expect(m.fields.find((f) => f.id === "f5")).toMatchObject({
+      value: "",
+      policy: "skip",
+    });
+    expect(JSON.stringify(m)).not.toContain("90210");
+  });
+});
+
+describe("editSaved (ADR 0035)", () => {
+  const edit = (
+    p: Profile,
+    over: Partial<Parameters<typeof editSaved>[1]> = {},
+  ) =>
+    editSaved(p, {
+      name: "Bills",
+      fillMode: "auto",
+      pathPrefix: "/billpay/",
+      policies: Object.fromEntries(p.fields.map((f) => [f.id, f.policy])),
+      ...over,
+    });
+
+  it("changes the name, fill mode, prefix and policies; keeps everything else", () => {
+    const p = savedProfile();
+    const next = edit(p, {
+      name: "  Bills ",
+      pathPrefix: "/",
+      policies: { f1: "ask", f4: "save" },
+    });
+    expect(next).toEqual({
+      ...p,
+      name: "Bills",
+      fillMode: "auto",
+      pathPrefix: "/",
+      fields: [
+        { ...p.fields[0], policy: "ask" },
+        { ...p.fields[1], policy: "save" },
+      ],
+    });
+  });
+
+  it("Don't save drops the value and the page default", () => {
+    const next = edit(savedProfile(), { policies: { f1: "skip", f4: "ask" } });
+    expect(next!.fields[0]).toMatchObject({
+      value: "",
+      pageDefault: "",
+      policy: "skip",
+    });
+  });
+
+  it("a Don't save field cannot become Fill it in", () => {
+    const p = withSkip();
+    expect(edit(p, { policies: { f1: "save", f4: "ask", f5: "save" } })).toBeNull();
+  });
+
+  it("a Don't save field may become Ask me, still empty (a value stored before C1 is not revived)", () => {
+    const next = edit(withSkip(), {
+      policies: { f1: "save", f4: "ask", f5: "ask" },
+    });
+    expect(next!.fields[2]).toMatchObject({
+      id: "f5",
+      value: "",
+      pageDefault: "",
+      policy: "ask",
+    });
+    expect(JSON.stringify(next)).not.toContain("90210");
+  });
+
+  it("the prefix must cover every step with fields (case-insensitive, as the matcher)", () => {
+    expect(edit(savedProfile(), { pathPrefix: "/BillPay/" })).not.toBeNull();
+    for (const pathPrefix of ["/billpay/one", "/other/", "billpay/", ""]) {
+      expect(edit(savedProfile(), { pathPrefix })).toBeNull();
+    }
+  });
+
+  it("a blank name, a missing or unknown policy is refused", () => {
+    expect(edit(savedProfile(), { name: "  " })).toBeNull();
+    expect(edit(savedProfile(), { policies: { f1: "save" } })).toBeNull();
+    expect(
+      edit(savedProfile(), { policies: { f1: "save", f4: "ask", f9: "save" } }),
+    ).toBeNull();
   });
 });
