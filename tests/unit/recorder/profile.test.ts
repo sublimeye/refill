@@ -149,6 +149,12 @@ describe("reviewModel", () => {
     expect(m.pathPrefix).toBe("/billpay/");
   });
 
+  it("keeps a saved prefix that covers every step in another case (ADR 0034)", () => {
+    const saved = savedProfile({ pathPrefix: "/BillPay/" });
+    const m = reviewModel(ORIGIN, recorded(), saved);
+    expect(m.pathPrefix).toBe("/BillPay/");
+  });
+
   it("cuts a long host to the name limit", () => {
     const host = `${"a".repeat(63)}.${"b".repeat(63)}.example.com`;
     const m = reviewModel(`https://${host}`, recorded(), null);
@@ -216,6 +222,13 @@ describe("buildProfile", () => {
     expect(build({ pathPrefix: "/billpay/one" })).toBeNull();
     expect(build({ pathPrefix: "/bill" })).toBeNull();
     expect(build({ pathPrefix: "/" })).not.toBeNull();
+  });
+
+  it("checks coverage case-insensitively, on segment boundaries (ADR 0034)", () => {
+    expect(build({ pathPrefix: "/BillPay/" })?.pathPrefix).toBe("/BillPay/");
+    expect(build({ pathPrefix: "/BILLPAY" })).not.toBeNull();
+    expect(build({ pathPrefix: "/BillPay/One" })).toBeNull();
+    expect(build({ pathPrefix: "/Bill" })).toBeNull();
   });
 
   it("returns copies, not the body's own arrays and signatures", () => {

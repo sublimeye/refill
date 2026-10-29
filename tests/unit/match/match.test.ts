@@ -4,6 +4,7 @@ import type { Sig } from "../../../src/lib/fields/signature";
 import {
   jaccard,
   matchControls,
+  pathScope,
   profileApplies,
   scoreSig,
   sigKey,
@@ -105,6 +106,52 @@ describe("profileApplies", () => {
     expect(
       profileApplies({ origin: p.origin, pathPrefix: "/" }, p.origin, "/a/b"),
     ).toBe(true);
+  });
+
+  it("compares paths case-insensitively, on the same segment boundaries (ADR 0034)", () => {
+    const o = p.origin;
+    const wp = { origin: o, pathPrefix: "/WebPayments/G/bills" };
+    expect(profileApplies(wp, o, "/webpayments/g/bills")).toBe(true);
+    expect(profileApplies(wp, o, "/WEBPAYMENTS/G/BILLS/2")).toBe(true);
+    expect(profileApplies(wp, o, "/webpayments/g/search")).toBe(false);
+    const bp = { origin: o, pathPrefix: "/BillPay" };
+    expect(profileApplies(bp, o, "/billpay")).toBe(true);
+    expect(profileApplies(bp, o, "/billpay/step2")).toBe(true);
+    expect(profileApplies(bp, o, "/billpayment")).toBe(false);
+    expect(profileApplies(bp, o, "/BILLPAYMENT")).toBe(false);
+    const slash = { origin: o, pathPrefix: "/BillPay/" };
+    expect(profileApplies(slash, o, "/billpay/x")).toBe(true);
+    expect(profileApplies(slash, o, "/billpay")).toBe(false);
+  });
+
+  it("still compares the origin exactly", () => {
+    expect(profileApplies(p, "https://PAY.example.com", "/bill")).toBe(false);
+    expect(profileApplies(p, "HTTPS://pay.example.com", "/bill")).toBe(false);
+  });
+});
+
+describe("pathScope", () => {
+  const o = "https://pay.example.com";
+  const p = { origin: o, pathPrefix: "/BillPay" };
+
+  it("on-path under the prefix, any case", () => {
+    expect(pathScope(p, o, "/billpay/one")).toBe("on-path");
+    expect(pathScope(p, o, "/BillPay")).toBe("on-path");
+  });
+
+  it("off-path elsewhere on the same origin", () => {
+    expect(pathScope(p, o, "/billpayment")).toBe("off-path");
+    expect(pathScope(p, o, "/")).toBe("off-path");
+  });
+
+  it("null for any other origin, even under the prefix", () => {
+    expect(pathScope(p, "https://evil.example", "/billpay")).toBeNull();
+    expect(pathScope(p, "https://PAY.example.com", "/billpay")).toBeNull();
+    expect(pathScope(p, "http://pay.example.com", "/billpay")).toBeNull();
+  });
+
+  it("null for a prefix that does not start with a slash", () => {
+    expect(pathScope({ origin: o, pathPrefix: "billpay" }, o, "/x")).toBeNull();
   });
 });
 
@@ -684,6 +731,103 @@ describe("matchControls cross-step gate", () => {
     expect(
       matchControls([f1], [{ index: 1, fingerprint: ["unrelated"] }], [c1]),
     ).toEqual(new Map([["acct", 0]]));
+  });
+});
+
+describe("matchControls off-path gate (ADR 0034)", () => {
+  const k = (c: MatchInput) => sigKey(c.sig, c.kind);
+  const acct = { name: "acct", labelText: "account number" };
+  const zip = { name: "zip", labelText: "zip code" };
+  const f1 = field("acct", acct, 0);
+  const f2 = field("zip", zip, 0);
+  const form = [control(0, acct), control(1, zip)];
+  const formStep = [{ index: 0, fingerprint: form.map(k) }];
+  const OFF = { offPath: true };
+
+  /** One control shared with the form among `n` unrelated ones. */
+  const strangers = (n: number) =>
+    Array.from({ length: n }, (_, j) =>
+      control(j + 1, { name: `other${j}`, labelText: `other ${j}` }),
+    );
+
+  it("a single-step profile fills off-path where the page is the recorded form (J = 1)", () => {
+    expect(matchControls([f1, f2], formStep, form, OFF)).toEqual(
+      new Map([
+        ["acct", 0],
+        ["zip", 1],
+      ]),
+    );
+  });
+
+  it("fills at exactly MIN_JACCARD, not below it", () => {
+    // fingerprint {acct, zip} vs page {acct, x}: 1/3; vs page {acct}: 1/2.
+    const half = [control(0, acct)];
+    expect(jaccard(formStep[0]!.fingerprint, half.map(k))).toBe(0.5);
+    expect(matchControls([f1, f2], formStep, half, OFF)).toEqual(
+      new Map([["acct", 0]]),
+    );
+    const third = [control(0, acct), control(1, { name: "x", labelText: "x" })];
+    expect(jaccard(formStep[0]!.fingerprint, third.map(k))).toBeCloseTo(1 / 3);
+    expect(matchControls([f1, f2], formStep, third, OFF).size).toBe(0);
+  });
+
+  it("off-path, one shared key among many different keys (J < 0.5): nothing", () => {
+    const page = [control(0, acct), ...strangers(4)];
+    expect(matchControls([f1, f2], formStep, page, OFF).size).toBe(0);
+  });
+
+  it("on-path is unchanged: one shared key among many still fills", () => {
+    const page = [control(0, acct), ...strangers(4)];
+    const want = new Map([["acct", 0]]);
+    expect(matchControls([f1, f2], formStep, page)).toEqual(want);
+    expect(matchControls([f1, f2], formStep, page, { offPath: false })).toEqual(
+      want,
+    );
+  });
+
+  it("an empty fingerprint never fills off-path", () => {
+    expect(
+      matchControls([f1, f2], [{ index: 0, fingerprint: [] }], form, OFF).size,
+    ).toBe(0);
+  });
+
+  it("multi-step off-path: only fields whose own step reaches MIN_JACCARD claim", () => {
+    const amt = { name: "amount", labelText: "amount" };
+    const memo = { name: "memo", labelText: "memo" };
+    const f3 = field("amt", amt, 1);
+    // An SPA page showing both steps: step 0's fingerprint is a subset (J = 2/3), step 1's
+    // fingerprint holds one page key and one other (J = 1/4). The usual gate keeps step 0 only.
+    const page = [control(0, acct), control(1, zip), control(2, amt)];
+    const steps = [
+      { index: 0, fingerprint: [k(page[0]!), k(page[1]!)] },
+      { index: 1, fingerprint: [k(page[2]!), "text|memo|memo|"] },
+    ];
+    expect(matchControls([f1, f2, f3], steps, page, OFF)).toEqual(
+      new Map([
+        ["acct", 0],
+        ["zip", 1],
+      ]),
+    );
+    // Tied at the max but below MIN_JACCARD: on-path both steps fill, off-path none does.
+    const tied = [
+      { index: 0, fingerprint: [k(page[0]!), "text|q|q|"] },
+      { index: 1, fingerprint: [k(page[2]!), "text|r|r|"] },
+    ];
+    const both = [control(0, acct), control(2, amt), control(3, memo)];
+    expect(matchControls([f1, f3], tied, both).size).toBe(2);
+    expect(matchControls([f1, f3], tied, both, OFF).size).toBe(0);
+    // Tied at the max and at or above MIN_JACCARD: off-path both fill.
+    const tiedHigh = [
+      { index: 0, fingerprint: [k(page[0]!)] },
+      { index: 1, fingerprint: [k(page[2]!)] },
+    ];
+    const pair = [control(0, acct), control(2, amt)];
+    expect(matchControls([f1, f3], tiedHigh, pair, OFF)).toEqual(
+      new Map([
+        ["acct", 0],
+        ["amt", 2],
+      ]),
+    );
   });
 });
 
