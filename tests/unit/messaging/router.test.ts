@@ -706,6 +706,83 @@ describe("content senders", () => {
     );
   });
 
+  describe("captures enter their handler in arrival order (ruling F4)", () => {
+    const capture = (value: string) => ({
+      type: "record-capture",
+      kind: "text",
+      sig: scanReport.controls[0]!.sig,
+      value,
+      pageDefault: "",
+      fieldId: null,
+    });
+
+    /** The first permission check answers only when released; later ones at once. */
+    function slowFirstCheck(shims: Awaited<ReturnType<typeof enabled>>) {
+      let release: () => void = () => undefined;
+      const first = new Promise<void>((r) => (release = r));
+      let calls = 0;
+      shims.permissions.contains.mockImplementation(async () => {
+        if (++calls === 1) await first;
+        return true;
+      });
+      return () => release();
+    }
+
+    const values = (c: ReturnType<typeof spyHandlers>["c"]) =>
+      (c["record-capture"].mock.calls as unknown[][]).map(
+        (a) => (a[0] as { value: string }).value,
+      );
+
+    it("a capture whose sender check finishes first still waits for the one sent before it", async () => {
+      const shims = await enabled();
+      const release = slowFirstCheck(shims);
+      const { c, handlers } = spyHandlers();
+      const r = createRouter(handlers);
+      const one = r(capture("older"), content);
+      const two = r(capture("newer"), content);
+      await vi.waitFor(() =>
+        expect(shims.permissions.contains).toHaveBeenCalledTimes(2),
+      );
+      await new Promise((res) => setTimeout(res, 20));
+      expect(c["record-capture"]).not.toHaveBeenCalled();
+      release();
+      await Promise.all([one, two]);
+      expect(values(c)).toEqual(["older", "newer"]);
+    });
+
+    it("a rejected or failing capture does not hold back the next", async () => {
+      const shims = await enabled();
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      let calls = 0;
+      shims.permissions.contains.mockImplementation(async () => {
+        calls++;
+        if (calls === 1) throw new Error("boom");
+        return calls !== 2;
+      });
+      const { c, handlers } = spyHandlers();
+      const r = createRouter(handlers);
+      const answers = await Promise.all([
+        r(capture("a"), content),
+        r(capture("b"), content),
+        r(capture("c"), content),
+      ]);
+      expect(answers).toEqual([INTERNAL, REJECTED, { state: "off" }]);
+      expect(values(c)).toEqual(["c"]);
+    });
+
+    it("other content requests are not held behind a capture", async () => {
+      const shims = await enabled();
+      const release = slowFirstCheck(shims);
+      const { c, handlers } = spyHandlers();
+      const r = createRouter(handlers);
+      const one = r(capture("held"), content);
+      expect(await r(scanReport, content)).toEqual({ state: "none" });
+      expect(c["scan-report"]).toHaveBeenCalledTimes(1);
+      release();
+      await one;
+    });
+  });
+
   it("recording requests from a page or a revoked site are rejected", async () => {
     await enabled();
     const { c, handlers } = spyHandlers();
