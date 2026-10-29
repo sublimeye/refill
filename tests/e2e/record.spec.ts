@@ -1161,7 +1161,7 @@ test.describe("record, review and fill", () => {
 // saved mode for the site's saved form.
 test.describe("view the saved form from the popup", () => {
   const SAVED_GONE =
-    "This saved form is no longer shown. Refill hides it when it locks or when the site is removed. Unlock, then open it again from the Refill button.";
+    "This saved form is no longer shown: Refill locked, or the site was removed. Open it again from the Refill button.";
 
   /** The row of the field labelled `label`. */
   const rowOf = (p: Page, label: string) =>
@@ -1384,17 +1384,21 @@ test.describe("view the saved form from the popup", () => {
     void sites;
     const { tabId, saved } = await seeded(context, extensionId);
 
-    // Close drops the page's copy and changes nothing stored.
+    // Close drops the page's copy and its unsaved edits: nothing stored changes.
+    const before = await loadSavedProfile(context, FIXTURE_A);
     const closing = await context.newPage();
     await closing.goto(saved.url());
     await expect(closing.getByRole("rowheader")).toHaveCount(1);
+    await closing
+      .getByLabel("Fill only when I click Fill now in Refill")
+      .check();
+    await rowOf(closing, "city").getByRole("combobox").selectOption("ask");
+    await closing.getByLabel("Name").fill("Edited, not saved");
     const closed = closing.waitForEvent("close");
     await closing.getByRole("button", { name: "Close" }).click();
     await closed;
-    expect(await loadSavedProfile(context, FIXTURE_A)).toMatchObject({
-      name: "Water bill",
-      fillMode: "auto",
-    });
+    expect(before).toMatchObject({ name: "Water bill", fillMode: "auto" });
+    expect(await loadSavedProfile(context, FIXTURE_A)).toEqual(before);
 
     await rowOf(saved, "city")
       .getByRole("button", { name: "Show city" })

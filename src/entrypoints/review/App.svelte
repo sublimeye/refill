@@ -35,7 +35,7 @@
   const key = pageKeyFrom(globalThis.location?.search ?? "");
   const savedMode = key?.mode === "saved";
   const GONE = savedMode
-    ? "This saved form is no longer shown. Refill hides it when it locks or when the site is removed. Unlock, then open it again from the Refill button."
+    ? "This saved form is no longer shown: Refill locked, or the site was removed. Open it again from the Refill button."
     : "This recording is no longer available. Recordings end when Refill locks, after 30 minutes, or when you cancel them.";
   const SAVED = savedMode
     ? "Saved. Refill uses your changes the next time you open this form."

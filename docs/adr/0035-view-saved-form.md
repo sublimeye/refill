@@ -130,8 +130,8 @@ deciding the request. Only these differ:
   with one history entry may close itself). If the tab cannot close, it shows "Closed. Nothing was
   changed."
 - **Copy.** After Save: "Saved. Refill uses your changes the next time you open this form." The gone
-  copy (lock, removal, locked at open): "This saved form is no longer shown. Refill hides it when it
-  locks or when the site is removed. Unlock, then open it again from the Refill button."
+  copy (lock, removal, locked at open, a stale page): "This saved form is no longer shown: Refill
+  locked, or the site was removed. Open it again from the Refill button."
 - Name, fill mode, "Fills on pages under" and its hint work as in the recording review (ADR 0034).
 
 ### The worker's signal: on every lock and site removal, and from the worker only
