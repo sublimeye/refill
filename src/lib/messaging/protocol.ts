@@ -60,7 +60,8 @@ export type PageRequest =
       pathPrefix: string;
       policies: { fieldId: string; policy: FieldPolicy }[];
     }
-  | { type: "saved-check"; profileId: string };
+  | { type: "saved-check"; profileId: string }
+  | { type: "fill-now"; tabId: number; origin: string };
 
 /** What the review page learns about a finished recording (ADR 0033). */
 export type ReviewLoadResult =
@@ -78,7 +79,13 @@ export type ReviewSaveResult =
  * `none` when there is none, or the vault is locked (the count is inside the sealed record).
  */
 export type SavedSummary =
-  { state: "saved"; profileId: string; count: number } | { state: "none" };
+  | {
+      state: "saved";
+      profileId: string;
+      count: number;
+      fillMode: "auto" | "gesture";
+    }
+  | { state: "none" };
 
 /** Saved mode of the review page (ADR 0035): the saved form as a review model, or `gone`. */
 export type SavedLoadResult =
@@ -141,7 +148,18 @@ export type PageResponse<R extends PageRequest> = R extends {
                                       ? ReviewSaveResult
                                       : R extends { type: "saved-check" }
                                         ? ReviewCheckResult
-                                        : never;
+                                        : R extends { type: "fill-now" }
+                                          ? | { ok: true }
+                                            | {
+                                                ok: false;
+                                                error:
+                                                  | "locked"
+                                                  | "invalid-origin"
+                                                  | "not-granted"
+                                                  | "no-profile"
+                                                  | "tab-moved";
+                                              }
+                                          : never;
 
 /** What the router resolves for a message it refuses or whose handler threw. Never carries detail. */
 export type RouterError = { ok: false; error: "rejected" | "internal" };
@@ -184,6 +202,7 @@ const KEYS_BY_TYPE: Readonly<Record<PageRequest["type"], readonly string[]>> = {
     "policies",
   ],
   "saved-check": ["type", "profileId"],
+  "fill-now": ["type", "tabId", "origin"],
 };
 
 /** Origins are short: a longer string cannot be a canonical https origin worth handling. */
@@ -290,11 +309,16 @@ export function parsePageRequest(raw: unknown): PageRequest | null {
       return { type: type as "site-status" | "site-remove", origin };
     }
     case "site-enable":
-    case "record-start": {
+    case "record-start":
+    case "fill-now": {
       const origin = parseOrigin(raw["origin"]);
       const tabId = parseTabId(raw["tabId"]);
       if (origin === null || tabId === null) return null;
-      return { type: type as "site-enable" | "record-start", tabId, origin };
+      return {
+        type: type as "site-enable" | "record-start" | "fill-now",
+        tabId,
+        origin,
+      };
     }
     case "site-intent": {
       const origin = parseOrigin(raw["origin"]);

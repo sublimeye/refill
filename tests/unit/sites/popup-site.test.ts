@@ -10,6 +10,7 @@ import type {
 import {
   cancelRecordingFor,
   enableSite,
+  fillNowFor,
   finishRecordingFor,
   loadSiteView,
   recordSite,
@@ -17,8 +18,10 @@ import {
   removeSiteFor,
   resolveTarget,
   savedLine,
+  sequencedSite,
   viewOf,
   viewSavedFor,
+  type SiteView,
 } from "../../../src/lib/sites/popup-site";
 import { installShims } from "../helpers/browser-shims";
 
@@ -35,6 +38,9 @@ let recordStart: { ok: true } | { ok: false; error: string };
 // The saved form's summary needs a sealed profile; the popup only needs the worker's answer.
 let summary: SavedSummary | Error;
 let summaryCalls: unknown[];
+// The worker's answer to Fill now, and what it was asked.
+let fillNowReply: { ok: true } | { ok: false; error: string } | Error;
+let fillNowCalls: unknown[];
 
 beforeEach(() => {
   fakeBrowser.reset();
@@ -44,6 +50,8 @@ beforeEach(() => {
   recordStart = { ok: true };
   summary = { state: "none" };
   summaryCalls = [];
+  fillNowReply = { ok: true };
+  fillNowCalls = [];
   vi.spyOn(console, "error").mockImplementation(() => {});
   const handlers = createSiteHandlers(() => 1_000_000);
   vi.spyOn(fakeBrowser.runtime, "sendMessage").mockImplementation(((msg: {
@@ -56,6 +64,12 @@ beforeEach(() => {
       return summary instanceof Error
         ? Promise.reject(summary)
         : Promise.resolve(summary);
+    }
+    if (msg.type === "fill-now") {
+      fillNowCalls.push(msg);
+      return fillNowReply instanceof Error
+        ? Promise.reject(fillNowReply)
+        : Promise.resolve(fillNowReply);
     }
     if (msg.type.startsWith("record-")) {
       recordCalls.push(msg);
@@ -218,12 +232,12 @@ describe("viewOf / loadSiteView", () => {
     expect(await loadSiteView(target)).toMatchObject({ saved: null });
     expect(summaryCalls).toEqual([]);
     await upsertSite(A, { profileId: "p1" });
-    summary = { state: "saved", profileId: "p1", count: 2 };
+    summary = { state: "saved", profileId: "p1", count: 2, fillMode: "auto" };
     const view = await loadSiteView(target);
     expect(view).toMatchObject({
       kind: "on",
       hasProfile: true,
-      saved: { profileId: "p1", count: 2 },
+      saved: { profileId: "p1", count: 2, fillMode: "auto" },
     });
     expect(summaryCalls).toEqual([{ type: "saved-summary", origin: A }]);
     // Locked (or gone meanwhile): no line.
@@ -238,10 +252,15 @@ describe("viewOf / loadSiteView", () => {
   });
 
   it("viewOf keeps the summary only for a site that is on", () => {
-    const saved: SavedSummary = { state: "saved", profileId: "p1", count: 3 };
+    const saved: SavedSummary = {
+      state: "saved",
+      profileId: "p1",
+      count: 3,
+      fillMode: "gesture",
+    };
     const on = status({ enabled: true, granted: true, hasProfile: true });
     expect(viewOf(target, on, OFF, saved)).toMatchObject({
-      saved: { profileId: "p1", count: 3 },
+      saved: { profileId: "p1", count: 3, fillMode: "gesture" },
     });
     expect(viewOf(target, on, OFF)).toMatchObject({ saved: null });
     expect(
@@ -444,22 +463,113 @@ describe("savedLine and View (ADR 0035)", () => {
     expect(savedLine(0)).toBe("Saved form · 0 fields");
   });
 
+  const saved = { profileId: "p1", count: 2, fillMode: "auto" } as const;
+
   it("View opens the review page in saved mode for that profile id", async () => {
     const create = vi
       .spyOn(fakeBrowser.tabs, "create")
       .mockResolvedValue({} as never);
-    expect(await viewSavedFor({ profileId: "p1", count: 2 })).toBe(true);
+    expect(await viewSavedFor(saved)).toBe(true);
     expect(create).toHaveBeenCalledWith({
       url: "chrome-extension://test-extension-id/review.html?saved=p1",
     });
     create.mockRejectedValue(new Error("x"));
-    expect(await viewSavedFor({ profileId: "p1", count: 2 })).toBe(false);
+    expect(await viewSavedFor(saved)).toBe(false);
   });
 
   it("the popup shows the line and View only while unlocked, through savedLine", () => {
     const src = readFileSync("src/entrypoints/popup/App.svelte", "utf8");
     expect(src).toMatch(/\{savedLine\(s\.saved\.count\)\}/);
     expect(src).toMatch(/view === "unlocked" && s\.saved/);
+  });
+});
+
+describe("fillNowFor (ADR 0038)", () => {
+  const target = { tabId: 3, origin: A };
+
+  it("asks the worker to fill the tab, with exactly the tab and origin", async () => {
+    expect(await fillNowFor(target)).toBe("ok");
+    expect(fillNowCalls).toEqual([{ type: "fill-now", tabId: 3, origin: A }]);
+  });
+
+  it("maps locked and tab-moved, and every other refusal to error", async () => {
+    fillNowReply = { ok: false, error: "locked" };
+    expect(await fillNowFor(target)).toBe("locked");
+    fillNowReply = { ok: false, error: "tab-moved" };
+    expect(await fillNowFor(target)).toBe("tab-moved");
+    for (const error of ["invalid-origin", "not-granted", "no-profile"]) {
+      fillNowReply = { ok: false, error };
+      expect(await fillNowFor(target)).toBe("error");
+    }
+  });
+
+  it("never throws: an unreachable worker is error", async () => {
+    fillNowReply = new Error("x");
+    expect(await fillNowFor(target)).toBe("error");
+    vi.spyOn(fakeBrowser.runtime, "sendMessage").mockResolvedValue(undefined);
+    expect(await fillNowFor(target)).toBe("error");
+  });
+
+  it("the popup shows Fill now only for a gesture form while nothing records", () => {
+    const src = readFileSync("src/entrypoints/popup/App.svelte", "utf8");
+    expect(src).toMatch(
+      /\{#if s\.saved\.fillMode === "gesture" && rec\.state === "off"\}/,
+    );
+    // Inside the block that needs an unlocked vault and a saved form.
+    expect(src.indexOf('view === "unlocked" && s.saved')).toBeLessThan(
+      src.indexOf('s.saved.fillMode === "gesture"'),
+    );
+  });
+});
+
+describe("sequencedSite", () => {
+  const view = (host: string): SiteView =>
+    ({ kind: "unsupported", host }) as never;
+  const setup = () => {
+    let shown: SiteView | null = null;
+    const seq = sequencedSite((v) => (shown = v));
+    return { seq, shown: () => shown };
+  };
+  const gate = () => {
+    let release!: (v: SiteView) => void;
+    const p = new Promise<SiteView>((r) => (release = r));
+    return { p, release };
+  };
+
+  it("a load that resolves after a newer assignment does not overwrite it", async () => {
+    const { seq, shown } = setup();
+    const slow = gate();
+    const pending = seq.load(() => slow.p);
+    seq.set(view("newer"));
+    slow.release(view("late"));
+    await pending;
+    expect(shown()).toEqual(view("newer"));
+  });
+
+  it("of two loads, the later one wins whichever resolves last", async () => {
+    const { seq, shown } = setup();
+    const first = gate();
+    const second = gate();
+    const p1 = seq.load(() => first.p);
+    const p2 = seq.load(() => second.p);
+    second.release(view("second"));
+    await p2;
+    first.release(view("first"));
+    await p1;
+    expect(shown()).toEqual(view("second"));
+  });
+
+  it("a load with nothing after it assigns", async () => {
+    const { seq, shown } = setup();
+    await seq.load(async () => view("only"));
+    expect(shown()).toEqual(view("only"));
+  });
+
+  it("the popup assigns site only through the sequence", () => {
+    const src = readFileSync("src/entrypoints/popup/App.svelte", "utf8");
+    const direct = src.match(/(?<!let )\bsite = /g) ?? [];
+    expect(direct).toHaveLength(1); // the sequence's own apply
+    expect(src).toMatch(/sequencedSite\(\(v\) => \(site = v\)\)/);
   });
 });
 

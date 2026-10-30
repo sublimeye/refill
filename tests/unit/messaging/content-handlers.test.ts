@@ -26,6 +26,7 @@ import {
 import type { Profile, ProfileField } from "../../../src/lib/profiles/types";
 import { sigKey } from "../../../src/lib/match/match";
 import { readSites, upsertSite } from "../../../src/lib/sites";
+import { FILL_GRANT_MS, grantFill } from "../../../src/lib/sites/fill-now";
 import { createSiteHandlers } from "../../../src/lib/sites/handlers";
 import {
   getItem,
@@ -641,6 +642,102 @@ describe("scan-report off the path prefix (ADR 0034)", () => {
         }),
       ).toEqual({ state: "none" });
     }
+  });
+});
+
+describe("scan-report with a Fill now grant (ADR 0038)", () => {
+  // A tab of its own, so a grant left over here cannot reach another test.
+  const gctx = (tabId: number, origin = A): ContentContext => ({
+    ...ctx(),
+    tabId,
+    origin,
+  });
+  const FILL = {
+    state: "fill",
+    items: [
+      {
+        fieldId: "f_email",
+        i: 0,
+        kind: "text",
+        value: SECRET.email,
+        pageDefault: SECRET.emailDefault,
+      },
+    ],
+    ask: [1],
+    recording: false,
+  };
+
+  it("a gesture profile with a grant answers fill, then the next scan answers gesture", async () => {
+    await saveProfile(profile({ fillMode: "gesture" }));
+    const handlers = createContentHandlers(now);
+    grantFill(41, A, T0);
+    expect(await handlers["scan-report"](scan(), gctx(41))).toEqual(FILL);
+    expect(await handlers["scan-report"](scan(), gctx(41))).toEqual({
+      state: "gesture",
+      fieldIds: ["f_email"],
+    });
+  });
+
+  it("the grant records use of the profile like any fill", async () => {
+    await saveProfile(profile({ fillMode: "gesture" }));
+    grantFill(42, A, T0);
+    await createContentHandlers(now)["scan-report"](scan(), gctx(42));
+    await vi.waitFor(async () =>
+      expect((await loadProfileForOrigin(A))?.lastUsedAt).toBe(T0),
+    );
+  });
+
+  it("a grant for another origin or tab is ignored", async () => {
+    await saveProfile(profile({ fillMode: "gesture" }));
+    const handlers = createContentHandlers(now);
+    grantFill(43, "https://b.example", T0);
+    expect(await handlers["scan-report"](scan(), gctx(43))).toMatchObject({
+      state: "gesture",
+    });
+    grantFill(44, A, T0);
+    expect(await handlers["scan-report"](scan(), gctx(45))).toMatchObject({
+      state: "gesture",
+    });
+  });
+
+  it("an expired grant is ignored (the worker's clock)", async () => {
+    await saveProfile(profile({ fillMode: "gesture" }));
+    grantFill(46, A, T0);
+    clock = T0 + FILL_GRANT_MS;
+    expect(
+      await createContentHandlers(now)["scan-report"](scan(), gctx(46)),
+    ).toMatchObject({ state: "gesture" });
+  });
+
+  it("a page with nothing to fill answers none and keeps the grant", async () => {
+    await saveProfile(profile({ fillMode: "gesture" }));
+    const handlers = createContentHandlers(now);
+    grantFill(47, A, T0);
+    const onlyAskAndSkip = scan([PAGE[1]!, PAGE[2]!]);
+    expect(await handlers["scan-report"](onlyAskAndSkip, gctx(47))).toEqual({
+      state: "none",
+    });
+    expect(await handlers["scan-report"](scan(), gctx(47))).toEqual(FILL);
+  });
+
+  it("an auto profile does not spend the grant", async () => {
+    await saveProfile(profile());
+    const handlers = createContentHandlers(now);
+    grantFill(48, A, T0);
+    expect(await handlers["scan-report"](scan(), gctx(48))).toEqual(FILL);
+    await saveProfile(profile({ fillMode: "gesture" }));
+    expect(await handlers["scan-report"](scan(), gctx(48))).toEqual(FILL);
+  });
+
+  it("a lock during the read still reports locked, grant or not", async () => {
+    await saveProfile(profile({ fillMode: "gesture" }));
+    grantFill(49, A, T0);
+    const read = pauseRead(profileKey("prof1"));
+    const pending = createContentHandlers(now)["scan-report"](scan(), gctx(49));
+    await read.started;
+    await lock();
+    read.release();
+    expect(await pending).toEqual({ state: "locked" });
   });
 });
 

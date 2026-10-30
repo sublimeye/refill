@@ -113,9 +113,22 @@ const profileWrites = (set: { mock: { calls: unknown[][] } }) =>
 
 describe("saved-summary (the popup's line)", () => {
   it("the site's saved form: its id and how many fields it has, no value", async () => {
-    await saveProfile(stored());
+    await saveProfile(stored({ fillMode: "auto" }));
     const res = await summary(ORIGIN);
-    expect(res).toEqual({ state: "saved", profileId: "p1", count: 3 });
+    expect(res).toEqual({
+      state: "saved",
+      profileId: "p1",
+      count: 3,
+      fillMode: "auto",
+    });
+  });
+
+  it("carries the form's fill mode, which the popup's Fill now depends on", async () => {
+    await saveProfile(stored({ fillMode: "gesture" }));
+    expect(await summary(ORIGIN)).toMatchObject({
+      state: "saved",
+      fillMode: "gesture",
+    });
   });
 
   it("none: no site, no saved form, a non-canonical origin, or a locked vault", async () => {

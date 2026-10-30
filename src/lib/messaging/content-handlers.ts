@@ -14,6 +14,7 @@ import {
 } from "../recorder/handlers";
 import { readSites } from "../sites";
 import { showFillCount, showLocked } from "../sites/badge";
+import { takeGrant } from "../sites/fill-now";
 import { LockedError } from "../vault/types";
 import { lockEpoch, status } from "../vault/vault";
 import type { FillItem, FillPlan, ScanControl } from "./content-protocol";
@@ -135,7 +136,12 @@ export function createContentHandlers(
     }
     // Nothing fillable is the same as no profile here: no toast, no badge count, no write.
     if (items.length === 0) return NONE;
-    if (profile.fillMode === "gesture") {
+    // A gesture profile fills only on the tab's one-time Fill now grant (ADR 0038). The take is
+    // synchronous, after the last epoch check: nothing may be awaited between it and the return.
+    if (
+      profile.fillMode === "gesture" &&
+      !takeGrant(ctx.tabId, ctx.origin, now())
+    ) {
       return { state: "gesture", fieldIds: items.map((it) => it.fieldId) };
     }
     touch(profile.id, profile.origin);
