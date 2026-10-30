@@ -6,6 +6,7 @@
   import {
     cancelRecordingFor,
     enableSite,
+    fillNowFor,
     finishRecordingFor,
     loadSiteView,
     recordSite,
@@ -13,6 +14,7 @@
     removeSiteFor,
     resolveTarget,
     savedLine,
+    sequencedSite,
     viewSavedFor,
     type SiteView,
   } from "../../lib/sites/popup-site";
@@ -30,6 +32,9 @@
 
   // "This site" section (shown once a vault exists; no secrets are involved, so locked is fine).
   let site = $state<SiteView | null>(null);
+  // Every assignment to `site` goes through `siteSeq`: a load that resolves late (the unlock path,
+  // a slow tab query) must not overwrite a view assigned after it began.
+  const siteSeq = sequencedSite((v) => (site = v));
   let siteBusy = $state(false);
   let siteError = $state("");
   let confirming = $state(false);
@@ -40,6 +45,8 @@
 
   const DAMAGED = "Refill's vault data is damaged";
   const GENERIC = "Something went wrong — try again";
+  const TAB_MOVED =
+    "This tab moved to another site — open the form and try again.";
 
   function viewOf(s: VaultStatus): View {
     return s.state;
@@ -69,9 +76,11 @@
     await refresh();
   }
 
-  async function loadSite() {
-    const target = await resolveTarget();
-    site = target ? await loadSiteView(target) : { kind: "unsupported" };
+  function loadSite(): Promise<void> {
+    return siteSeq.load(async () => {
+      const target = await resolveTarget();
+      return target ? await loadSiteView(target) : { kind: "unsupported" };
+    });
   }
 
   onMount(async () => {
@@ -92,7 +101,7 @@
   async function settleEnable(flow: ReturnType<typeof enableSite>) {
     try {
       const res = await flow;
-      site = res.view;
+      siteSeq.set(res.view);
       if (res.outcome === "denied") {
         await announceSite("Access to this site wasn't granted");
       } else if (res.view.kind !== "on") {
@@ -118,7 +127,7 @@
   async function settleRecord(flow: ReturnType<typeof recordSite>) {
     try {
       const res = await flow;
-      site = res.view;
+      siteSeq.set(res.view);
       switch (res.outcome) {
         case "recording":
           await tick();
@@ -132,9 +141,7 @@
           await announceSite("Refill locked — unlock, then record again.");
           break;
         case "tab-moved":
-          await announceSite(
-            "This tab moved to another site — open the form and try again.",
-          );
+          await announceSite(TAB_MOVED);
           break;
         default:
           break; // granted-pending: the grant path finishes it
@@ -176,13 +183,38 @@
     }
   }
 
+  // "Fill now": a one-time grant for this tab, then the page fills; this popup is done (ADR 0038).
+  async function fillNow(s: Active) {
+    if (siteBusy) return;
+    siteBusy = true;
+    siteError = "";
+    try {
+      switch (await fillNowFor(s)) {
+        case "ok":
+          window.close();
+          return;
+        case "locked":
+          await refresh(); // the vault locked meanwhile: show the unlock form
+          await announceSite("Refill locked — unlock, then fill again.");
+          break;
+        case "tab-moved":
+          await announceSite(TAB_MOVED);
+          break;
+        default:
+          await announceSite(GENERIC);
+      }
+    } finally {
+      siteBusy = false;
+    }
+  }
+
   async function cancelRecording(s: Active) {
     if (siteBusy) return;
     siteBusy = true;
     siteError = "";
     try {
       const res = await cancelRecordingFor(s);
-      site = res.view;
+      siteSeq.set(res.view);
       if (res.ok) {
         await tick();
         siteStatus?.focus();
@@ -220,7 +252,7 @@
     try {
       const res = await removeSiteFor(s);
       confirming = false;
-      site = res.view;
+      siteSeq.set(res.view);
       if (res.ok) {
         await tick();
         siteStatus?.focus();
@@ -414,6 +446,15 @@
             >
               View
             </button>
+            {#if s.saved.fillMode === "gesture" && rec.state === "off"}
+              <button
+                type="button"
+                onclick={() => fillNow(s)}
+                disabled={siteBusy}
+              >
+                Fill now
+              </button>
+            {/if}
           {/if}
           {@render recordControls(s)}
           <button

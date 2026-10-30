@@ -46,7 +46,12 @@ export type SiteView =
       recording: RecordingView;
     };
 
-export type SavedForm = { profileId: string; count: number };
+export type SavedForm = {
+  profileId: string;
+  count: number;
+  /** `gesture`: the form fills only on Fill now (ADR 0038). */
+  fillMode: "auto" | "gesture";
+};
 
 const RECORDING_OFF: RecordingView = { state: "off" };
 const NO_SUMMARY: SavedSummary = { state: "none" };
@@ -128,7 +133,11 @@ export function viewOf(
     hasProfile: status.hasProfile,
     saved:
       kind === "on" && summary.state === "saved"
-        ? { profileId: summary.profileId, count: summary.count }
+        ? {
+            profileId: summary.profileId,
+            count: summary.count,
+            fillMode: summary.fillMode,
+          }
         : null,
     recording: recordingOf(recording),
   };
@@ -231,6 +240,52 @@ export async function viewSavedFor(saved: SavedForm): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * "Fill now": leaves the one-time grant for the tab and nudges it (ADR 0038). `ok`: the page is
+ * filling and the caller closes the popup. `locked` and `tab-moved` are the worker's refusals the
+ * popup words; anything else, including an unreachable worker, is `error`. Never throws.
+ */
+export async function fillNowFor(
+  target: Target & { origin: string },
+): Promise<"ok" | "locked" | "tab-moved" | "error"> {
+  try {
+    const res = await sendToSw({
+      type: "fill-now",
+      tabId: target.tabId,
+      origin: target.origin,
+    });
+    if (res.ok) return "ok";
+    return res.error === "locked" || res.error === "tab-moved"
+      ? res.error
+      : "error";
+  } catch {
+    return "error";
+  }
+}
+
+/**
+ * Orders the popup's assignments to its `site`. Every assignment goes through here, and each one
+ * supersedes the loads still in flight, so a `loadSite` that resolves late (the unlock path, a
+ * slow tab query) never overwrites a newer view.
+ */
+export function sequencedSite(apply: (view: SiteView | null) => void) {
+  let generation = 0;
+  return {
+    /** Assigns now, and drops every load that began earlier. */
+    set(view: SiteView | null): void {
+      generation += 1;
+      apply(view);
+    },
+    /** Assigns what `read` resolves to, unless an assignment or a newer load came meanwhile. */
+    async load(read: () => Promise<SiteView>): Promise<void> {
+      generation += 1;
+      const mine = generation;
+      const view = await read();
+      if (mine === generation) apply(view);
+    },
+  };
 }
 
 /** "Cancel recording": discards the tab's unfinished session and returns the fresh view. */

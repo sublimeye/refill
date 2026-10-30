@@ -405,7 +405,11 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
 - Unlocked + auto: fill (§5.5) → toast `✓ Refill filled 5 fields · 1 needs you  [Undo]`;
   `ask` fields get a subtle outline and stay empty. Undo → `Fill undone`.
 - Unlocked + gesture: toast `5 fields ready — open Refill to fill`; popup **Fill now**.
-  The gesture plan carries the matched field ids, never values.
+  The gesture plan carries the matched field ids, never values. **Fill now** (page-only
+  `fill-now`, ADR 0038) leaves a one-time grant for that tab and origin, valid for 10 s, in worker
+  memory, then nudges the tab. The tab's next scan whose gesture profile matches at least one
+  `save` field consumes the grant and is answered with the `fill` plan; a scan with no grant stays
+  `gesture`.
 - Locked: the SW knows only the plaintext site index, so state is **origin-level** and applies only
   to a site with a saved form (otherwise a locked vault shows nothing): badge 🔒;
   toast `Refill has a saved form for this site — unlock from the toolbar icon`. (Profile name and
@@ -453,7 +457,9 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
 ### 6.6 Popup states
 - Site not enabled: Record this site · Protect drafts here.
 - Site enabled: profile card (name, steps, last used, fill mode) · Fill now · Edit · Drafts toggle ·
-  Remove site.
+  Remove site. **Fill now** shows only for a saved form set to One gesture, with the vault unlocked
+  and no recording in progress; it leaves the one-time 10 s grant (§6.3, ADR 0038), nudges the tab
+  and closes the popup.
 - Locked: Touch ID button (if enrolled) · passphrase field · Unlock. Touch ID opens a small
   dedicated unlock window (`windows.create`, extension page) because the system Touch ID sheet can
   blur and close the action popup.
@@ -488,7 +494,9 @@ Touch ID, default TTL, change passphrase) → Export/Import → About/Security.
       opened.
   - Extension-page messages: `sender.url` starts with `chrome-extension://<id>/` and no content
     script context; all other vault/admin operations (unlock, record start, profile edit,
-    export/import, settings, intent-execute) are page-only.
+    export/import, settings, intent-execute, `fill-now`) are page-only. `fill-now`
+    (`{ tabId, origin }`) checks the origin, the lock, the host permission and the site's saved
+    form and that the tab shows the origin, then grants one fill and nudges the tab (ADR 0038).
 - Payload size caps and schema checks on every message.
 - SW → content script: only `refill-nudge`, sent to frame 0 and carrying no data; the content
   script answers by asking `record-status` and by reporting its page again (`scan-report`, even

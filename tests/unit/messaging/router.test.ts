@@ -68,6 +68,7 @@ function spyHandlers() {
     "saved-load": vi.fn(async () => ({ state: "gone" })),
     "saved-save": vi.fn(async () => ({ ok: true })),
     "saved-check": vi.fn(async () => ({ state: "gone" })),
+    "fill-now": vi.fn(async () => ({ ok: true })),
   };
   const c = {
     "scan-report": vi.fn(async () => ({ state: "none" })),
@@ -277,6 +278,16 @@ describe("site requests", () => {
     ).toEqual({ type: "site-intent", tabId: 0, origin: SITE, kind: "enable" });
   });
 
+  it("parses fill-now with exactly its keys", () => {
+    expect(
+      parsePageRequest({ type: "fill-now", tabId: 3, origin: SITE }),
+    ).toEqual({
+      type: "fill-now",
+      tabId: 3,
+      origin: SITE,
+    });
+  });
+
   it("accepts a 256-char origin string and rejects 257", () => {
     expect(exact).toHaveLength(256);
     expect(long).toHaveLength(257);
@@ -284,7 +295,12 @@ describe("site requests", () => {
       expect(parsePageRequest({ type, origin: exact })).not.toBeNull();
       expect(parsePageRequest({ type, origin: long })).toBeNull();
     }
-    for (const type of ["site-enable", "site-intent", "record-start"]) {
+    for (const type of [
+      "site-enable",
+      "site-intent",
+      "record-start",
+      "fill-now",
+    ]) {
       const kind = type === "site-intent" ? { kind: "record" } : {};
       expect(
         parsePageRequest({ type, tabId: 1, origin: exact, ...kind }),
@@ -311,6 +327,20 @@ describe("site requests", () => {
     ],
     ["intent without kind", { type: "site-intent", tabId: 1, origin: SITE }],
     ["negative tabId", { type: "site-enable", tabId: -1, origin: SITE }],
+    ["fill-now without tabId", { type: "fill-now", origin: SITE }],
+    ["fill-now without origin", { type: "fill-now", tabId: 1 }],
+    [
+      "fill-now with an extra key",
+      { type: "fill-now", tabId: 1, origin: SITE, x: 1 },
+    ],
+    [
+      "fill-now with a negative tabId",
+      { type: "fill-now", tabId: -1, origin: SITE },
+    ],
+    [
+      "fill-now with a string tabId",
+      { type: "fill-now", tabId: "1", origin: SITE },
+    ],
     [
       "fractional tabId",
       { type: "site-intent", tabId: 1.5, origin: SITE, kind: "enable" },
@@ -643,6 +673,7 @@ describe("content senders", () => {
       { type: "saved-summary", origin: SITE },
       { type: "saved-load", profileId: "abc" },
       { type: "saved-check", profileId: "abc" },
+      { type: "fill-now", tabId: 1, origin: SITE },
       {
         type: "saved-save",
         profileId: "abc",

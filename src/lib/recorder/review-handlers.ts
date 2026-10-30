@@ -190,7 +190,12 @@ export function createReviewPageHandlers(
       if (normalizeOrigin(origin) !== origin) return NONE;
       const p = await currentProfile(origin);
       if (p === null || p === "locked") return NONE;
-      return { state: "saved", profileId: p.id, count: p.fields.length };
+      return {
+        state: "saved",
+        profileId: p.id,
+        count: p.fields.length,
+        fillMode: p.fillMode,
+      };
     },
 
     // As review-load: values go out only if no lock landed between the epoch read and the reply.
