@@ -44,8 +44,8 @@ carried-over follow-ups. Drafts arrive in a later plan. Not on the Chrome Web St
 - Locked vault: on a site with a saved form, the toolbar icon shows a lock and the page notice says
   so, with an Unlock button that opens the Refill popup (if the browser will not open it, the notice
   points you at the toolbar icon). After you unlock, the open tabs of your sites with a saved form
-  fill at once, or, for a form set to One gesture, show the "N fields ready" notice.
-- Fill now: a form set to One gesture never fills on its own. The page notice says "N fields ready —
+  fill at once, or, for a form set to "Fill only when I click Fill now in Refill", show the "N fields ready" notice.
+- Fill now: a form set to "Fill only when I click Fill now in Refill" never fills on its own. The page notice says "N fields ready —
   open Refill to fill", and Fill now in the popup fills that tab once.
 - If Refill is updated while a page is open, the notice asks you to reload that page.
 
@@ -92,14 +92,14 @@ The automated suites cannot open the browser's own popup or judge colours, so ch
 1. Lock Refill, then open a site with a saved form. The toolbar icon shows a lock and the notice
    says Refill has a saved form. Click **Unlock** in the notice: the real Refill popup opens
    (`action.openPopup`, Chromium 127+). Unlock it; the page fills and the notice changes to
-   "Refill filled N fields" (a form set to One gesture shows "N fields ready" instead). If the popup does not open, the notice should point at the toolbar icon
+   "Refill filled N fields" (a form set to "Fill only when I click Fill now in Refill" shows "N fields ready" instead). If the popup does not open, the notice should point at the toolbar icon
    instead and have no button.
 2. Open a form on a dark page (for example a site in dark mode). The notice stays readable and its
    border keeps it visible against the page.
 3. Let Refill fill a form, edit one filled field yourself, then click **Undo**. Every field you did
    not touch goes back to what it held before; the field you edited keeps your value. The notice
    says "Fill undone".
-4. Set a saved form to One gesture, reload the site and choose **Fill now** in the popup. The page
+4. Set a saved form's Fill mode to "Fill only when I click Fill now in Refill", reload the site and choose **Fill now** in the popup. The page
    fills once; reloading it does not fill it again until you choose Fill now again.
 
 ## Documents
