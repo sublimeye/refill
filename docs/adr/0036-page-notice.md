@@ -99,9 +99,14 @@ through as `onChange`. The scanner skips the pill's host by identity (`Recording
 - **Recording** shows only `on`, `full` and `stopped`. On `off`, and on a repeated `stopped`, it hides
   the pill only when `showing()` is one of those three: a recording state change never hides a
   return-visit notice.
-- **Return-visit rules hold only while `recording.active()` is false** (ruling R1). While recording,
-  the runner keeps no Undo records, adds no outlines and shows nothing: recording fills come from
-  the session, and the pill says `● Recording`.
+- **Return-visit rules hold only while `recording.active()` is false and the plan is not a
+  session plan** (rulings R1, R3). While recording, the runner keeps no Undo records, adds no
+  outlines and shows nothing: recording fills come from the session, and the pill says
+  `● Recording`. The worker marks every `fill` plan with a required `recording: boolean` (true when
+  it came from the tab's session), because a fresh document's first plan, and the report of a nudge
+  that starts a recording, arrive before `record-status` has answered. A plan without the flag is
+  no plan. The per-element fill rule (ruling P20) stays tied to `recording.active()`: before the
+  status answers, the stricter per-id rule applies, as before.
 - **`fill`.** Right before each `fillControl` the runner takes `snapshot([item])`; on `filled` it
   keeps `{ before, written: item.value }` in the document's records. Then each `ask` index whose
   control still means what was scanned and is a text or select reading `""`, or a checkbox or
@@ -129,7 +134,10 @@ through as `onChange`. The scanner skips the pill's host by identity (`Recording
   `input` or `change` (not during a fill) whose deepest target is outlined releases it; the listener
   is in the capture phase on the document and on every shadow root the scan entered, because
   `change` does not leave a shadow tree and a closed root retargets `input` to its host. A control
-  the page removed is released and no longer counted. `stop()` releases every outline.
+  the page removed is released and no longer counted. A control the user's edit released is never
+  outlined again in this document (ruling R4): a later plan, such as a nudge's forced re-report,
+  would otherwise outline a checkbox the user already answered, or a field the user emptied again.
+  `stop()` releases every outline.
 - **Extension gone.** When `send` finds the extension gone (the context invalidated or
   `runtime.id` undefined) the run stops as before. If Refill filled, recorded or showed a notice in
   this document, it first shows `updated` and leaves it to its own `NOTICE_MS` timer: that path does

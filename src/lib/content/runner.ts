@@ -105,7 +105,7 @@ const STARTED = "refillContentStarted";
 
 /** A worker answer the runner acts on (`none` needs nothing). */
 type Plan =
-  | { state: "fill"; items: FillItem[]; ask: number[] }
+  | { state: "fill"; items: FillItem[]; ask: number[]; recording: boolean }
   | { state: "gesture"; fieldIds: string[] }
   | { state: "locked" };
 
@@ -120,9 +120,10 @@ function parsePlan(plan: unknown): Plan | null {
     case "fill": {
       const items = fillItems(p["items"]);
       const ask = askIndices(p["ask"]);
-      return items === null || ask === null
+      const recording = p["recording"];
+      return items === null || ask === null || typeof recording !== "boolean"
         ? null
-        : { state: "fill", items, ask };
+        : { state: "fill", items, ask, recording };
     }
     case "gesture": {
       const fieldIds = ids(p["fieldIds"]);
@@ -271,6 +272,8 @@ function run(env: ContentEnv): ContentRun {
   /** What Refill filled outside recording and has not undone: what Undo puts back (ADR 0036). */
   const records: FillRecord[] = [];
   const outlines = createOutlines();
+  /** Controls whose outline the user's own edit took off: never outlined again here (ruling R4). */
+  const released = new WeakSet<Element>();
   /** The last `ready` count shown in this document: the same count is not shown again. */
   let readyShown: number | null = null;
   /** `locked` shows once per document (a bfcache restore is the same document). */
@@ -509,7 +512,9 @@ function run(env: ContentEnv): ContentRun {
       return;
     }
     // While recording, fills come from the session: no Undo, no outline, no notice (ruling R1).
-    const quiet = recording.active();
+    // The worker marks a session plan (ruling R3): a fresh document's first plan, or one racing the
+    // nudge that starts a recording, arrives before `record-status` has answered.
+    const quiet = recording.active() || parsed.recording;
     const had = records.length;
     const counts = apply(parsed.items, result.controls, !quiet);
     if (!quiet) {
@@ -547,6 +552,7 @@ function run(env: ContentEnv): ContentRun {
       ) {
         continue; // the user already has it
       }
+      if (released.has(c.el)) continue; // the user has dealt with it
       outlines.add(c.el);
     }
   }
@@ -562,7 +568,9 @@ function run(env: ContentEnv): ContentRun {
     }
     if (!trusted || isFilling()) return;
     const el = targetOf(e);
-    if (el !== null) outlines.release(el);
+    if (el === null || !outlines.has(el)) return;
+    outlines.release(el);
+    released.add(el);
   }
 
   /** A gesture plan: the matched fields not filled yet in this document wait for Fill now. */

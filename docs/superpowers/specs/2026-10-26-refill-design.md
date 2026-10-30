@@ -471,7 +471,8 @@ Touch ID, default TTL, change passphrase) → Export/Import → About/Security.
       controls matched on this page, only if unlocked and mode/policy allow. While a session
       records the tab, `scan-report` drives the recording: the SW files the page into the session
       (step tracking) and answers with a fill plan built from the session, never from the stored
-      profile (ADR 0030).
+      profile (ADR 0030). A `fill` plan says which it is (`recording: true` from the session), so
+      the content script never takes a session fill for a return visit (ADR 0036).
     - `fill-result` (counts for toast/badge).
     - `record-status`, `record-capture`, `record-finish` (only for the active session of that tab
       + origin; otherwise answered `off`, or `stopped` after a lock or expiry). `record-capture`

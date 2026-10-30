@@ -10,6 +10,8 @@ import type { FormControl } from "../fields/signature";
 export interface Outlines {
   /** Outlines `el` (once per element). False when it already was or the write failed. */
   add(el: FormControl): boolean;
+  /** True while `el` is outlined. */
+  has(el: Element): boolean;
   /** Removes it and puts back the page's own inline outline declarations. */
   release(el: Element): void;
   /** Outlined controls still on the page (one the page removed is released and not counted). */
@@ -111,6 +113,7 @@ export function createOutlines(): Outlines {
       outlined.set(el, saved);
       return true;
     },
+    has: (el) => outlined.has(el),
     release,
     count() {
       prune();

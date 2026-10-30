@@ -157,6 +157,7 @@ describe("recording content handlers", { timeout: 30_000 }, () => {
           { fieldId: "f2", i: 2, kind: "text", value: "Jane", pageDefault: "" },
         ],
         ask: [],
+        recording: true,
       });
       expect(await h["scan-report"](scan(two), d("d4", "/two"))).toEqual({
         state: "fill",
@@ -170,6 +171,7 @@ describe("recording content handlers", { timeout: 30_000 }, () => {
           },
         ],
         ask: [],
+        recording: true,
       });
       // Back joined the existing steps: no duplicate step was filed.
       expect((await body()).steps.map((s) => s.pathHint)).toEqual([
@@ -217,6 +219,7 @@ describe("recording content handlers", { timeout: 30_000 }, () => {
           },
         ],
         ask: [],
+        recording: true,
       });
       await settle();
       expect((await loadProfileForOrigin(ORIGIN))?.lastUsedAt).toBeNull();
@@ -254,6 +257,7 @@ describe("recording content handlers", { timeout: 30_000 }, () => {
           { fieldId: "f1", i: 0, kind: "text", value: "v9", pageDefault: "" },
         ],
         ask: [],
+        recording: true,
       });
       let b = await body();
       expect(b.steps).toHaveLength(10);
@@ -323,6 +327,7 @@ describe("recording content handlers", { timeout: 30_000 }, () => {
         state: "fill",
         items: [expect.objectContaining({ fieldId: "f1", value: "12345" })],
         ask: [],
+        recording: false,
       };
       expect(await h["scan-report"](onePage, ctx({ tabId: TAB + 1 }))).toEqual(
         stored,
@@ -600,6 +605,7 @@ describe("recording content handlers", { timeout: 30_000 }, () => {
         { fieldId: "f2", i: 2, kind: "text", value: "Jane", pageDefault: "" },
       ],
       ask: [],
+      recording: true,
     });
     // The user changes the filled postal code: linked by the filled field id, not by signature.
     expect(

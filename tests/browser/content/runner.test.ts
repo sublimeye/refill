@@ -130,7 +130,12 @@ function byName(values: Record<string, string>): Planner {
         pageDefault: "",
       });
     }
-    return { state: "fill", items, ask: [] } satisfies FillPlan;
+    return {
+      state: "fill",
+      items,
+      ask: [],
+      recording: false,
+    } satisfies FillPlan;
   };
 }
 
@@ -206,6 +211,9 @@ describe("scan, report, fill", () => {
       { state: "fill", items: [], ask: [0, 0] },
       { state: "fill", items: [], ask: [300] },
       { state: "fill", items: [], ask: [0.5] },
+      // `recording` missing or not a boolean
+      { state: "fill", items: [], ask: [] },
+      { state: "fill", items: [], ask: [], recording: "yes" },
       { state: "gesture", fieldIds: ["bad id"] },
       { state: "gesture", fieldIds: "f1" },
       undefined,
@@ -237,6 +245,7 @@ describe("scan, report, fill", () => {
         },
       ],
       ask: [],
+      recording: false,
     }));
     start(h);
     await vi.waitFor(() => expect(h.results()).toHaveLength(1));
@@ -253,6 +262,7 @@ describe("scan, report, fill", () => {
         { fieldId: "x", i: 1, kind: "text", value: "2", pageDefault: "" },
       ],
       ask: [],
+      recording: false,
     }));
     start(h);
     await vi.waitFor(() => expect(h.results()).toHaveLength(1));
@@ -945,6 +955,7 @@ describe("return visit", () => {
           },
         ],
         ask: [at("q"), at("r")],
+        recording: false,
       } satisfies FillPlan;
     });
     start(h);
@@ -964,7 +975,12 @@ describe("return visit", () => {
 
   it("stop() takes the outlines off", async () => {
     mount(`<input name="q">`);
-    const h = harness(() => ({ state: "fill", items: [], ask: [0] }));
+    const h = harness(() => ({
+      state: "fill",
+      items: [],
+      ask: [0],
+      recording: false,
+    }));
     const run = start(h)!;
     await vi.waitFor(() =>
       expect(input("q").style.getPropertyValue("outline")).not.toBe(""),
@@ -976,31 +992,23 @@ describe("return visit", () => {
   it("while recording: no `filled` notice and no outline", async () => {
     mount(`<input name="a"><input name="q">`);
     const status = { value: { state: "on", count: 0 } as unknown };
-    const nudges: (() => void)[] = [];
-    const h = harness(
-      (req) => ({
-        ...(byName({ a: "A" })(req) as object),
-        ask: [req.controls.find((c) => c.sig.name === "q")!.i],
-      }),
-      {
-        onNudge: (cb) => {
-          nudges.push(cb);
-        },
-      },
-    );
+    const h = harness((req) => ({
+      ...(byName({ a: "A" })(req) as object),
+      ask: [req.controls.find((c) => c.sig.name === "q")!.i],
+      recording: true, // the worker answers from the session
+    }));
     const inner = h.env.send;
     h.env.send = vi.fn(async (msg: ContentRequest) =>
       msg.type === "record-status" ? status.value : inner(msg),
     );
     start(h);
-    // The first plan arrives before the recording state is known: a return-visit fill.
     await vi.waitFor(() => expect(last(h)).toBe("on"));
-    expect(shownOf("filled")).toHaveLength(1);
-    const outlined = input("q").style.getPropertyValue("outline") !== "";
-    expect(outlined).toBe(true);
+    expect(input("a").value).toBe("A");
+    expect(shownOf("filled")).toEqual([]);
+    expect(input("q").style.getPropertyValue("outline")).toBe("");
 
-    // While recording, the step re-renders with a field more (a new page fingerprint): `a` is a new
-    // element and is filled again (ruling P20), but with no notice and no outline.
+    // The step re-renders with a field more (a new page fingerprint): `a` is a new element and is
+    // filled again (ruling P20), still with no notice and no outline.
     const before = shown.length;
     document.body.replaceChildren();
     mount(
@@ -1011,6 +1019,76 @@ describe("return visit", () => {
     expect(shown.slice(before)).toEqual([]);
     expect(input("q").style.getPropertyValue("outline")).toBe("");
     expect(last(h)).toBe("on");
+  });
+
+  it("a fresh document's session plan, before record-status answers, is no return visit", async () => {
+    const root = mount(`<input name="a" size="4"><input name="q" size="4">`);
+    let session = true;
+    const h = harness((req) => ({
+      ...(byName({ a: "A", b: "B" })(req) as object),
+      ask: [req.controls.find((c) => c.sig.name === "q")!.i],
+      recording: session,
+    }));
+    const inner = h.env.send;
+    // `record-status` never answers: only the plan's own flag says this is the session.
+    h.env.send = vi.fn((msg: ContentRequest) =>
+      msg.type === "record-status"
+        ? new Promise<unknown>(() => undefined)
+        : inner(msg),
+    );
+    start(h);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(1));
+    expect(input("a").value).toBe("A");
+    expect(h.notices.filter((k) => k !== null)).toEqual([]);
+    expect(input("q").style.getPropertyValue("outline")).toBe("");
+    expect(h.results()[0]).toMatchObject({ filled: 1 }); // that plan's count, as while recording
+
+    // A stored-profile plan later in the document: only its own fill is counted and undone.
+    session = false;
+    root.insertAdjacentHTML("beforeend", `<input name="b" size="4">`);
+    await vi.waitFor(() => expect(last(h)).toBe("filled"));
+    expect(shown.at(-1)).toEqual({ kind: "filled", count: 1, ask: 1 });
+    expect(h.results()[1]).toMatchObject({ filled: 1 });
+    await clickNoticeButton();
+    await vi.waitFor(() => expect(last(h)).toBe("undone"));
+    expect(input("a").value).toBe("A"); // the session's value: no Undo record
+    expect(input("b").value).toBe("");
+  });
+
+  it("an `ask` control the user dealt with is not outlined again in this document", async () => {
+    mount(`<input name="q" size="4"><input type="checkbox" name="c">`);
+    const nudges: (() => void)[] = [];
+    const h = harness(
+      (req) => ({
+        state: "fill",
+        items: [],
+        ask: req.controls.map((c) => c.i),
+        recording: false,
+      }),
+      {
+        onNudge: (cb) => {
+          nudges.push(cb);
+        },
+      },
+    );
+    start(h);
+    const outline = (n: string) => input(n).style.getPropertyValue("outline");
+    await vi.waitFor(() => expect(outline("c")).not.toBe(""));
+    expect(outline("q")).not.toBe("");
+
+    await userEvent.click(input("c"));
+    await userEvent.type(input("q"), "x");
+    await userEvent.clear(input("q")); // emptied again: still the user's business
+    expect(outline("c")).toBe("");
+    expect(outline("q")).toBe("");
+
+    // A nudge reports the page again and the plan names both once more.
+    const reports = h.reports().length;
+    for (const cb of nudges) cb();
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(reports + 1));
+    await sleep(20);
+    expect(outline("c")).toBe("");
+    expect(outline("q")).toBe("");
   });
 
   it("a recording `off` does not hide a `filled` notice", async () => {
