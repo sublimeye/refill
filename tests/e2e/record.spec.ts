@@ -23,7 +23,7 @@ test.setTimeout(90_000); // vault creation runs real Argon2id calibration
 const TWINS = `${FIXTURE_A}/billpay/twins`;
 
 const GONE =
-  "This recording is no longer available. Recordings end when Refill locks, after 30 minutes, or when you cancel them.";
+  "This recording is no longer available. Recordings end when Refill locks, after 30 minutes, when you cancel them, or when the site is removed.";
 
 // The popup is opened as a tab, so the e2e build reads the target tab from seam query params
 // (production reads tabs.query({ active, currentWindow })). The e2e build pre-grants
