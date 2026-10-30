@@ -509,6 +509,77 @@ describe("recording content handlers", { timeout: 30_000 }, () => {
         await createContentHandlers(now)["record-status"](STATUS, ctx()),
       ).toEqual({ state: "stopped", reason: "expired" });
     });
+
+    it("on or full puts ● back on the session's tab after a navigation cleared it (Review Focus 5)", async () => {
+      await startSession(TAB, ORIGIN, T0, null);
+      const h = createContentHandlers(now);
+      // Chrome clears tab-scoped badge text on a cross-document navigation.
+      await fakeBrowser.action.setBadgeText({ tabId: TAB, text: "" });
+      expect(await h["record-status"](STATUS, ctx())).toEqual({
+        state: "on",
+        count: 0,
+      });
+      expect(await badge()).toBe("●");
+      // Idempotent: asking again leaves it as it is.
+      await h["record-status"](STATUS, ctx());
+      expect(await badge()).toBe("●");
+    });
+
+    it("full also puts ● back", async () => {
+      await startSession(TAB, ORIGIN, T0, null);
+      await withSession({ tabId: TAB, origin: ORIGIN }, clock, (_m, b) => ({
+        body: {
+          ...b,
+          steps: Array.from({ length: 10 }, (_, index) => ({
+            index,
+            pathHint: "/",
+            fingerprint: [],
+          })),
+          current: null,
+        },
+        result: null,
+      }));
+      await fakeBrowser.action.setBadgeText({ tabId: TAB, text: "" });
+      expect(
+        await createContentHandlers(now)["record-status"](STATUS, ctx()),
+      ).toEqual({ state: "full", count: 0 });
+      expect(await badge()).toBe("●");
+    });
+
+    it("never sets ● for another tab or origin, a finished session, or no session", async () => {
+      const h = createContentHandlers(now);
+      expect(await h["record-status"](STATUS, ctx())).toEqual(OFF);
+      expect(await badge()).toBe("");
+      await startSession(TAB, ORIGIN, T0, null);
+      await h["record-status"](STATUS, ctx({ tabId: TAB + 1 }));
+      expect(await fakeBrowser.action.getBadgeText({ tabId: TAB + 1 })).toBe(
+        "",
+      );
+      await fakeBrowser.action.setBadgeText({ tabId: TAB, text: "" });
+      expect(
+        await h["record-status"](STATUS, ctx({ origin: OTHER_ORIGIN })),
+      ).toEqual(OFF);
+      expect(await badge()).toBe("");
+      expect(await h["record-finish"](FINISH, ctx())).toEqual({ ok: true });
+      expect(await h["record-status"](STATUS, ctx())).toEqual(OFF);
+      expect(await badge()).toBe("");
+    });
+
+    it("a badge failure is logged by name only and the reply stands", async () => {
+      await startSession(TAB, ORIGIN, T0, null);
+      const log = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      const set = vi
+        .spyOn(fakeBrowser.action, "setBadgeText")
+        .mockRejectedValue(new RangeError("No tab https://bank.example/x"));
+      expect(
+        await createContentHandlers(now)["record-status"](STATUS, ctx()),
+      ).toEqual({ state: "on", count: 0 });
+      expect(set).toHaveBeenCalledWith({ tabId: TAB, text: "●" });
+      expect(JSON.stringify(log.mock.calls)).toContain("RangeError");
+      expect(JSON.stringify(log.mock.calls)).not.toContain("bank.example");
+    });
   });
 
   describe("record-finish", () => {
