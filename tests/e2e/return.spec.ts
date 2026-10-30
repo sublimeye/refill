@@ -376,14 +376,14 @@ test.describe("return visit", () => {
     expect(kinds).toContain("on");
     expect(kinds).not.toContain("filled");
 
-    // A reload while recording shows the pill again, never the return-visit notice. (The badge is
-    // not asserted here: Chrome resets a tab's badge text on navigation and Plan 3's recorder sets
-    // "●" only when the recording starts.)
+    // A reload while recording shows the pill again, never the return-visit notice. Chrome resets a
+    // tab's badge text on navigation; the new document's record-status puts "●" back.
     // Refilling after the reload is intended: recorded values fill again on every visit to a step
     // while recording (Plan 3 ruling P20).
     await page.reload();
     await expect.poll(() => noticeOf(page)).toBe("on");
     await expectTwinsFilled(page);
     expect(await pillOpen(page)).toBe(true);
+    await expect.poll(() => badgeText(context, tabId)).toBe("●");
   });
 });

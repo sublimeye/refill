@@ -49,6 +49,12 @@ Every write goes through one helper that first asks for the tab's session metada
 a recording sets or clears `●`. `BADGE_RECORDING` is exported from the session module so the tests
 name it, not so this module can write it.
 
+Chrome clears a tab's badge text on a cross-document navigation, so `●` set at the start would be
+gone after a reload or the next step. The recorder sets it again itself: its `record-status` handler,
+which every new document asks after its first scan, calls `showRecordingBadge` when it answers `on`
+or `full` for the session's tab. That is one session-chain job (a Finish or discard that lands first
+wins), idempotent, logged by error name only, and it never changes the reply.
+
 A `scan-report` answered from a recording session is a `fill` plan marked `recording: true`; the
 content script's `fill-result` then carries that plan's own count. Because the tab's session is
 unfinished, `showFillCount` skips it and the count never reaches the badge.

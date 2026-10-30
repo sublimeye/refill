@@ -194,6 +194,30 @@ export function clearBadge(tabId: number): Promise<void> {
 }
 
 /**
+ * Puts `●` back on the tab of the session `match` names while it is unfinished and unexpired.
+ * Chrome clears tab-scoped badge text on a cross-document navigation, and every new document asks
+ * `record-status`, so the recording sets its own badge again (ADR 0037). One chain job: a Finish or
+ * a discard that lands first wins, and one that lands after clears it. Idempotent. Never rejects;
+ * failures are logged by error name only.
+ */
+export function showRecordingBadge(
+  match: SessionMatch,
+  now: number,
+): Promise<void> {
+  return serialized(async () => {
+    const rec = await load();
+    if (rec === null || rec === "malformed") return;
+    const { meta } = rec;
+    if (meta.finished || now >= meta.expiresAt || !matches(meta, match)) {
+      return;
+    }
+    await setBadge(meta.tabId, BADGE_RECORDING);
+  }).catch((err: unknown) => {
+    console.error("[refill] badge failed:", errName(err));
+  });
+}
+
+/**
  * Wakes the tab's content script with a data-free message, so it asks the worker for the state.
  * Failures (no content script, a closed tab) are ignored and logged by error name only.
  */

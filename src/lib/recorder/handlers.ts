@@ -34,6 +34,7 @@ import {
   flushTab,
   nudge,
   peekMeta,
+  showRecordingBadge,
   stoppedReason,
   withSession,
   type SessionMatch,
@@ -149,7 +150,11 @@ export function createRecorderContentHandlers(
     const state = await withSession(scope(ctx), t, (meta, body) => ({
       result: meta.finished ? OFF : recordState(body),
     }));
-    return state === "off" ? offOrStopped(ctx.tabId, ctx.origin, t) : state;
+    if (state === "off") return offOrStopped(ctx.tabId, ctx.origin, t);
+    // A navigation cleared the tab's `●`, and every new document asks this after its first scan:
+    // the recording sets its badge again. Never rejects, so the reply stands.
+    if (state.state !== "off") await showRecordingBadge(scope(ctx), t);
+    return state;
   }
 
   async function capture(
