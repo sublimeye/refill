@@ -411,8 +411,9 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
   toast `Refill has a saved form for this site — unlock from the toolbar icon`. (Profile name and
   path prefix stay encrypted.) The toast's Unlock button asks SW to `chrome.action.openPopup()`;
   if that's rejected, the text instruction remains. **No passphrase input ever appears inside a
-  web page.** After unlock, the SW decrypts, re-runs matching on the active tab's latest
-  `scan-report`, then fills (auto) or offers Fill now (gesture).
+  web page.** After unlock, the SW nudges each open tab of a site with a saved form (data-free
+  `refill-nudge`) and the page reports again (forced `scan-report`); the SW decrypts, matches, and
+  the page fills (auto) or offers Fill now (gesture). The SW keeps no scans (ADR 0037).
 - The extension updated or reloaded under an open tab Refill already acted in: toast
   `Refill was updated — reload this page`.
 - Wrong matches are fixed in the dashboard field table (set policy to Don't save, or edit).
@@ -443,7 +444,11 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
   persists on hover/focus, keyboard reachable, `prefers-reduced-motion` and dark mode aware.
 - Toast contains **no inputs** and no secret values. Toast is cosmetic, not a security boundary.
 - Per-tab badge: count of filled fields, `●` while recording, `🔒` when the vault is locked on a
-  site that has a saved profile (origin-level).
+  site that has a saved profile (origin-level). The count is the document's running total
+  (1 to 200, else empty) and is cleared when the tab starts loading a new page; `●` is set and
+  cleared by the recording alone. On a lock, each open tab of an enabled, granted site with a saved
+  form gets `🔒`; on an unlock those tabs are cleared and nudged (§6.3). Tabs whose URL the
+  extension cannot read are skipped (ADR 0037).
 
 ### 6.6 Popup states
 - Site not enabled: Record this site · Protect drafts here.

@@ -24,7 +24,7 @@ const TOMBSTONE_TTL_MS = 1_800_000;
 
 const KEY = "recorder:session";
 const TOMBSTONE_KEY = "recorder:stopped";
-const BADGE_RECORDING = "●";
+export const BADGE_RECORDING = "●";
 
 export interface SessionMeta {
   v: 1;

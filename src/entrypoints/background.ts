@@ -9,6 +9,7 @@ import {
 } from "../lib/messaging/router";
 import { loadProfileForOrigin, saveProfile } from "../lib/profiles/store";
 import { installRecorderListeners } from "../lib/recorder/session";
+import { installBadgeListeners } from "../lib/sites/badge";
 import { installSiteListeners } from "../lib/sites/reconcile";
 import { enforceOnWake, installLockTriggers } from "../lib/vault/lock-triggers";
 
@@ -132,6 +133,7 @@ export default defineBackground(() => {
   installLockTriggers();
   installSiteListeners();
   installRecorderListeners();
+  installBadgeListeners();
   enforceOnWake().catch((err: unknown) => {
     console.error(
       "[refill] wake check failed:",

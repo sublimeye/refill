@@ -13,6 +13,7 @@ import {
   recordingScan,
 } from "../recorder/handlers";
 import { readSites } from "../sites";
+import { showFillCount, showLocked } from "../sites/badge";
 import { LockedError } from "../vault/types";
 import { lockEpoch, status } from "../vault/vault";
 import type { FillItem, FillPlan, ScanControl } from "./content-protocol";
@@ -28,11 +29,23 @@ const NONE: FillPlan = { state: "none" };
  * What a locked vault answers: `locked` only for a site with a saved form (its pill offers Unlock),
  * else `none`. Only the plaintext site index is read, so it needs no key.
  */
-async function lockedAnswer(origin: string): Promise<FillPlan> {
-  const sites = await readSites();
-  return Object.hasOwn(sites, origin) && sites[origin]!.profileId !== null
-    ? LOCKED
-    : NONE;
+async function lockedAnswer(origin: string, tabId: number): Promise<FillPlan> {
+  let saved: boolean;
+  try {
+    const sites = await readSites();
+    saved = Object.hasOwn(sites, origin) && sites[origin]!.profileId !== null;
+  } catch (err) {
+    // An unreadable index reads as no saved form: the page hears `none`, not a failed request.
+    console.error(
+      "[refill] site index read failed:",
+      err instanceof Error ? err.name : "error",
+    );
+    return NONE;
+  }
+  if (!saved) return NONE;
+  // The tab's badge follows the answer (skipped for a tab that records); it never changes it.
+  await showLocked(tabId);
+  return LOCKED;
 }
 
 /** `"locked"` when the vault locked after `status()` said unlocked (the key is gone by now). */
@@ -79,19 +92,20 @@ export function createContentHandlers(
     // Read before status(): the DEK used by the load below may be captured before a lock() that
     // lands during the storage read or decrypt, and would still open the record (ADR 0025).
     const epoch = lockEpoch();
-    if ((await status()).state !== "unlocked") return lockedAnswer(ctx.origin);
+    if ((await status()).state !== "unlocked")
+      return lockedAnswer(ctx.origin, ctx.tabId);
     // Recording this tab and origin: the plan comes from the session, never the stored profile,
     // and the profile's lastUsedAt is not touched. Always auto: the user is filling this page.
     const recorded = await recordingScan(controls, ctx, now());
     if (recorded !== null) {
       // Synchronous from here to the return, as below.
-      if (lockEpoch() !== epoch) return lockedAnswer(ctx.origin);
+      if (lockEpoch() !== epoch) return lockedAnswer(ctx.origin, ctx.tabId);
       return recorded.length === 0
         ? NONE
         : { state: "fill", items: recorded, ask: [], recording: true };
     }
     const profile = await loadOrLocked(ctx.origin);
-    if (profile === "locked") return lockedAnswer(ctx.origin);
+    if (profile === "locked") return lockedAnswer(ctx.origin, ctx.tabId);
     if (profile === null) return NONE;
     // Under the prefix as before; elsewhere on the origin only fields whose step looks like this
     // page may claim (ADR 0034). Any other origin: nothing.
@@ -103,7 +117,7 @@ export function createContentHandlers(
       offPath: scope === "off-path",
     });
     // Synchronous from here to the return: no lock can land between this check and the reply.
-    if (lockEpoch() !== epoch) return lockedAnswer(ctx.origin);
+    if (lockEpoch() !== epoch) return lockedAnswer(ctx.origin, ctx.tabId);
     const items: FillItem[] = [];
     const ask: number[] = [];
     for (const field of profile.fields) {
@@ -130,8 +144,11 @@ export function createContentHandlers(
 
   return {
     "scan-report": (req, ctx) => scanReport(req.controls, ctx),
-    // The counts feed the badge (Plan 4); nothing is written here.
-    "fill-result": async () => ({ ok: true }),
+    // The count goes to the tab's badge (ADR 0037); nothing is stored.
+    "fill-result": async (req, ctx) => {
+      await showFillCount(ctx.tabId, req.filled);
+      return { ok: true };
+    },
     "toast-unlock-click": async () => {
       try {
         await browser.action.openPopup();

@@ -258,6 +258,46 @@ describe("scan-report", () => {
     expect(reply).toEqual({ state: "locked" });
   });
 
+  it("locked, site with a saved form: the tab's badge shows the lock", async () => {
+    await saveProfile(profile());
+    await lock();
+    await createContentHandlers(now)["scan-report"](scan(), ctx());
+    expect(await fakeBrowser.action.getBadgeText({ tabId: 7 })).toBe("🔒");
+  });
+
+  it("locked, a badge failure does not change the reply", async () => {
+    await saveProfile(profile());
+    await lock();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(fakeBrowser.action, "setBadgeText").mockRejectedValue(
+      new Error("x"),
+    );
+    expect(
+      await createContentHandlers(now)["scan-report"](scan(), ctx()),
+    ).toEqual({ state: "locked" });
+  });
+
+  it("locked, site without a saved form: no lock on the badge", async () => {
+    await upsertSite(A, {});
+    await lock();
+    await createContentHandlers(now)["scan-report"](scan(), ctx());
+    expect(await fakeBrowser.action.getBadgeText({ tabId: 7 })).toBe("");
+  });
+
+  it("locked, a site index that cannot be read: none", async () => {
+    await lock();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const local = fakeBrowser.storage.local;
+    const original = local.get.bind(local);
+    vi.spyOn(local, "get").mockImplementation((async (k: unknown) => {
+      if (k === "sites") throw new Error("x");
+      return original(k as string);
+    }) as never);
+    expect(
+      await createContentHandlers(now)["scan-report"](scan(), ctx()),
+    ).toEqual({ state: "none" });
+  });
+
   it("locked, site without a saved form: none", async () => {
     await upsertSite(A, {});
     await lock();
@@ -775,7 +815,8 @@ describe("toast-unlock-click", () => {
   const click = { type: "toast-unlock-click" } as const;
   const stub = (impl: () => Promise<void>) => {
     const openPopup = vi.fn(impl);
-    (fakeBrowser as unknown as { action: unknown }).action = { openPopup };
+    (fakeBrowser.action as unknown as { openPopup: unknown }).openPopup =
+      openPopup;
     return openPopup;
   };
 
@@ -825,7 +866,29 @@ describe("toast-unlock-click", () => {
 });
 
 describe("fill-result", () => {
-  it("answers ok and writes nothing", async () => {
+  it("sets the tab's badge to the count", async () => {
+    const reply = await createContentHandlers(now)["fill-result"](
+      { type: "fill-result", filled: 2, skipped: 0, unsupported: 0 },
+      ctx(),
+    );
+    expect(reply).toEqual({ ok: true });
+    expect(await fakeBrowser.action.getBadgeText({ tabId: 7 })).toBe("2");
+  });
+
+  it("a badge failure does not change the reply", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(fakeBrowser.action, "setBadgeText").mockRejectedValue(
+      new Error("x"),
+    );
+    expect(
+      await createContentHandlers(now)["fill-result"](
+        { type: "fill-result", filled: 2, skipped: 0, unsupported: 0 },
+        ctx(),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  it("answers ok and writes nothing to the store", async () => {
     const set = vi.spyOn(fakeBrowser.storage.local, "set");
     const reply = await createContentHandlers(now)["fill-result"](
       { type: "fill-result", filled: 1, skipped: 2, unsupported: 0 },
