@@ -229,7 +229,8 @@ const isTimed = (state: PillState): boolean =>
  * Every kind but `on` and `full` hides itself `NOTICE_MS` after its `show`, and not while the
  * pointer or focus is inside it. `onChange` (tests and e2e) hears the kind on every show and `null`
  * on every hide. Never throws: a page that breaks the popover or removes the host only loses the
- * notice.
+ * notice. A show that could not open the popover leaves nothing on the page, `showing()` null and
+ * reports no kind (a `null` if something was reported as showing before).
  */
 export function createPill(
   doc: Document,
@@ -302,7 +303,8 @@ export function createPill(
   addListener.call(host, "focusin", () => hold({ focused: true }));
   addListener.call(host, "focusout", () => hold({ focused: false }));
 
-  function hide(): void {
+  /** Takes the notice off the page and forgets what it showed. */
+  function clear(): void {
     stopTimer();
     current = null;
     action = null;
@@ -320,13 +322,33 @@ export function createPill(
     } catch {
       // already gone
     }
+  }
+
+  function hide(): void {
+    clear();
     notify(null);
+  }
+
+  /** Puts the host in the top layer; false when the page broke that (nothing is on screen then). */
+  function open(): boolean {
+    try {
+      if (!isConnected(host)) {
+        const parent = documentElement(doc);
+        if (parent === null) return false;
+        appendChildFn.call(parent, host);
+      }
+      if (!matchesFn.call(host, ":popover-open")) showPopoverFn.call(host);
+      return matchesFn.call(host, ":popover-open");
+    } catch {
+      return false;
+    }
   }
 
   function show(state: PillState): void {
     if (removed) return;
     stopTimer();
     const c = copy(state);
+    const was = current;
     current = state.kind;
     action = c.button?.action ?? null;
     timed = isTimed(state);
@@ -345,19 +367,11 @@ export function createPill(
       css(button, { display: "inline-block" });
       setText(button, c.button.label);
     }
-    try {
-      if (!isConnected(host)) {
-        const parent = documentElement(doc);
-        if (parent === null) {
-          current = null;
-          action = null;
-          return;
-        }
-        appendChildFn.call(parent, host);
-      }
-      if (!matchesFn.call(host, ":popover-open")) showPopoverFn.call(host);
-    } catch {
-      // the page broke the popover: no pill on this page
+    if (!open()) {
+      // The page broke the popover: nothing is on screen, so nothing is reported as showing.
+      clear();
+      if (was !== null) notify(null);
+      return;
     }
     if (timed && !hovered && !focused) startTimer();
     notify(state.kind);

@@ -344,7 +344,9 @@ cross-origin, never in sub-frames, never over http.
 - `select`: set value if option exists → `change`. Checkbox/radio: `.click()` only if state differs.
 - Custom widgets (role=combobox without native select, etc.) → reported as "couldn't fill".
 - Closed shadow roots reachable via `chrome.dom.openOrClosedShadowRoot` are scanned.
-- Undo restores pre-fill values with the same technique.
+- Undo restores pre-fill values with the same technique, and only for fields still holding Refill's
+  value: a field the user changed after the fill keeps the user's value. Undone fields stay filled
+  for the document, so they are not filled again (ADR 0036).
 
 ---
 
@@ -398,9 +400,11 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
    stay as saved (ADR 0033).
 
 ### 6.3 Return visit
-- Unlocked + auto: fill (§5.5) → toast `✓ Water bill · filled 5 · 1 needs you  [Undo]`;
-  `ask` fields get a subtle outline and stay empty.
-- Unlocked + gesture: toast `Water bill · 5 fields ready — open Refill to fill`; popup **Fill now**.
+- The notice copy (ADR 0036) carries no profile name: one form per site makes it redundant, and the
+  user chose the short form.
+- Unlocked + auto: fill (§5.5) → toast `✓ Refill filled 5 fields · 1 needs you  [Undo]`;
+  `ask` fields get a subtle outline and stay empty. Undo → `Fill undone`.
+- Unlocked + gesture: toast `5 fields ready — open Refill to fill`; popup **Fill now**.
   The gesture plan carries the matched field ids, never values.
 - Locked: the SW knows only the plaintext site index, so state is **origin-level** and applies only
   to a site with a saved form (otherwise a locked vault shows nothing): badge 🔒;
@@ -409,6 +413,8 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
   if that's rejected, the text instruction remains. **No passphrase input ever appears inside a
   web page.** After unlock, the SW decrypts, re-runs matching on the active tab's latest
   `scan-report`, then fills (auto) or offers Fill now (gesture).
+- The extension updated or reloaded under an open tab Refill already acted in: toast
+  `Refill was updated — reload this page`.
 - Wrong matches are fixed in the dashboard field table (set policy to Don't save, or edit).
   In-page Fix mode is deferred to v1.1.
 
@@ -479,7 +485,8 @@ Touch ID, default TTL, change passphrase) → Export/Import → About/Security.
     export/import, settings, intent-execute) are page-only.
 - Payload size caps and schema checks on every message.
 - SW → content script: only `refill-nudge`, sent to frame 0 and carrying no data; the content
-  script answers by asking `record-status`.
+  script answers by asking `record-status` and by reporting its page again (`scan-report`, even
+  when unchanged), so an unlock reaches a page that was already reported.
 
 ---
 

@@ -452,6 +452,19 @@ describe("pill", () => {
       expect(p.showing()).toBeNull();
     });
 
+    it("a show the page made fail reports nothing and leaves nothing on the page", () => {
+      const onChange = vi.fn();
+      const p = make(vi.fn(), document, onChange);
+      p.show({ kind: "undone" });
+      // The host is reachable from the page: dropping `popover` closes it and makes the next
+      // `showPopover` throw.
+      p.host.removeAttribute("popover");
+      p.show({ kind: "filled", count: 2, ask: 0 });
+      expect(p.showing()).toBeNull();
+      expect(p.host.isConnected).toBe(false);
+      expect(onChange.mock.calls.map((c) => c[0])).toEqual(["undone", null]);
+    });
+
     it("a throwing onChange does not break the pill", () => {
       const p = make(
         vi.fn(),

@@ -97,7 +97,7 @@ function harness(
                 c.kind === "checkbox" || c.kind === "radio" ? "false" : "",
             });
           }
-          return { state: "fill", items };
+          return { state: "fill", items, ask: [] };
         }
         default:
           return { ok: true };

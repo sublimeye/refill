@@ -1,5 +1,6 @@
 // Content side of a recording (spec 6.2): ask the worker whether this tab records, capture the
-// user's trusted edits on eligible, non-secret controls, and show the pill. DOM-only plus an
+// user's trusted edits on eligible, non-secret controls, and show the recording states on the
+// runner's notice (ADR 0036). DOM-only plus an
 // injected `send`, like the runner. The page is hostile: every DOM member is captured from the
 // prototypes at import time, only trusted events outside Refill's own fill count, the rules are
 // re-checked at event time, and nothing is logged. Decisions: ADR 0032.
@@ -25,7 +26,7 @@ import type {
 } from "../messaging/content-protocol";
 import { LIMITS } from "../profiles/types";
 import { PageDefaults, readValue } from "../recorder/capture";
-import { createPill, type Pill } from "./pill";
+import type { Pill, PillState } from "./pill";
 import { stillMeans } from "./still-means";
 
 /** Quiet period after the last `input` on a control before its value is sent. */
@@ -49,6 +50,8 @@ export interface RecordingEnv {
   isTrusted?: (e: Event) => boolean;
   /** Tests only (see `isEligible`). */
   isTopWindow?: ((win: Window) => boolean) | undefined;
+  /** The runner's one notice: a recording shows only `on`, `full` and `stopped` on it. */
+  pill(): Pill;
 }
 
 export interface Recording {
@@ -62,14 +65,14 @@ export interface Recording {
   active(): boolean;
   /** True while recording when the user edited `el` in this document: Refill never fills it. */
   edited(el: Element): boolean;
-  /** True for the pill's own host element, which the runner leaves out of its scans. */
-  ownsHost(el: Element): boolean;
   /**
    * Sends every debounced edit now and resolves once every capture made so far has been answered,
    * or dropped (a popup Finish, ADR 0032). Resolves at once when not recording.
    */
   flushed(): Promise<void>;
-  /** Detaches everything and removes the pill; idempotent. */
+  /** The notice's Finish: sends pending edits, then finishes the recording (ADR 0032). */
+  finish(): void;
+  /** Detaches everything; idempotent. The notice is the runner's to remove. */
   stop(): void;
 }
 
@@ -81,6 +84,13 @@ const defaultPrevented = getter<boolean>(Event.prototype, "defaultPrevented");
 const defaultView = getter<Window | null>(Document.prototype, "defaultView");
 
 type Active = "on" | "full";
+
+/** The notice kinds a recording shows, and so the only ones it may hide. */
+const RECORDING_KINDS: readonly (PillState["kind"] | null)[] = [
+  "on",
+  "full",
+  "stopped",
+];
 
 /** A strictly checked `RecordState` from a worker reply, or null for anything else. */
 function recordState(raw: unknown): RecordState | null {
@@ -109,7 +119,7 @@ function recordState(raw: unknown): RecordState | null {
 }
 
 /** The deepest target of `e`: inside an open (or, for a root listener, its own closed) shadow tree. */
-function targetOf(e: Event): Element | null {
+export function targetOf(e: Event): Element | null {
   try {
     const first = (composedPathFn.call(e) as EventTarget[])[0];
     if (first === undefined || typeof first !== "object") return null;
@@ -171,7 +181,6 @@ export function createRecording(env: RecordingEnv): Recording {
   let finishing = false;
   /** The worker keeps answering `stopped` for 30 min (ADR 0029): the notice shows once per document. */
   let stoppedShown = false;
-  let pill: Pill | null = null;
   /**
    * The start report (P12): no capture is sent before it is answered. Captures of different
    * controls do not wait for each other (ruling F4); see `enqueue`.
@@ -266,13 +275,10 @@ export function createRecording(env: RecordingEnv): Recording {
     timers.clear();
   }
 
-  function thePill(): Pill {
-    pill ??= createPill(doc, {
-      finish,
-      undo: () => {},
-      unlock: () => {},
-    });
-    return pill;
+  /** Hides the notice only while it shows a recording state: a return-visit notice stays. */
+  function hideMine(): void {
+    const pill = env.pill();
+    if (RECORDING_KINDS.includes(pill.showing())) pill.hide();
   }
 
   /**
@@ -288,20 +294,20 @@ export function createRecording(env: RecordingEnv): Recording {
         if (begins && !start) return false;
         if (begins) activate();
         state = s.state;
-        thePill().show({ kind: s.state, count: s.count });
+        env.pill().show({ kind: s.state, count: s.count });
         return begins;
       }
       case "off":
         deactivate();
-        pill?.hide();
+        hideMine();
         return false;
       case "stopped":
         deactivate();
         if (stoppedShown) {
-          pill?.hide();
+          hideMine();
         } else {
           stoppedShown = true;
-          thePill().show({ kind: "stopped", reason: s.reason });
+          env.pill().show({ kind: "stopped", reason: s.reason });
         }
         return false;
     }
@@ -519,17 +525,16 @@ export function createRecording(env: RecordingEnv): Recording {
       // Re-used by the page for another field: the user has not edited that one (ruling P13).
       return sig === null || stillMeans(el as FormControl, sig);
     },
-    ownsHost: (el) => pill !== null && pill.host === el,
     flushed() {
       if (stopped || state === null) return Promise.resolve();
       flush();
       return settled();
     },
+    finish,
     stop() {
       if (stopped) return;
       deactivate();
       stopped = true;
-      pill?.remove();
     },
   };
 }

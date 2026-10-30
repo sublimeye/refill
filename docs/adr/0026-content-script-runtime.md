@@ -27,5 +27,12 @@ Plan 2 Task 12 wires the scanner (ADR 0023), the fill engine (ADR 0024) and the 
 - Mutations inside a shadow root the scan has not entered yet are only noticed through a document mutation or a scroll; once entered, the root is observed.
 - The prerender path is verified only in browser-mode tests, not end to end.
 
+## Amendment (Plan 4, Task 3, 2026-10-29)
+- **A nudge reports the page again.** The `refill-nudge` callback re-reads the recording state and, independently, re-scans with the remembered fingerprint forgotten, so an unchanged page is reported again. The worker nudges when its state changes (a recording, an unlock): after an unlock the latest page has to reach it again for the fill (spec §7). The recording's start report (P12) still follows the `record-status` answer.
+- **Undo keeps the once-only rule.** Undo (ADR 0036) puts back what Refill wrote, but the field ids stay in the document's filled set: a later plan naming them writes nothing. The user who undid a fill does not get it again on the next DOM change.
+- **`fill-result.filled` is the document's running total** of fields Refill filled outside recording and has not undone (the badge's count), capped at 300; after Undo a `fill-result` with all counts 0 is sent. While recording it is that plan's count, as before.
+- **The worker's plan is parsed strictly beyond `fill`.** `ask` must be unique integers in 0..299 (at most 300), `gesture.fieldIds` profile ids (`ID_RE`, at most the profile field limit); anything malformed is no plan.
+- **Stopping when the extension is gone** shows `updated` first when Refill filled, recorded or showed a notice in this document, and leaves that notice to its own timer (ADR 0036).
+
 ## Status
-Accepted (2026-10-27). Amended by the Plan 3 final review (2026-10-28, ruling P20): while recording, the once-only key is the field id and the element, not the field id alone.
+Accepted (2026-10-27). Amended by the Plan 3 final review (2026-10-28, ruling P20): while recording, the once-only key is the field id and the element, not the field id alone. Amended by Plan 4, Task 3 (2026-10-29): the nudge re-report, filled ids staying filled after Undo, the running `fill-result` total and `updated` on the way out.

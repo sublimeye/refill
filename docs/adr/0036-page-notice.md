@@ -27,8 +27,8 @@ ADR 0032 guarantees as they are:
   nothing.
 
 Only one state is on screen at a time: a `show` replaces what was there. Which state wins when two
-want the page is the content runner's decision (a later task), not the pill's. A state is not queued
-and a hidden one is not restored.
+want the page is the content runner's decision (below), not the pill's. A state is not queued and a
+hidden one is not restored.
 
 ### States and copy
 
@@ -47,8 +47,9 @@ fields"). `needs you` reads `1 needs you`, otherwise `n need you`.
 | `locked`, `fallback: true` | none | the same | none |
 | `updated` | none | `Refill was updated — reload this page` | none |
 
-`locked` with `fallback: true` points at the toolbar icon and offers no Unlock button; the caller
-sets it when the button would have nothing to do. The button's action comes from
+`locked` with `fallback: true` points at the toolbar icon and offers no Unlock button. The runner
+shows it after a `toast-unlock-click` did not open the popup: the worker answered anything but
+`{ ok: true }`, or the message failed. The button's action comes from
 `PillActions { finish, undo, unlock }`, passed at creation.
 
 `src/lib/copy.ts` holds the shared wording. It has no imports, so the content bundle does not pull
@@ -80,20 +81,81 @@ pill on one line and a rounded box on two.
 ### `onChange` and `showing()`
 
 `onChange(kind | null)` is called with the kind on every show and with `null` on every hide, the
-timer's included. `showing()` returns the kind on screen, or `null`. Both are for tests and e2e: the
-product reads neither. A throwing `onChange` is swallowed.
+timer's included. `showing()` returns the kind on screen, or `null`. A throwing `onChange` is
+swallowed.
+
+A show that did not open the popover is not a show: the page can make `showPopover` throw (drop the
+host's `popover` attribute) or cancel it (`beforetoggle`). The pill then takes the host off the page,
+`showing()` stays `null`, and `onChange` hears no kind (a `null` if a kind was reported before).
+The runner relies on `showing()` (the recording hides only its own kinds, Unlock acts only on a
+`locked` notice), so it must never name a notice that is not on screen.
+
+### The runner owns the notice
+
+`startContentScript` creates the document's one pill (`createPill(doc, { finish, undo, unlock },
+onChange)`) and hands it to the recording (`RecordingEnv.pill()`). `ContentEnv.onNotice` is passed
+through as `onChange`. The scanner skips the pill's host by identity (`Recording.ownsHost` is gone).
+
+- **Recording** shows only `on`, `full` and `stopped`. On `off`, and on a repeated `stopped`, it hides
+  the pill only when `showing()` is one of those three: a recording state change never hides a
+  return-visit notice.
+- **Return-visit rules hold only while `recording.active()` is false** (ruling R1). While recording,
+  the runner keeps no Undo records, adds no outlines and shows nothing: recording fills come from
+  the session, and the pill says `● Recording`.
+- **`fill`.** Right before each `fillControl` the runner takes `snapshot([item])`; on `filled` it
+  keeps `{ before, written: item.value }` in the document's records. Then each `ask` index whose
+  control still means what was scanned and is a text or select reading `""`, or a checkbox or
+  radio, is outlined. If the records grew, it shows `filled { count: records, ask: outlined }`. The
+  `fill-result` after the plan carries `filled` = the records' count (the document's running total,
+  capped at 300); while recording it carries that plan's own count, as before.
+- **`gesture`.** `n` = the plan's distinct `fieldIds` not yet filled in this document. `ready { n }`
+  shows when `n > 0` and `n` differs from the last `ready` count shown in this document, so a page
+  that re-renders does not repeat it.
+- **`locked`** shows `locked { fallback: false }` once per document; a bfcache restore is the same
+  document.
+- **Unlock** (trusted click) sends `toast-unlock-click`. If the notice still shows `locked` when the
+  reply comes: `{ ok: true }` hides it (the popup is open), anything else shows `fallback: true`. A
+  notice that moved on meanwhile (the unlock already filled the page) is left alone.
+- **Undo** (trusted click) runs `undo(records)` from `fill.ts`: under the filling guard and with the
+  fill technique (`restore`), it puts back each control that is still connected and still reads
+  exactly what Refill wrote (the value; `String(checked)` for toggles). A field the user changed
+  since keeps the user's value. The records are emptied, `undone` shows, and a `fill-result` with
+  all counts 0 is sent. The ids stay filled for the document (ADR 0026), so a later plan does not
+  write them again. A radio Refill checked cannot be unchecked by a click; restoring it is best
+  effort, as for every restore.
+- **The `ask` outline** (`src/lib/content/outline.ts`) is `outline: 2px solid #0a84ff` and
+  `outline-offset: 2px`, both set `important` through CSSOM on the control itself. The page's own
+  inline outline longhands and their priorities are saved first and put back on release. A trusted
+  `input` or `change` (not during a fill) whose deepest target is outlined releases it; the listener
+  is in the capture phase on the document and on every shadow root the scan entered, because
+  `change` does not leave a shadow tree and a closed root retargets `input` to its host. A control
+  the page removed is released and no longer counted. `stop()` releases every outline.
+- **Extension gone.** When `send` finds the extension gone (the context invalidated or
+  `runtime.id` undefined) the run stops as before. If Refill filled, recorded or showed a notice in
+  this document, it first shows `updated` and leaves it to its own `NOTICE_MS` timer: that path does
+  not remove the pill. A page Refill never touched hears nothing.
+
+In the e2e build only, `refill-content.ts` mirrors the kind into
+`document.documentElement.dataset.refillNotice` (`""` when hidden), since the notice's root is
+closed.
 
 ## Consequences
 
 - The return-visit states cost no new element and no new page-facing surface. A reviewer of the
   pill's hardening reads one file.
-- The recording code keeps working while the runner takes the pill over: `recording.ts` passes a
-  `PillActions` with no-op `undo` and `unlock` for now.
+- The runner owns the pill (Task 3); `recording.ts` shows its states on it through
+  `RecordingEnv.pill()` and no longer creates or removes one.
 - `STOPPED_PILL_MS` is gone. Anything that waited a stopped notice out waits `NOTICE_MS`.
 - The `updated` notice, and `locked` with `fallback: true`, only say what to do: the reload and the
   toolbar icon are the user's.
+- The `ask` outline is an inline style on a page control, so page script can learn which of its
+  controls Refill's saved form marks Ask. It learns no value: those fields are never filled.
+- A forged click on the host does nothing (actions are trusted-click only), and a forged `input` or
+  `change` does not release an outline.
 
 ## Status
 
 Accepted (2026-10-29, Plan 4, Task 1). Amends ADR 0032 (the pill is the page's one notice; the
-stopped notice's timeout is `NOTICE_MS`).
+stopped notice's timeout is `NOTICE_MS`). Extended by Plan 4, Task 3 (2026-10-29): the runner owns
+the notice, the return-visit rules, Undo, the `ask` outline, `updated`, and a failed show reports
+nothing.
