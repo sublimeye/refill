@@ -7,6 +7,7 @@ import {
   type SavedSummary,
   type SiteStatus,
 } from "../messaging/protocol";
+import { fields } from "../copy";
 import { normalizeOrigin } from "./origin";
 import { requestSiteEnable, type EnableOutcome } from "./popup-flow";
 
@@ -49,8 +50,6 @@ export type SavedForm = { profileId: string; count: number };
 
 const RECORDING_OFF: RecordingView = { state: "off" };
 const NO_SUMMARY: SavedSummary = { state: "none" };
-
-const fields = (n: number): string => `${n} ${n === 1 ? "field" : "fields"}`;
 
 /** The popup's line for the site's saved form (ADR 0035), with the recording line's plural rule. */
 export function savedLine(count: number): string {

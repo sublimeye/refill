@@ -267,7 +267,11 @@ export function createRecording(env: RecordingEnv): Recording {
   }
 
   function thePill(): Pill {
-    pill ??= createPill(doc, finish);
+    pill ??= createPill(doc, {
+      finish,
+      undo: () => {},
+      unlock: () => {},
+    });
     return pill;
   }
 
