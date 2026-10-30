@@ -599,3 +599,32 @@ export function restore(s: FillSnapshot): void {
     }
   });
 }
+
+/** One field Refill filled in this document: its pre-fill snapshot and the value it wrote. */
+export interface FillRecord {
+  before: FillSnapshot["entries"][number];
+  written: string;
+}
+
+/**
+ * Restores each record whose control still reads exactly `written` (text and select: the value;
+ * checkbox and radio: String(checked)), with `restore`, under the guard. Returns how many it
+ * restored.
+ */
+export function undo(records: FillRecord[]): number {
+  return withFillingGuard(() => {
+    let restored = 0;
+    for (const { before, written } of records) {
+      // Checked right before each write: an earlier restore's page handlers may have changed it.
+      try {
+        if (!isConnected(before.el)) continue;
+        if (currentState(before.el, before.kind) !== written) continue;
+      } catch {
+        continue; // a page getter threw: leave the control alone
+      }
+      restore({ entries: [before] });
+      restored++;
+    }
+    return restored;
+  });
+}

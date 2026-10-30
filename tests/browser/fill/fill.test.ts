@@ -12,8 +12,10 @@ import {
   MAX_FORMACTION_ELEMENTS,
   restore,
   snapshot,
+  undo,
   withFillingGuard,
   type FillItem,
+  type FillRecord,
 } from "../../../src/lib/fill/fill";
 
 // Vitest browser mode runs tests inside an iframe, so the top-frame rule is stubbed.
@@ -783,6 +785,73 @@ describe("snapshot and restore", () => {
       restore(s);
     }).not.toThrow();
     expect(el.value).toBe("orig");
+  });
+});
+
+describe("undo", () => {
+  /** Fills `i` the way the runner does: snapshot right before, record on "filled". */
+  function filledRecord(i: FillItem): FillRecord {
+    const before = snapshot([i]).entries[0]!;
+    expect(fill(i)).toBe("filled");
+    return { before, written: i.value };
+  }
+
+  it("restores only records still holding what Refill wrote and returns the count", () => {
+    mount(
+      `<input name="a"><input name="b" value="orig"><select name="s"><option value=""></option><option value="x">X</option></select>` +
+        `<input type="checkbox" name="c">`,
+    );
+    const records = [
+      filledRecord(item(q("[name=a]"), "A")),
+      filledRecord(item(q("[name=b]"), "B", "orig")),
+      filledRecord(item(q("[name=s]"), "x")),
+      filledRecord(item(q("[name=c]"), "true", "false")),
+    ];
+    // The user changed b after the fill: that edit is theirs and stays.
+    q<HTMLInputElement>("[name=b]").value = "mine";
+    expect(undo(records)).toBe(3);
+    expect(q<HTMLInputElement>("[name=a]").value).toBe("");
+    expect(q<HTMLInputElement>("[name=b]").value).toBe("mine");
+    expect(q<HTMLSelectElement>("[name=s]").value).toBe("");
+    expect(q<HTMLInputElement>("[name=c]").checked).toBe(false);
+  });
+
+  it("leaves a toggle the user changed after the fill", () => {
+    mount(`<input type="checkbox" name="c">`);
+    const records = [filledRecord(item(q("[name=c]"), "true", "false"))];
+    q<HTMLInputElement>("[name=c]").checked = false;
+    q<HTMLInputElement>("[name=c]").checked = true; // back and forth: still Refill's value
+    expect(undo(records)).toBe(1);
+    expect(q<HTMLInputElement>("[name=c]").checked).toBe(false);
+    const again = [filledRecord(item(q("[name=c]"), "true", "false"))];
+    q<HTMLInputElement>("[name=c]").checked = false;
+    expect(undo(again)).toBe(0);
+    expect(q<HTMLInputElement>("[name=c]").checked).toBe(false);
+  });
+
+  it("holds the filling guard while it writes", () => {
+    mount(`<input name="a">`);
+    const el = q<HTMLInputElement>("[name=a]");
+    const records = [filledRecord(item(el, "A"))];
+    const seen: boolean[] = [];
+    el.addEventListener("input", () => seen.push(isFilling()));
+    undo(records);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every(Boolean)).toBe(true);
+    expect(isFilling()).toBe(false);
+  });
+
+  it("skips a control that left the document", () => {
+    mount(`<input name="a"><input name="b">`);
+    const records = [
+      filledRecord(item(q("[name=a]"), "A")),
+      filledRecord(item(q("[name=b]"), "B")),
+    ];
+    const a = q<HTMLInputElement>("[name=a]");
+    a.remove();
+    expect(undo(records)).toBe(1);
+    expect(a.value).toBe("A");
+    expect(q<HTMLInputElement>("[name=b]").value).toBe("");
   });
 });
 

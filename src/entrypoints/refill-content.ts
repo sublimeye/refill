@@ -1,7 +1,7 @@
 // Content script (WXT unlisted script, registered manually by src/lib/sites/reconcile.ts; ADR 0018).
 // Scans the page, reports signatures to the service worker and applies its fill plan, and while the
-// tab records, captures the user's edits and shows the pill; the logic is in
-// src/lib/content/runner.ts (ADR 0026) and src/lib/content/recording.ts (ADR 0032). Top frame only, https only, once per document.
+// tab records, captures the user's edits; the page's one notice says what happened (ADR 0036). The
+// logic is in src/lib/content/runner.ts (ADR 0026) and src/lib/content/recording.ts (ADR 0032). Top frame only, https only, once per document.
 import { captureChrome } from "../lib/content/chrome-api";
 import { startContentScript } from "../lib/content/runner";
 
@@ -24,6 +24,13 @@ export default defineUnlistedScript(() => {
     openOrClosedShadowRoot: api.openOrClosedShadowRoot,
     onNudge: api.onNudge,
     onFlush: api.onFlush,
+    // e2e only: the notice's kind on the page, for the specs (the notice's root is closed).
+    onNotice:
+      import.meta.env.MODE === "e2e"
+        ? (kind) => {
+            document.documentElement.dataset.refillNotice = kind ?? "";
+          }
+        : undefined,
   });
   if (run !== null && import.meta.env.MODE === "e2e") {
     const root = document.documentElement;

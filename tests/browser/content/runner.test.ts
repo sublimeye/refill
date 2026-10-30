@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { userEvent } from "vitest/browser";
+import type { PillState } from "../../../src/lib/content/pill";
 import {
   RESCAN_DEBOUNCE_MS,
   RESCAN_MAX_WAIT_MS,
@@ -11,6 +13,25 @@ import type {
   FillItem,
   FillPlan,
 } from "../../../src/lib/messaging/content-protocol";
+
+/** Every state the runner asked its notice to show, in order (a pass-through spy on the pill). */
+const shown = vi.hoisted(() => [] as unknown[]);
+vi.mock(import("../../../src/lib/content/pill"), async (importOriginal) => {
+  const mod = await importOriginal();
+  return {
+    ...mod,
+    createPill: (...args: Parameters<typeof mod.createPill>) => {
+      const p = mod.createPill(...args);
+      return {
+        ...p,
+        show: (state: PillState) => {
+          shown.push(structuredClone(state));
+          p.show(state);
+        },
+      };
+    },
+  };
+});
 
 // Vitest browser mode runs tests inside an iframe, so the top-frame rule is stubbed (as in the
 // scanner tests). The real check is the entrypoint's `window !== window.top` plus the e2e suite.
@@ -25,6 +46,9 @@ const runs: ContentRun[] = [];
 afterEach(() => {
   for (const r of runs.splice(0)) r.stop();
   document.body.replaceChildren();
+  shown.splice(0);
+  // An `updated` notice outlives its run until its own timer (it sits on <html>, not <body>).
+  for (const n of document.querySelectorAll("[popover]")) n.remove();
 });
 
 function mount(html: string): HTMLElement {
@@ -40,6 +64,8 @@ type Planner = (
 
 interface Harness {
   sent: ContentRequest[];
+  /** Every kind `onNotice` heard (null: hidden). */
+  notices: (PillState["kind"] | null)[];
   reports: () => Extract<ContentRequest, { type: "scan-report" }>[];
   results: () => Extract<ContentRequest, { type: "fill-result" }>[];
   env: ContentEnv;
@@ -50,6 +76,7 @@ function harness(
   over: Partial<ContentEnv> = {},
 ): Harness {
   const sent: ContentRequest[] = [];
+  const notices: (PillState["kind"] | null)[] = [];
   const env: ContentEnv = {
     win: window,
     doc: document,
@@ -60,10 +87,14 @@ function harness(
     }),
     alive: () => true,
     isTopWindow: top,
+    onNotice: (kind) => {
+      notices.push(kind);
+    },
     ...over,
   };
   return {
     sent,
+    notices,
     env,
     reports: () =>
       sent.filter(
@@ -99,7 +130,12 @@ function byName(values: Record<string, string>): Planner {
         pageDefault: "",
       });
     }
-    return { state: "fill", items, ask: [] } satisfies FillPlan;
+    return {
+      state: "fill",
+      items,
+      ask: [],
+      recording: false,
+    } satisfies FillPlan;
   };
 }
 
@@ -170,6 +206,16 @@ describe("scan, report, fill", () => {
       { ok: false, error: "rejected" },
       { state: "fill", items: [{ fieldId: "name", i: 0 }] },
       { state: "fill", items: "nope" },
+      // `ask` missing, repeated, out of range or not an integer
+      { state: "fill", items: [] },
+      { state: "fill", items: [], ask: [0, 0] },
+      { state: "fill", items: [], ask: [300] },
+      { state: "fill", items: [], ask: [0.5] },
+      // `recording` missing or not a boolean
+      { state: "fill", items: [], ask: [] },
+      { state: "fill", items: [], ask: [], recording: "yes" },
+      { state: "gesture", fieldIds: ["bad id"] },
+      { state: "gesture", fieldIds: "f1" },
       undefined,
     ]) {
       mount(`<input name="name">`);
@@ -198,6 +244,8 @@ describe("scan, report, fill", () => {
           pageDefault: "",
         },
       ],
+      ask: [],
+      recording: false,
     }));
     start(h);
     await vi.waitFor(() => expect(h.results()).toHaveLength(1));
@@ -213,6 +261,8 @@ describe("scan, report, fill", () => {
         { fieldId: "x", i: 0, kind: "text", value: "1", pageDefault: "" },
         { fieldId: "x", i: 1, kind: "text", value: "2", pageDefault: "" },
       ],
+      ask: [],
+      recording: false,
     }));
     start(h);
     await vi.waitFor(() => expect(h.results()).toHaveLength(1));
@@ -405,9 +455,10 @@ describe("re-scans", () => {
     await vi.waitFor(() => expect(input("b").value).toBe("B"));
     await sleep(20);
     expect(input("a").value).toBe("");
+    // `filled` is the document's running total (the badge's count).
     expect(h.results()).toEqual([
       { type: "fill-result", filled: 1, skipped: 0, unsupported: 0 },
-      { type: "fill-result", filled: 1, skipped: 0, unsupported: 0 },
+      { type: "fill-result", filled: 2, skipped: 0, unsupported: 0 },
     ]);
   });
 
@@ -637,13 +688,22 @@ describe("recording", () => {
 
     r.status.value = { state: "on", count: 0 };
     r.nudge();
-    await vi.waitFor(() => expect(r.h.reports()).toHaveLength(2));
+    // Filed again after the status said `on` (the nudge's own report may come first).
+    await vi.waitFor(() => {
+      const types = r.h.sent.map((m) => m.type);
+      expect(types.lastIndexOf("scan-report")).toBeGreaterThan(
+        types.lastIndexOf("record-status"),
+      );
+    });
+    await settle();
 
-    // Already recording: a nudge only updates the state, nothing is reported again.
+    // Already recording: a nudge updates the state and reports the page once more (as every nudge
+    // does), nothing else.
+    const before = r.h.reports().length;
     r.nudge();
     await vi.waitFor(() => expect(r.statuses()).toHaveLength(3));
     await settle();
-    expect(r.h.reports()).toHaveLength(2);
+    expect(r.h.reports()).toHaveLength(before + 1);
   });
 
   it("re-reads the recording state on a bfcache restore and starts it", async () => {
@@ -713,5 +773,401 @@ describe("recording", () => {
     r.nudge();
     await sleep(20);
     expect(r.statuses()).toHaveLength(1);
+  });
+});
+
+describe("return visit", () => {
+  const last = (h: Harness) => h.notices.at(-1) ?? null;
+  const shownOf = (kind: PillState["kind"]) =>
+    (shown as PillState[]).filter((s) => s.kind === kind);
+
+  /** The user's (trusted) click on the notice's button, at the bar's right end (the root is closed). */
+  async function clickNoticeButton(): Promise<void> {
+    const host = document.querySelector<HTMLElement>(":popover-open")!;
+    const box = host.getBoundingClientRect();
+    await userEvent.click(host, {
+      position: { x: box.width - 24, y: box.height / 2 },
+    });
+  }
+
+  it("a fill shows `filled` with the count and reports the document's total", async () => {
+    mount(`<input name="a"><input name="b">`);
+    const h = harness(byName({ a: "A", b: "B" }));
+    start(h);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(1));
+    expect(last(h)).toBe("filled");
+    expect(shown).toEqual([{ kind: "filled", count: 2, ask: 0 }]);
+    expect(h.results()[0]).toMatchObject({ filled: 2 });
+  });
+
+  it("the next SPA step's fill counts both steps", async () => {
+    const root = mount(`<div id="step"><input name="a"><input name="b"></div>`);
+    const h = harness(byName({ a: "A", b: "B", c: "C", d: "D" }));
+    start(h);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(1));
+    const c = document.createElement("input");
+    c.name = "c";
+    const d = document.createElement("input");
+    d.name = "d";
+    root.querySelector("#step")!.replaceChildren(c, d);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(2));
+    expect(shown.at(-1)).toEqual({ kind: "filled", count: 4, ask: 0 });
+    expect(h.results()[1]).toMatchObject({ filled: 4 });
+  });
+
+  it("Undo restores what Refill wrote, keeps the user's edit, and the ids stay filled", async () => {
+    // Narrow inputs: all of them stay in the test frame's viewport (eligibility, ADR 0020).
+    const root = mount(`<input name="a" size="4"><input name="b" size="4">`);
+    const h = harness(byName({ a: "A", b: "B", c: "C", d: "D" }));
+    start(h);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(1));
+    root.insertAdjacentHTML(
+      "beforeend",
+      `<input name="c" size="4"><input name="d" size="4">`,
+    );
+    await vi.waitFor(() => expect(h.results()).toHaveLength(2));
+    expect(shown.at(-1)).toEqual({ kind: "filled", count: 4, ask: 0 });
+
+    input("b").value = "mine"; // the user's own edit after the fill
+    await clickNoticeButton();
+    await vi.waitFor(() => expect(last(h)).toBe("undone"));
+    expect(["a", "b", "c", "d"].map((n) => input(n).value)).toEqual([
+      "",
+      "mine",
+      "",
+      "",
+    ]);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(3));
+    expect(h.results()[2]).toEqual({
+      type: "fill-result",
+      filled: 0,
+      skipped: 0,
+      unsupported: 0,
+    });
+
+    // The page changes and the plan names the same fields again: nothing is written.
+    root.insertAdjacentHTML("beforeend", `<input name="e" size="4">`);
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(3));
+    await sleep(20);
+    expect(["a", "c", "d"].map((n) => input(n).value)).toEqual(["", "", ""]);
+    expect(h.results()).toHaveLength(3);
+    expect(last(h)).toBe("undone");
+  });
+
+  it("a gesture plan shows `ready` with the ids not yet filled, once per count", async () => {
+    const root = mount(`<input name="a" size="4">`);
+    let planner: Planner = () => ({
+      state: "gesture",
+      fieldIds: ["a", "b", "c"],
+    });
+    const h = harness((req) => planner(req));
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("ready"));
+    expect(shownOf("ready")).toEqual([{ kind: "ready", count: 3 }]);
+
+    // The same ids again: nothing new.
+    root.insertAdjacentHTML("beforeend", `<input name="x1" size="4">`);
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2));
+    await sleep(20);
+    expect(shownOf("ready")).toHaveLength(1);
+
+    // A fill of a and b (Fill now), then a page with a fourth field.
+    planner = byName({ a: "A", b: "B" });
+    root.insertAdjacentHTML("beforeend", `<input name="b" size="4">`);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(1));
+    expect(h.results()[0]).toMatchObject({ filled: 2 });
+    planner = () => ({ state: "gesture", fieldIds: ["a", "b", "c", "d"] });
+    root.insertAdjacentHTML("beforeend", `<input name="x2" size="4">`);
+    await vi.waitFor(() => expect(shownOf("ready")).toHaveLength(2));
+    expect(shownOf("ready")[1]).toEqual({ kind: "ready", count: 2 });
+    expect(last(h)).toBe("ready");
+  });
+
+  it("`locked` shows once; Unlock asks the worker and falls back to the text when it cannot open", async () => {
+    const root = mount(`<input name="a">`);
+    const unlockReply: unknown = { ok: false };
+    const h = harness(() => ({ state: "locked" }), { isTrusted: () => true });
+    const inner = h.env.send;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      const answer = await inner(msg);
+      return msg.type === "toast-unlock-click" ? unlockReply : answer;
+    });
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("locked"));
+    expect(shown).toEqual([{ kind: "locked", fallback: false }]);
+
+    // The same document again (a page change, a bfcache restore): not shown twice.
+    root.insertAdjacentHTML("beforeend", `<input name="b">`);
+    window.dispatchEvent(
+      new PageTransitionEvent("pageshow", { persisted: true }),
+    );
+    await vi.waitFor(() => expect(h.reports().length).toBeGreaterThan(1));
+    await settle();
+    expect(shownOf("locked")).toHaveLength(1);
+
+    await clickNoticeButton();
+    await vi.waitFor(() =>
+      expect(shown.at(-1)).toEqual({ kind: "locked", fallback: true }),
+    );
+    expect(h.sent.filter((m) => m.type === "toast-unlock-click")).toEqual([
+      { type: "toast-unlock-click" },
+    ]);
+    expect(last(h)).toBe("locked");
+  });
+
+  it("Unlock hides the notice when the worker opened the popup", async () => {
+    mount(`<input name="a">`);
+    const h = harness(() => ({ state: "locked" }));
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("locked"));
+    await clickNoticeButton();
+    await vi.waitFor(() => expect(last(h)).toBeNull());
+    expect(h.sent.some((m) => m.type === "toast-unlock-click")).toBe(true);
+  });
+
+  it("a page click on the notice sends nothing", async () => {
+    mount(`<input name="a">`);
+    const h = harness(() => ({ state: "locked" }));
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("locked"));
+    document
+      .querySelector<HTMLElement>(":popover-open")!
+      .dispatchEvent(
+        new MouseEvent("click", { bubbles: true, composed: true }),
+      );
+    await sleep(20);
+    expect(h.sent.some((m) => m.type === "toast-unlock-click")).toBe(false);
+  });
+
+  it("`ask` outlines an empty control and counts it; the user's input releases it", async () => {
+    mount(`<input name="a"><input name="q"><input name="r" value="typed">`);
+    const h = harness((req) => {
+      const at = (n: string) => req.controls.find((c) => c.sig.name === n)!.i;
+      return {
+        state: "fill",
+        items: [
+          {
+            fieldId: "a",
+            i: at("a"),
+            kind: "text",
+            value: "A",
+            pageDefault: "",
+          },
+        ],
+        ask: [at("q"), at("r")],
+        recording: false,
+      } satisfies FillPlan;
+    });
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("filled"));
+    expect(shown.at(-1)).toEqual({ kind: "filled", count: 1, ask: 1 });
+    const outline = (n: string) => input(n).style.getPropertyValue("outline");
+    expect(outline("q")).not.toBe("");
+    expect(outline("r")).toBe(""); // not empty: the user has it
+    expect(outline("a")).toBe("");
+
+    // A page's synthetic input does not release it; the user's does.
+    input("q").dispatchEvent(new Event("input", { bubbles: true }));
+    expect(outline("q")).not.toBe("");
+    await userEvent.type(input("q"), "x");
+    expect(outline("q")).toBe("");
+  });
+
+  it("stop() takes the outlines off", async () => {
+    mount(`<input name="q">`);
+    const h = harness(() => ({
+      state: "fill",
+      items: [],
+      ask: [0],
+      recording: false,
+    }));
+    const run = start(h)!;
+    await vi.waitFor(() =>
+      expect(input("q").style.getPropertyValue("outline")).not.toBe(""),
+    );
+    run.stop();
+    expect(input("q").style.getPropertyValue("outline")).toBe("");
+  });
+
+  it("while recording: no `filled` notice and no outline", async () => {
+    mount(`<input name="a"><input name="q">`);
+    const status = { value: { state: "on", count: 0 } as unknown };
+    const h = harness((req) => ({
+      ...(byName({ a: "A" })(req) as object),
+      ask: [req.controls.find((c) => c.sig.name === "q")!.i],
+      recording: true, // the worker answers from the session
+    }));
+    const inner = h.env.send;
+    h.env.send = vi.fn(async (msg: ContentRequest) =>
+      msg.type === "record-status" ? status.value : inner(msg),
+    );
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("on"));
+    expect(input("a").value).toBe("A");
+    expect(shownOf("filled")).toEqual([]);
+    expect(input("q").style.getPropertyValue("outline")).toBe("");
+
+    // The step re-renders with a field more (a new page fingerprint): `a` is a new element and is
+    // filled again (ruling P20), still with no notice and no outline.
+    const before = shown.length;
+    document.body.replaceChildren();
+    mount(
+      `<input name="a" size="4"><input name="q" size="4"><input name="z" size="4">`,
+    );
+    await vi.waitFor(() => expect(input("a").value).toBe("A"));
+    await sleep(20);
+    expect(shown.slice(before)).toEqual([]);
+    expect(input("q").style.getPropertyValue("outline")).toBe("");
+    expect(last(h)).toBe("on");
+  });
+
+  it("a fresh document's session plan, before record-status answers, is no return visit", async () => {
+    const root = mount(`<input name="a" size="4"><input name="q" size="4">`);
+    let session = true;
+    const h = harness((req) => ({
+      ...(byName({ a: "A", b: "B" })(req) as object),
+      ask: [req.controls.find((c) => c.sig.name === "q")!.i],
+      recording: session,
+    }));
+    const inner = h.env.send;
+    // `record-status` never answers: only the plan's own flag says this is the session.
+    h.env.send = vi.fn((msg: ContentRequest) =>
+      msg.type === "record-status"
+        ? new Promise<unknown>(() => undefined)
+        : inner(msg),
+    );
+    start(h);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(1));
+    expect(input("a").value).toBe("A");
+    expect(h.notices.filter((k) => k !== null)).toEqual([]);
+    expect(input("q").style.getPropertyValue("outline")).toBe("");
+    expect(h.results()[0]).toMatchObject({ filled: 1 }); // that plan's count, as while recording
+
+    // A stored-profile plan later in the document: only its own fill is counted and undone.
+    session = false;
+    root.insertAdjacentHTML("beforeend", `<input name="b" size="4">`);
+    await vi.waitFor(() => expect(last(h)).toBe("filled"));
+    expect(shown.at(-1)).toEqual({ kind: "filled", count: 1, ask: 1 });
+    expect(h.results()[1]).toMatchObject({ filled: 1 });
+    await clickNoticeButton();
+    await vi.waitFor(() => expect(last(h)).toBe("undone"));
+    expect(input("a").value).toBe("A"); // the session's value: no Undo record
+    expect(input("b").value).toBe("");
+  });
+
+  it("an `ask` control the user dealt with is not outlined again in this document", async () => {
+    mount(`<input name="q" size="4"><input type="checkbox" name="c">`);
+    const nudges: (() => void)[] = [];
+    const h = harness(
+      (req) => ({
+        state: "fill",
+        items: [],
+        ask: req.controls.map((c) => c.i),
+        recording: false,
+      }),
+      {
+        onNudge: (cb) => {
+          nudges.push(cb);
+        },
+      },
+    );
+    start(h);
+    const outline = (n: string) => input(n).style.getPropertyValue("outline");
+    await vi.waitFor(() => expect(outline("c")).not.toBe(""));
+    expect(outline("q")).not.toBe("");
+
+    await userEvent.click(input("c"));
+    await userEvent.type(input("q"), "x");
+    await userEvent.clear(input("q")); // emptied again: still the user's business
+    expect(outline("c")).toBe("");
+    expect(outline("q")).toBe("");
+
+    // A nudge reports the page again and the plan names both once more.
+    const reports = h.reports().length;
+    for (const cb of nudges) cb();
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(reports + 1));
+    await sleep(20);
+    expect(outline("c")).toBe("");
+    expect(outline("q")).toBe("");
+  });
+
+  it("a recording `off` does not hide a `filled` notice", async () => {
+    mount(`<input name="a">`);
+    const nudges: (() => void)[] = [];
+    const h = harness(byName({ a: "A" }), {
+      onNudge: (cb) => {
+        nudges.push(cb);
+      },
+    });
+    const inner = h.env.send;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      if (msg.type !== "record-status") return inner(msg);
+      h.sent.push(structuredClone(msg));
+      return { state: "off" };
+    });
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("filled"));
+    for (const cb of nudges) cb();
+    await vi.waitFor(() =>
+      expect(h.sent.filter((m) => m.type === "record-status")).toHaveLength(2),
+    );
+    await settle();
+    expect(last(h)).toBe("filled");
+  });
+
+  it("a nudge reports an unchanged page again", async () => {
+    mount(`<input name="a">`);
+    const nudges: (() => void)[] = [];
+    const h = harness(() => ({ state: "none" }), {
+      onNudge: (cb) => {
+        nudges.push(cb);
+      },
+    });
+    start(h);
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(1));
+    await settle();
+    for (const cb of nudges) cb();
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2));
+    expect(h.reports()[1]!.controls).toEqual(h.reports()[0]!.controls);
+  });
+
+  it("the extension gone after a fill leaves `updated` showing and sends nothing more", async () => {
+    const root = mount(`<input name="a">`);
+    const h = harness(byName({ a: "A" }));
+    const inner = h.env.send;
+    let gone = false;
+    let after = 0;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      if (gone) {
+        after++;
+        throw new Error("Extension context invalidated.");
+      }
+      return inner(msg);
+    });
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("filled"));
+    await sleep(20);
+    gone = true;
+    root.insertAdjacentHTML("beforeend", `<input name="b">`);
+    await vi.waitFor(() => expect(last(h)).toBe("updated"));
+    expect(after).toBe(1);
+    expect(document.querySelector(":popover-open")).not.toBeNull();
+    root.insertAdjacentHTML("beforeend", `<input name="c">`);
+    await settle();
+    expect(after).toBe(1);
+    expect(last(h)).toBe("updated");
+  });
+
+  it("the extension gone on a page Refill never touched shows nothing", async () => {
+    mount(`<input name="a">`);
+    const h = harness();
+    h.env.send = vi.fn(async () => {
+      throw new Error("Extension context invalidated.");
+    });
+    start(h);
+    await vi.waitFor(() => expect(h.env.send).toHaveBeenCalled());
+    await sleep(20);
+    expect(h.notices.filter((k) => k !== null)).toEqual([]);
+    expect(document.querySelector("[popover]")).toBeNull();
   });
 });

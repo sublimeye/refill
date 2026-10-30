@@ -49,13 +49,15 @@ export interface FillItem {
 /**
  * `locked` only for a site with a saved form (a locked vault answers `none` elsewhere). `gesture`
  * carries the ids of the matched `save` fields, never values. `ask` holds the control index `i` of
- * every matched field whose policy is `ask` (nothing is written for those).
+ * every matched field whose policy is `ask` (nothing is written for those). `recording` is true
+ * when the plan comes from the tab's recording session, false for a stored-profile fill: the
+ * content script must not treat a session fill as a return visit (ADR 0036).
  */
 export type FillPlan =
   | { state: "locked" }
   | { state: "none" }
   | { state: "gesture"; fieldIds: string[] }
-  | { state: "fill"; items: FillItem[]; ask: number[] };
+  | { state: "fill"; items: FillItem[]; ask: number[]; recording: boolean };
 
 /** What the pill shows: the session of this tab and origin, or why it stopped. ADR 0030. */
 export type RecordState =

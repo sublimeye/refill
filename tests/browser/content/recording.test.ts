@@ -97,7 +97,10 @@ function harness(
                 c.kind === "checkbox" || c.kind === "radio" ? "false" : "",
             });
           }
-          return { state: "fill", items };
+          // A session plan while the tab records, as the worker marks it (ruling R3).
+          const recording =
+            status.value.state === "on" || status.value.state === "full";
+          return { state: "fill", items, ask: [], recording };
         }
         default:
           return { ok: true };

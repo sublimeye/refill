@@ -225,6 +225,7 @@ describe("scan-report", () => {
         },
       ],
       ask: [1],
+      recording: false,
     });
     expectNoSecrets(reply, [SECRET.email, SECRET.emailDefault]);
   });
@@ -459,6 +460,7 @@ describe("scan-report off the path prefix (ADR 0034)", () => {
         pageDefault: SECRET.emailDefault,
       },
     ],
+    recording: false,
   };
 
   it("a single-step profile fills a page that is the recorded form, off-path (J = 1)", async () => {

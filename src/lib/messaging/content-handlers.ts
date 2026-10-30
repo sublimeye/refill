@@ -88,7 +88,7 @@ export function createContentHandlers(
       if (lockEpoch() !== epoch) return lockedAnswer(ctx.origin);
       return recorded.length === 0
         ? NONE
-        : { state: "fill", items: recorded, ask: [] };
+        : { state: "fill", items: recorded, ask: [], recording: true };
     }
     const profile = await loadOrLocked(ctx.origin);
     if (profile === "locked") return lockedAnswer(ctx.origin);
@@ -125,7 +125,7 @@ export function createContentHandlers(
       return { state: "gesture", fieldIds: items.map((it) => it.fieldId) };
     }
     touch(profile.id, profile.origin);
-    return { state: "fill", items, ask };
+    return { state: "fill", items, ask, recording: false };
   }
 
   return {
