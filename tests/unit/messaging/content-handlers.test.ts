@@ -224,12 +224,31 @@ describe("scan-report", () => {
           pageDefault: SECRET.emailDefault,
         },
       ],
+      ask: [1],
     });
     expectNoSecrets(reply, [SECRET.email, SECRET.emailDefault]);
   });
 
-  it("locked: {state: locked} and nothing else", async () => {
+  it("ask holds the control index of every matched ask field, and no value", async () => {
     await saveProfile(profile());
+    const reply = (await createContentHandlers(now)["scan-report"](
+      scan(),
+      ctx(),
+    )) as { state: string; items: unknown[]; ask: number[] };
+    expect(reply.state).toBe("fill");
+    expect(reply.items).toHaveLength(1);
+    expect(reply.ask).toEqual([PAGE[1]!.i]);
+    // An unmatched ask field is not listed.
+    const noPhone = (await createContentHandlers(now)["scan-report"](
+      scan([PAGE[0]!]),
+      ctx(),
+    )) as { ask: number[] };
+    expect(noPhone.ask).toEqual([]);
+  });
+
+  it("locked, site with a saved form: {state: locked} and nothing else", async () => {
+    await saveProfile(profile());
+    expect((await readSites())[A]?.profileId).toBe("prof1");
     await lock();
     const reply = await createContentHandlers(now)["scan-report"](
       scan(),
@@ -238,14 +257,42 @@ describe("scan-report", () => {
     expect(reply).toEqual({ state: "locked" });
   });
 
-  it("no vault at all is reported as locked", async () => {
+  it("locked, site without a saved form: none", async () => {
+    await upsertSite(A, {});
+    await lock();
+    const reply = await createContentHandlers(now)["scan-report"](
+      scan(),
+      ctx(),
+    );
+    expect(reply).toEqual({ state: "none" });
+  });
+
+  it("locked answers from the site index alone: no key, no profile read", async () => {
+    await saveProfile(profile());
+    await lock();
+    const get = vi.spyOn(fakeBrowser.storage.local, "get");
+    await createContentHandlers(now)["scan-report"](scan(), ctx());
+    expect(get.mock.calls.flat()).not.toContain(profileKey("prof1"));
+  });
+
+  it("locked, another origin's saved form does not count: none", async () => {
+    await saveProfile(profile());
+    await lock();
+    const reply = await createContentHandlers(now)["scan-report"](scan(), {
+      ...ctx(),
+      origin: "https://b.example",
+    });
+    expect(reply).toEqual({ state: "none" });
+  });
+
+  it("no vault at all is reported as none (no site has a saved form)", async () => {
     fakeBrowser.reset();
     __resetForTests();
     const reply = await createContentHandlers(now)["scan-report"](
       scan(),
       ctx(),
     );
-    expect(reply).toEqual({ state: "locked" });
+    expect(reply).toEqual({ state: "none" });
   });
 
   it("a lock landing before the profile decrypt (LockedError) is reported as locked", async () => {
@@ -334,14 +381,17 @@ describe("scan-report", () => {
     expect(reply).toMatchObject({ state: "fill" });
   });
 
-  it("gesture: a count of fillable fields and no values", async () => {
+  it("gesture: the ids of the matched save fields and no values", async () => {
     await saveProfile(profile({ fillMode: "gesture" }));
     const reply = await createContentHandlers(now)["scan-report"](
       scan(),
       ctx(),
     );
-    expect(reply).toEqual({ state: "gesture", count: 1 });
+    expect(reply).toEqual({ state: "gesture", fieldIds: ["f_email"] });
     expectNoSecrets(reply);
+    // Not a value anywhere: the plan holds ids only.
+    expect(JSON.stringify(reply)).not.toContain(SECRET.email);
+    expect(JSON.stringify(reply)).not.toContain("value");
   });
 
   it("zero matched save fields: none (auto and gesture)", async () => {
@@ -417,17 +467,18 @@ describe("scan-report off the path prefix (ADR 0034)", () => {
       scan(),
       ctx("/register/search"),
     );
-    expect(reply).toEqual(FILL_EMAIL);
+    // The phone field is matched too (policy ask): control 1.
+    expect(reply).toEqual({ ...FILL_EMAIL, ask: [1] });
     expectNoSecrets(reply, [SECRET.email, SECRET.emailDefault]);
   });
 
-  it("gesture mode is kept off-path: a count and no values", async () => {
+  it("gesture mode is kept off-path: ids and no values", async () => {
     await saveProfile(recorded({ fillMode: "gesture" }));
     const reply = await createContentHandlers(now)["scan-report"](
       scan(),
       ctx("/register/search"),
     );
-    expect(reply).toEqual({ state: "gesture", count: 1 });
+    expect(reply).toEqual({ state: "gesture", fieldIds: ["f_email"] });
     expectNoSecrets(reply);
   });
 
@@ -449,7 +500,7 @@ describe("scan-report off the path prefix (ADR 0034)", () => {
       scan(page),
       ctx(),
     );
-    expect(reply).toEqual(FILL_EMAIL);
+    expect(reply).toEqual({ ...FILL_EMAIL, ask: [] });
   });
 
   it("multi-step off-path: only fields whose own step reaches MIN_JACCARD fill", async () => {
@@ -481,7 +532,7 @@ describe("scan-report off the path prefix (ADR 0034)", () => {
       scan([...PAGE, zipControl]),
       ctx("/elsewhere"),
     );
-    expect(reply).toEqual(FILL_EMAIL);
+    expect(reply).toEqual({ ...FILL_EMAIL, ask: [] });
     expectNoSecrets(reply, [SECRET.email, SECRET.emailDefault]);
   });
 
@@ -564,7 +615,7 @@ describe("lock racing the profile read", () => {
     expectNoSecrets(reply);
   });
 
-  it("gesture: a lock during the read reports locked, not a count", async () => {
+  it("gesture: a lock during the read reports locked, not ids", async () => {
     await saveProfile(profile({ fillMode: "gesture" }));
     const read = pauseRead(profileKey("prof1"));
     const pending = createContentHandlers(now)["scan-report"](scan(), ctx());
@@ -718,6 +769,59 @@ describe("lastUsedAt", () => {
   });
 });
 
+describe("toast-unlock-click", () => {
+  const click = { type: "toast-unlock-click" } as const;
+  const stub = (impl: () => Promise<void>) => {
+    const openPopup = vi.fn(impl);
+    (fakeBrowser as unknown as { action: unknown }).action = { openPopup };
+    return openPopup;
+  };
+
+  it("opens the popup and answers ok: true", async () => {
+    const openPopup = stub(async () => {});
+    expect(
+      await createContentHandlers(now)["toast-unlock-click"](click, ctx()),
+    ).toEqual({ ok: true });
+    expect(openPopup).toHaveBeenCalledOnce();
+  });
+
+  it("answers ok: false when the popup cannot open, logging the error name only", async () => {
+    stub(() => Promise.reject(new Error("no user gesture SECRET-MESSAGE")));
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(
+      await createContentHandlers(now)["toast-unlock-click"](click, ctx()),
+    ).toEqual({ ok: false });
+    expect(err).toHaveBeenCalledOnce();
+    expect(JSON.stringify(err.mock.calls)).toContain("Error");
+    expect(JSON.stringify(err.mock.calls)).not.toContain("SECRET-MESSAGE");
+  });
+
+  it("goes through the router for an enabled, granted site", async () => {
+    const shims = installShims();
+    shims.grant(originPattern(A));
+    await saveProfile(profile());
+    stub(async () => {});
+    (fakeBrowser.runtime as { id: string }).id = RUNTIME_ID;
+    const r = createRouter({
+      page: createPageHandlers(async () => newKdfParams()),
+      content: createContentHandlers(now),
+    });
+    const sender = {
+      id: RUNTIME_ID,
+      url: `${A}/signup/step1`,
+      origin: A,
+      frameId: 0,
+      documentId: "doc-1",
+      tab: { id: 7, url: `${A}/signup/step1` },
+    } as Parameters<typeof r>[1];
+    expect(await r(click, sender)).toEqual({ ok: true });
+    expect(await r({ ...click, tabId: 1 }, sender)).toEqual({
+      ok: false,
+      error: "rejected",
+    });
+  });
+});
+
 describe("fill-result", () => {
   it("answers ok and writes nothing", async () => {
     const set = vi.spyOn(fakeBrowser.storage.local, "set");
@@ -803,7 +907,7 @@ describe("through the real router", () => {
     expect(await route()(scan(), sender())).toMatchObject({ state: "fill" });
   });
 
-  it("locked vault through the router: locked, no values", async () => {
+  it("locked vault through the router: locked for a saved form, no values", async () => {
     const shims = installShims();
     shims.grant(originPattern(A));
     await saveProfile(profile());

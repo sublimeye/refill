@@ -31,6 +31,14 @@ export type LogEntry = { boot: string; seq: number } & (
   | RecordEntry<"record-status">
   | RecordEntry<"record-capture">
   | RecordEntry<"record-finish">
+  | {
+      type: "toast-unlock-click";
+      origin: string;
+      pathname: string;
+      tabId: number;
+      documentId: string | undefined;
+      ok: boolean;
+    }
 );
 
 /** A recording request: its type and the reply's state only, never a captured value. */

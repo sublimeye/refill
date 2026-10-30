@@ -101,6 +101,19 @@ export default defineBackground(() => {
         });
         return reply;
       },
+      "toast-unlock-click": async (req, ctx) => {
+        const reply = (await inner["toast-unlock-click"](req, ctx)) as {
+          ok: boolean;
+        };
+        contentLog.push({
+          boot,
+          seq: ++seq,
+          type: req.type,
+          ...where(ctx),
+          ok: reply.ok,
+        });
+        return reply;
+      },
       "record-finish": async (req, ctx) => {
         const reply = (await inner["record-finish"](req, ctx)) as {
           ok: boolean;

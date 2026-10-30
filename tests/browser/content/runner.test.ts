@@ -99,7 +99,7 @@ function byName(values: Record<string, string>): Planner {
         pageDefault: "",
       });
     }
-    return { state: "fill", items } satisfies FillPlan;
+    return { state: "fill", items, ask: [] } satisfies FillPlan;
   };
 }
 
@@ -166,7 +166,7 @@ describe("scan, report, fill", () => {
     for (const answer of [
       { state: "locked" },
       { state: "none" },
-      { state: "gesture", count: 1 },
+      { state: "gesture", fieldIds: ["f1"] },
       { ok: false, error: "rejected" },
       { state: "fill", items: [{ fieldId: "name", i: 0 }] },
       { state: "fill", items: "nope" },

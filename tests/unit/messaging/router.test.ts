@@ -75,6 +75,7 @@ function spyHandlers() {
     "record-status": vi.fn(async () => ({ state: "off" })),
     "record-capture": vi.fn(async () => ({ state: "off" })),
     "record-finish": vi.fn(async () => ({ ok: false })),
+    "toast-unlock-click": vi.fn(async () => ({ ok: true })),
   };
   return {
     h,
@@ -695,6 +696,11 @@ describe("content senders", () => {
     expect(await r({ type: "record-status" }, s)).toEqual({ state: "off" });
     expect(await r(capture, s)).toEqual({ state: "off" });
     expect(await r({ type: "record-finish" }, s)).toEqual({ ok: false });
+    expect(await r({ type: "toast-unlock-click" }, s)).toEqual({ ok: true });
+    expect(c["toast-unlock-click"]).toHaveBeenCalledWith(
+      { type: "toast-unlock-click" },
+      where,
+    );
     expect(c["record-status"]).toHaveBeenCalledWith(
       { type: "record-status" },
       where,

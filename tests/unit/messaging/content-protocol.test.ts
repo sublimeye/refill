@@ -239,6 +239,21 @@ describe("recording requests", () => {
     expect(parsed.sig).not.toBe(raw.sig);
   });
 
+  it("accepts toast-unlock-click as exactly { type } and rejects any extra key", () => {
+    expect(parseContentRequest({ type: "toast-unlock-click" })).toEqual({
+      type: "toast-unlock-click",
+    });
+    for (const extra of [
+      { tabId: 1 },
+      { origin: "https://a.example" },
+      { ok: 1 },
+    ]) {
+      expect(
+        parseContentRequest({ type: "toast-unlock-click", ...extra }),
+      ).toBeNull();
+    }
+  });
+
   it("accepts every kind, a 4096-char value and page default, and a 64-char field id", () => {
     expect(MAX_CAPTURE_VALUE).toBe(4096);
     for (const kind of ["text", "select", "checkbox", "radio"]) {
