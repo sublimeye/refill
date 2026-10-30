@@ -125,8 +125,10 @@ test.describe("return visit", () => {
     await expectTwinsFilled(page);
     await expect.poll(() => badgeText(context, tabId)).toBe("2");
 
-    // Record every tabs.onUpdated status the worker sees for this tab, as evidence of what a
-    // sub-frame load does.
+    // A behavioural guard, not a test of the "loading" clear branch: the count must survive a
+    // sub-frame load whatever Chrome reports for it. Observation (not asserted, it is Chrome's):
+    // tabs.onUpdated reports no status at all for a same-origin iframe load (statuses seen: []).
+    // The worker records what it sees for this tab and attaches it to the test report.
     const worker = await serviceWorker(context);
     await worker.evaluate((id) => {
       type G = {
@@ -159,8 +161,12 @@ test.describe("return visit", () => {
         }),
       "/account",
     );
-    // The iframe's load is in; one more worker round trip puts any event it caused ahead of us.
-    expect(await badgeText(context, tabId)).toBe("2");
+    // The iframe's load is in. A late async clear would land after it, so go through the worker
+    // a few times (each read is a round trip behind any event the load caused) and require the
+    // count every time, not just on the first success.
+    for (let i = 0; i < 5; i += 1) {
+      expect(await badgeText(context, tabId), `badge read ${i}`).toBe("2");
+    }
     const seen = await worker.evaluate(
       () => (globalThis as unknown as { __seen: string[] }).__seen,
     );
@@ -168,8 +174,7 @@ test.describe("return visit", () => {
       type: "tabs.onUpdated statuses during the iframe load",
       description: JSON.stringify(seen),
     });
-    expect(seen).not.toContain("loading");
-    await expect.poll(() => badgeText(context, tabId)).toBe("2");
+    await expectTwinsFilled(page);
   });
 
   test("SPA wizard: the count follows the document's running total", async ({
@@ -285,14 +290,48 @@ test.describe("return visit", () => {
     expect(await noticeOf(other)).toBe("");
     expect(await badgeText(context, otherId)).toBe("");
 
+    // Marker and navigation count on the locked tab: an unlock fill must not need a reload.
+    await page.evaluate(() => {
+      (window as unknown as { __refillNoReload: number }).__refillNoReload = 1;
+    });
+    let navigations = 0;
+    page.on("framenavigated", (f) => {
+      if (f === page.mainFrame()) navigations += 1;
+    });
+
+    const beforeUnlock = await logMark(context);
     await unlockInPopup(context, extensionId);
 
     await page.bringToFront();
     await expectTwinsFilled(page);
     await expect.poll(() => noticeOf(page)).toBe("filled");
     await expect.poll(() => badgeText(context, tabId)).toBe("2");
-    expect(await noticeOf(other)).toBe("");
-    expect(await badgeText(context, otherId)).toBe("");
+    expect(
+      await page.evaluate(
+        () =>
+          (window as unknown as { __refillNoReload?: number }).__refillNoReload,
+      ),
+      "same document: the page was not reloaded",
+    ).toBe(1);
+    expect(navigations).toBe(0);
+    // The fill came from the unlock nudge, not from a fresh load of the document.
+    await waitForEntry(
+      context,
+      beforeUnlock,
+      "fill-result",
+      (e) => e.tabId === tabId && e.filled === 2,
+    );
+
+    // The second tab has no saved form, so the unlock pass does not nudge it and no worker event
+    // marks "done" for it. The strongest anchor: the first tab's fill (the same unlock pass, which
+    // clears and nudges every saved-form tab) is complete above; now read the second tab's badge
+    // and notice over several consecutive worker round trips, each of which must still be empty,
+    // so a late clear, nudge or fill would show.
+    for (let i = 0; i < 5; i += 1) {
+      expect(await badgeText(context, otherId), `badge read ${i}`).toBe("");
+      expect(await noticeOf(other), `notice read ${i}`).toBe("");
+    }
+    await expectTwinsEmpty(other);
   });
 
   test("recording: Record again shows the pill and the recording badge, never a filled notice", async ({
@@ -333,11 +372,15 @@ test.describe("return visit", () => {
     const kinds = await page.evaluate(
       () => (window as unknown as { __kinds: string[] }).__kinds,
     );
+    // The observer was alive (it saw the pill), so "never filled" is a real observation.
+    expect(kinds).toContain("on");
     expect(kinds).not.toContain("filled");
 
     // A reload while recording shows the pill again, never the return-visit notice. (The badge is
     // not asserted here: Chrome resets a tab's badge text on navigation and Plan 3's recorder sets
     // "●" only when the recording starts.)
+    // Refilling after the reload is intended: recorded values fill again on every visit to a step
+    // while recording (Plan 3 ruling P20).
     await page.reload();
     await expect.poll(() => noticeOf(page)).toBe("on");
     await expectTwinsFilled(page);
