@@ -106,18 +106,24 @@ through as `onChange`. The scanner skips the pill's host by identity (`Recording
   it came from the tab's session), because a fresh document's first plan, and the report of a nudge
   that starts a recording, arrive before `record-status` has answered. A plan without the flag is
   no plan. The per-element fill rule (ruling P20) stays tied to `recording.active()`: before the
-  status answers, the stricter per-id rule applies, as before.
+  status answers, the stricter per-id rule applies, as before. When a recording starts in the
+  document (`RecordingEnv.started`), the records are emptied and the outlines released: Undo after
+  the recording must not put back values from before it.
 - **`fill`.** Right before each `fillControl` the runner takes `snapshot([item])`; on `filled` it
   keeps `{ before, written: item.value }` in the document's records. Then each `ask` index whose
   control still means what was scanned and is a text or select reading `""`, or a checkbox or
   radio, is outlined. If the records grew, it shows `filled { count: records, ask: outlined }`. The
   `fill-result` after the plan carries `filled` = the records' count (the document's running total,
-  capped at 300); while recording it carries that plan's own count, as before.
+  capped at 300); while recording it carries that plan's own count, as before. Outside recording, a
+  plan that wrote nothing still sends the running total while the records are not empty: the unlock
+  pass cleared the badge, and the nudge's re-report fills nothing new.
 - **`gesture`.** `n` = the plan's distinct `fieldIds` not yet filled in this document. `ready { n }`
-  shows when `n > 0` and `n` differs from the last `ready` count shown in this document, so a page
-  that re-renders does not repeat it.
+  shows when `n > 0` and that set of pending ids (sorted, as one key) differs from the set of the
+  last `ready` shown in this document, so a page that re-renders does not repeat it, while an SPA
+  step with other pending fields is announced even when their count is the same.
 - **`locked`** shows `locked { fallback: false }` once per document; a bfcache restore is the same
-  document.
+  document. It shows nothing (and is not yet counted as shown) while the notice shows `stopped`: a
+  lock during Record again keeps "Recording stopped — vault locked".
 - **Unlock** (trusted click) sends `toast-unlock-click`. If the notice still shows `locked` when the
   reply comes: `{ ok: true }` hides it (the popup is open), anything else shows `fallback: true`. A
   notice that moved on meanwhile (the unlock already filled the page) is left alone.

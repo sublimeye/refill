@@ -274,8 +274,11 @@ function run(env: ContentEnv): ContentRun {
   const outlines = createOutlines();
   /** Controls whose outline the user's own edit took off: never outlined again here (ruling R4). */
   const released = new WeakSet<Element>();
-  /** The last `ready` count shown in this document: the same count is not shown again. */
-  let readyShown: number | null = null;
+  /**
+   * The pending field ids of the last `ready` shown in this document (sorted, one key): the same
+   * ids are not shown again, while another step's ids are, even with the same count.
+   */
+  let readyShown: string | null = null;
   /** `locked` shows once per document (a bfcache restore is the same document). */
   let lockedShown = false;
   /** A notice was shown in this document: an orphaned script then says `updated`. */
@@ -312,6 +315,12 @@ function run(env: ContentEnv): ContentRun {
     doc,
     pill: () => pill,
     send: (msg) => send(msg),
+    // A recording starts in this document: its fills are the session's, not a return visit's. What
+    // Undo would put back and the outlines go (ADR 0036).
+    started: () => {
+      records.length = 0;
+      outlines.clear();
+    },
     latest: () => latest,
     rescan,
     filledField: (el) => {
@@ -527,7 +536,10 @@ function run(env: ContentEnv): ContentRun {
         });
       }
     }
-    if (counts.filled + counts.skipped + counts.unsupported === 0) return;
+    // A plan that wrote nothing still reports the running total while the document has fills not
+    // undone: the unlock pass cleared the badge, and this re-report is what sets it again.
+    const touched = counts.filled + counts.skipped + counts.unsupported > 0;
+    if (!touched && (quiet || records.length === 0)) return;
     // `filled` is the document's running total of fills not undone (the badge's count).
     await send({
       type: "fill-result",
@@ -576,14 +588,18 @@ function run(env: ContentEnv): ContentRun {
   /** A gesture plan: the matched fields not filled yet in this document wait for Fill now. */
   function ready(fieldIds: string[]): void {
     if (recording.active()) return;
-    const n = new Set(fieldIds.filter((id) => !filled.has(id))).size;
-    if (n === 0 || n === readyShown) return;
-    readyShown = n;
-    pill.show({ kind: "ready", count: n });
+    const pending = [...new Set(fieldIds.filter((id) => !filled.has(id)))];
+    if (pending.length === 0) return;
+    const key = JSON.stringify(pending.sort());
+    if (key === readyShown) return;
+    readyShown = key;
+    pill.show({ kind: "ready", count: pending.length });
   }
 
   function locked(): void {
     if (recording.active() || lockedShown) return;
+    // "Recording stopped — vault locked" says it already, and stays until its own timer.
+    if (pill.showing() === "stopped") return;
     lockedShown = true;
     pill.show({ kind: "locked", fallback: false });
   }

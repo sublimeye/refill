@@ -38,6 +38,8 @@ export interface RecordingEnv {
   doc: Document;
   /** The runner's `send`: resolves to something that is not a `RecordState` when it failed. */
   send(msg: ContentRequest): Promise<unknown>;
+  /** A recording starts capturing in this document (called once per start, before its notice). */
+  started?(): void;
   /** The runner's most recent scan. */
   latest(): ScanResult | null;
   /** Scans now and resolves once that scan's report (if any) was delivered. `force` reports even an
@@ -292,7 +294,14 @@ export function createRecording(env: RecordingEnv): Recording {
       case "full": {
         const begins = state === null;
         if (begins && !start) return false;
-        if (begins) activate();
+        if (begins) {
+          activate();
+          try {
+            env.started?.();
+          } catch {
+            // the runner's own cleanup: the recording starts either way
+          }
+        }
         state = s.state;
         env.pill().show({ kind: s.state, count: s.count });
         return begins;

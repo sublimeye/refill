@@ -883,6 +883,163 @@ describe("return visit", () => {
     expect(last(h)).toBe("ready");
   });
 
+  it("a step whose pending fields differ is announced even with the same count (Review Focus 2)", async () => {
+    const root = mount(`<input name="a" size="4">`);
+    let planner: Planner = () => ({ state: "gesture", fieldIds: ["a", "b"] });
+    const h = harness((req) => planner(req));
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("ready"));
+    expect(shownOf("ready")).toEqual([{ kind: "ready", count: 2 }]);
+
+    // Fill now fills a and b; the next step has two new pending fields.
+    planner = byName({ a: "A", b: "B" });
+    root.insertAdjacentHTML("beforeend", `<input name="b" size="4">`);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(1));
+    expect(h.results()[0]).toMatchObject({ filled: 2 });
+    planner = () => ({ state: "gesture", fieldIds: ["a", "b", "c", "d"] });
+    root.insertAdjacentHTML("beforeend", `<input name="x1" size="4">`);
+    await vi.waitFor(() => expect(shownOf("ready")).toHaveLength(2));
+    expect(shownOf("ready")[1]).toEqual({ kind: "ready", count: 2 });
+    expect(last(h)).toBe("ready");
+  });
+
+  it("an SPA step with other unfilled ids and the same count is announced; the same ids are not", async () => {
+    const root = mount(`<input name="a" size="4">`);
+    let planner: Planner = () => ({ state: "gesture", fieldIds: ["a", "b"] });
+    const h = harness((req) => planner(req));
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("ready"));
+
+    // The next step: a and b (never filled) are gone, c and d wait.
+    planner = () => ({ state: "gesture", fieldIds: ["c", "d"] });
+    root.insertAdjacentHTML("beforeend", `<input name="x1" size="4">`);
+    await vi.waitFor(() => expect(shownOf("ready")).toHaveLength(2));
+    expect(shownOf("ready")[1]).toEqual({ kind: "ready", count: 2 });
+
+    // The same ids again, in another order: not shown again.
+    planner = () => ({ state: "gesture", fieldIds: ["d", "c", "c"] });
+    root.insertAdjacentHTML("beforeend", `<input name="x2" size="4">`);
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(3));
+    await sleep(20);
+    expect(shownOf("ready")).toHaveLength(2);
+  });
+
+  it("a re-report after lock and unlock that fills nothing new still reports the running total", async () => {
+    mount(`<input name="a" size="4"><input name="b" size="4">`);
+    const nudges: (() => void)[] = [];
+    const h = harness(byName({ a: "A", b: "B" }), {
+      onNudge: (cb) => {
+        nudges.push(cb);
+      },
+    });
+    start(h);
+    await vi.waitFor(() => expect(h.results()).toHaveLength(1));
+    expect(h.results()[0]).toMatchObject({ filled: 2 });
+
+    // The unlock pass clears the badge and nudges; the plan names a and b again.
+    for (const cb of nudges) cb();
+    await vi.waitFor(() => expect(h.results()).toHaveLength(2));
+    expect(h.results()[1]).toEqual({
+      type: "fill-result",
+      filled: 2,
+      skipped: 0,
+      unsupported: 0,
+    });
+
+    // After Undo there is nothing to count: a re-report sends no fill-result.
+    await clickNoticeButton();
+    await vi.waitFor(() => expect(h.results()).toHaveLength(3));
+    expect(h.results()[2]).toMatchObject({ filled: 0 });
+    const reports = h.reports().length;
+    for (const cb of nudges) cb();
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(reports + 1));
+    await sleep(20);
+    expect(h.results()).toHaveLength(3);
+  });
+
+  it("a lock during a recording keeps `Recording stopped`: no `locked` notice over it", async () => {
+    const root = mount(`<input name="a" size="4">`);
+    const nudges: (() => void)[] = [];
+    let planner: Planner = byName({ a: "A" });
+    const status = { value: { state: "on", count: 1 } as unknown };
+    const h = harness((req) => planner(req), {
+      onNudge: (cb) => {
+        nudges.push(cb);
+      },
+    });
+    const inner = h.env.send;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      if (msg.type !== "record-status") return inner(msg);
+      h.sent.push(structuredClone(msg));
+      return status.value;
+    });
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("on"));
+
+    // The vault locks: the session stops and the worker nudges the tab.
+    status.value = { state: "stopped", reason: "locked" };
+    planner = () => ({ state: "locked" });
+    for (const cb of nudges) cb();
+    await vi.waitFor(() => expect(last(h)).toBe("stopped"));
+    await settle();
+    // A later report of this document answers locked too.
+    root.insertAdjacentHTML("beforeend", `<input name="b" size="4">`);
+    await vi.waitFor(() => expect(h.reports().length).toBeGreaterThan(2));
+    await settle();
+    expect(shownOf("locked")).toEqual([]);
+    expect(last(h)).toBe("stopped");
+  });
+
+  it("a recording that starts drops the return visit's Undo records and outlines", async () => {
+    const root = mount(
+      `<input name="a" size="4"><input name="b" size="4"><input name="q" size="4">`,
+    );
+    const nudges: (() => void)[] = [];
+    const status = { value: { state: "off" } as unknown };
+    const h = harness(
+      (req) => ({
+        ...(byName({ a: "A", b: "B", c: "C" })(req) as object),
+        ask: req.controls.filter((c) => c.sig.name === "q").map((c) => c.i),
+        recording: false,
+      }),
+      {
+        onNudge: (cb) => {
+          nudges.push(cb);
+        },
+      },
+    );
+    const inner = h.env.send;
+    h.env.send = vi.fn(async (msg: ContentRequest) => {
+      if (msg.type !== "record-status") return inner(msg);
+      h.sent.push(structuredClone(msg));
+      return status.value;
+    });
+    const outline = (n: string) => input(n).style.getPropertyValue("outline");
+    start(h);
+    await vi.waitFor(() => expect(last(h)).toBe("filled"));
+    expect(shown.at(-1)).toEqual({ kind: "filled", count: 2, ask: 1 });
+    expect(outline("q")).not.toBe("");
+
+    // Record again starts in this document.
+    status.value = { state: "on", count: 2 };
+    for (const cb of nudges) cb();
+    await vi.waitFor(() => expect(last(h)).toBe("on"));
+    expect(outline("q")).toBe("");
+
+    // It ends; a later fill in the document counts and undoes only its own write.
+    status.value = { state: "off" };
+    for (const cb of nudges) cb();
+    await vi.waitFor(() => expect(last(h)).toBeNull());
+    root.insertAdjacentHTML("beforeend", `<input name="c" size="4">`);
+    await vi.waitFor(() => expect(input("c").value).toBe("C"));
+    await vi.waitFor(() => expect(last(h)).toBe("filled"));
+    expect(shown.at(-1)).toMatchObject({ kind: "filled", count: 1 });
+    expect(h.results().at(-1)).toMatchObject({ filled: 1 });
+    await clickNoticeButton();
+    await vi.waitFor(() => expect(last(h)).toBe("undone"));
+    expect(["a", "b", "c"].map((n) => input(n).value)).toEqual(["A", "B", ""]);
+  });
+
   it("`locked` shows once; Unlock asks the worker and falls back to the text when it cannot open", async () => {
     const root = mount(`<input name="a">`);
     const unlockReply: unknown = { ok: false };

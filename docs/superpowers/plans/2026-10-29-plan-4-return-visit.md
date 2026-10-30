@@ -250,7 +250,7 @@ tests/e2e/return.spec.ts
     - Then, for each `ask` index whose control is a text or select reading `""`, or is a checkbox or radio, call `outlines.add`.
     - If `records` grew, show `filled { count: records.length, ask: outlines.count() }`.
     - The `fill-result` sent after the plan carries `filled: records.length`.
-  - **`gesture` plan:** `n` is the number of `fieldIds` not yet in `filled`. Show `ready { count: n }` when `n > 0` and `n` differs from the last `ready` count shown in this document.
+  - **`gesture` plan:** `n` is the number of `fieldIds` not yet in `filled`. Show `ready { count: n }` when `n > 0` and that set of pending ids differs from the set of the last `ready` shown in this document (final review: the count alone missed an SPA step with as many fields).
   - **`locked` plan:** show `locked { fallback: false }` once per document. A bfcache restore is the same document.
   - **Unlock action:** send `toast-unlock-click`. On `{ ok: true }`, hide the notice. On anything else, show `locked { fallback: true }`.
   - **Undo action:** `undo(records)`, then empty `records`, show `undone`, and send `fill-result { filled: 0, skipped: 0, unsupported: 0 }`. The ids stay in `filled`.
