@@ -925,7 +925,7 @@ describe("return visit", () => {
   });
 
   it("a re-report after lock and unlock that fills nothing new still reports the running total", async () => {
-    mount(`<input name="a" size="4"><input name="b" size="4">`);
+    const root = mount(`<input name="a" size="4"><input name="b" size="4">`);
     const nudges: (() => void)[] = [];
     const h = harness(byName({ a: "A", b: "B" }), {
       onNudge: (cb) => {
@@ -935,6 +935,12 @@ describe("return visit", () => {
     start(h);
     await vi.waitFor(() => expect(h.results()).toHaveLength(1));
     expect(h.results()[0]).toMatchObject({ filled: 2 });
+
+    // An ordinary page change that fills nothing new sends nothing (the badge still shows 2).
+    root.insertAdjacentHTML("beforeend", `<input name="x" size="4">`);
+    await vi.waitFor(() => expect(h.reports()).toHaveLength(2));
+    await sleep(20);
+    expect(h.results()).toHaveLength(1);
 
     // The unlock pass clears the badge and nudges; the plan names a and b again.
     for (const cb of nudges) cb();

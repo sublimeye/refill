@@ -265,6 +265,12 @@ function run(env: ContentEnv): ContentRun {
   let lastFingerprint: string | null = null;
   /** Bumped by a bfcache restore, so a report in flight then does not re-remember its page. */
   let resets = 0;
+  /**
+   * The next report was forced (a nudge, a bfcache restore): the worker may have cleared the badge
+   * (an unlock pass, a navigation), so that report's plan sends the running total even if it fills
+   * nothing new. An ordinary page change does not.
+   */
+  let totalDue = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let firstPending: number | undefined;
   let scanning: Promise<void> | null = null;
@@ -501,6 +507,8 @@ function run(env: ContentEnv): ContentRun {
       return;
     }
     const generation = resets;
+    const resend = totalDue;
+    totalDue = false;
     const plan = await send({
       type: "scan-report",
       controls: result.controls.map(({ i, kind, sig }) => ({ i, kind, sig })),
@@ -508,7 +516,10 @@ function run(env: ContentEnv): ContentRun {
     });
     if (stopped) return;
     // Remembered only once delivered: after a failed send the next trigger reports again.
-    if (plan === FAILED) return;
+    if (plan === FAILED) {
+      if (resend) totalDue = true;
+      return;
+    }
     if (generation === resets) lastFingerprint = fingerprint;
     const parsed = parsePlan(plan);
     if (parsed === null) return;
@@ -536,10 +547,10 @@ function run(env: ContentEnv): ContentRun {
         });
       }
     }
-    // A plan that wrote nothing still reports the running total while the document has fills not
-    // undone: the unlock pass cleared the badge, and this re-report is what sets it again.
+    // A forced re-report's plan that wrote nothing still reports the running total while the
+    // document has fills not undone: the unlock pass cleared the badge, and this sets it again.
     const touched = counts.filled + counts.skipped + counts.unsupported > 0;
-    if (!touched && (quiet || records.length === 0)) return;
+    if (!touched && (!resend || quiet || records.length === 0)) return;
     // `filled` is the document's running total of fills not undone (the badge's count).
     await send({
       type: "fill-result",
@@ -656,6 +667,7 @@ function run(env: ContentEnv): ContentRun {
   function forget(): void {
     lastFingerprint = null;
     resets++;
+    totalDue = true;
   }
 
   async function rescan(force = false): Promise<ScanResult | null> {

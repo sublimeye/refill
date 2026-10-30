@@ -114,9 +114,10 @@ through as `onChange`. The scanner skips the pill's host by identity (`Recording
   control still means what was scanned and is a text or select reading `""`, or a checkbox or
   radio, is outlined. If the records grew, it shows `filled { count: records, ask: outlined }`. The
   `fill-result` after the plan carries `filled` = the records' count (the document's running total,
-  capped at 300); while recording it carries that plan's own count, as before. Outside recording, a
-  plan that wrote nothing still sends the running total while the records are not empty: the unlock
-  pass cleared the badge, and the nudge's re-report fills nothing new.
+  capped at 300); while recording it carries that plan's own count, as before. Outside recording, the
+  plan of a forced re-report (a nudge, a bfcache restore) that wrote nothing still sends the running
+  total while the records are not empty: the unlock pass cleared the badge, and the nudge's re-report
+  fills nothing new. An ordinary page change that fills nothing sends nothing, as before.
 - **`gesture`.** `n` = the plan's distinct `fieldIds` not yet filled in this document. `ready { n }`
   shows when `n > 0` and that set of pending ids (sorted, as one key) differs from the set of the
   last `ready` shown in this document, so a page that re-renders does not repeat it, while an SPA
