@@ -72,12 +72,35 @@ type Seam = {
       executeScript(o: unknown): Promise<unknown>;
     };
     runtime: { sendMessage(m: unknown): Promise<unknown> };
+    action: { getBadgeText(d: { tabId: number }): Promise<string> };
   };
 };
 
 export async function serviceWorker(context: BrowserContext): Promise<Worker> {
   return (
     context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"))
+  );
+}
+
+/** The toolbar badge text for `tabId` (empty string when none), read in the worker. */
+export async function badgeText(
+  context: BrowserContext,
+  tabId: number,
+): Promise<string> {
+  return (await serviceWorker(context)).evaluate(
+    (id) =>
+      (globalThis as unknown as Seam).chrome.action.getBadgeText({ tabId: id }),
+    tabId,
+  );
+}
+
+/**
+ * The page notice's kind (the e2e build mirrors it into `data-refill-notice`; "" while hidden,
+ * and also before the content script has run).
+ */
+export async function noticeOf(page: Page): Promise<string> {
+  return page.evaluate(
+    () => document.documentElement.dataset.refillNotice ?? "",
   );
 }
 
