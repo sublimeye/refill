@@ -34,7 +34,9 @@ export type ContentRequest =
       /** The field Refill filled into the edited element during this recording, if any. */
       fieldId: string | null;
     }
-  | { type: "record-finish" };
+  | { type: "record-finish" }
+  /** The pill's Unlock button, pressed on a trusted click: the worker opens the popup. */
+  | { type: "toast-unlock-click" };
 
 export interface FillItem {
   fieldId: string;
@@ -44,11 +46,16 @@ export interface FillItem {
   pageDefault: string;
 }
 
+/**
+ * `locked` only for a site with a saved form (a locked vault answers `none` elsewhere). `gesture`
+ * carries the ids of the matched `save` fields, never values. `ask` holds the control index `i` of
+ * every matched field whose policy is `ask` (nothing is written for those).
+ */
 export type FillPlan =
   | { state: "locked" }
   | { state: "none" }
-  | { state: "gesture"; count: number }
-  | { state: "fill"; items: FillItem[] };
+  | { state: "gesture"; fieldIds: string[] }
+  | { state: "fill"; items: FillItem[]; ask: number[] };
 
 /** What the pill shows: the session of this tab and origin, or why it stopped. ADR 0030. */
 export type RecordState =
@@ -67,7 +74,9 @@ export type ContentResponse<R extends ContentRequest> = R extends {
       ? RecordState
       : R extends { type: "record-finish" }
         ? { ok: boolean }
-        : never;
+        : R extends { type: "toast-unlock-click" }
+          ? { ok: boolean }
+          : never;
 
 /** Controls per report; `i` is in 0..MAX_CONTROLS-1. Fill-result counts are at most this. */
 export { MAX_CONTROLS };
@@ -239,6 +248,8 @@ export function parseContentRequest(raw: unknown): ContentRequest | null {
       return exact(raw, ["type"]) && { type: "record-status" };
     case "record-finish":
       return exact(raw, ["type"]) && { type: "record-finish" };
+    case "toast-unlock-click":
+      return exact(raw, ["type"]) && { type: "toast-unlock-click" };
     case "record-capture":
       return parseCapture(raw);
     default:

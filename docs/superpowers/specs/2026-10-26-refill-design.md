@@ -401,7 +401,9 @@ Set passphrase (strength meter, no-recovery acknowledgment) → enable Touch ID 
 - Unlocked + auto: fill (§5.5) → toast `✓ Water bill · filled 5 · 1 needs you  [Undo]`;
   `ask` fields get a subtle outline and stay empty.
 - Unlocked + gesture: toast `Water bill · 5 fields ready — open Refill to fill`; popup **Fill now**.
-- Locked: the SW knows only the plaintext site index, so state is **origin-level**: badge 🔒;
+  The gesture plan carries the matched field ids, never values.
+- Locked: the SW knows only the plaintext site index, so state is **origin-level** and applies only
+  to a site with a saved form (otherwise a locked vault shows nothing): badge 🔒;
   toast `Refill has a saved form for this site — unlock from the toolbar icon`. (Profile name and
   path prefix stay encrypted.) The toast's Unlock button asks SW to `chrome.action.openPopup()`;
   if that's rejected, the text instruction remains. **No passphrase input ever appears inside a
@@ -470,7 +472,8 @@ Touch ID, default TTL, change passphrase) → Export/Import → About/Security.
       carries the one value the user typed, at most 4096 chars, stored only sealed.
     - `draft-seal`, `draft-mark-submitted`, `draft-offer-query`, `draft-restore`, `draft-discard`
       (drafts for `sender.origin` only).
-    - `toast-unlock-click`.
+    - `toast-unlock-click` (no payload) → SW calls `action.openPopup()` and replies whether it
+      opened.
   - Extension-page messages: `sender.url` starts with `chrome-extension://<id>/` and no content
     script context; all other vault/admin operations (unlock, record start, profile edit,
     export/import, settings, intent-execute) are page-only.
