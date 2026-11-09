@@ -56,7 +56,8 @@
   },
   "pnpm": {
     "overrides": {
-      "deepmerge": "link:./vendor/deepmerge"
+      "deepmerge": "link:./vendor/deepmerge",
+      "minimatch": "11.0.5"
     }
   }
 }
