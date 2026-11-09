@@ -11,6 +11,7 @@ import { grantFill } from "../sites/fill-now";
 import { createSiteHandlers } from "../sites/handlers";
 import { normalizeOrigin, originPattern } from "../sites/origin";
 import { tabShowsOrigin } from "../sites/tab";
+import { resetEverything } from "../vault/reset";
 import {
   createVault,
   lock,
@@ -90,6 +91,10 @@ export function createPageHandlers(
     "vault-unlock": ({ passphrase }) => unlockWithPassphrase(passphrase),
     "vault-lock": async () => {
       await lock();
+      return { ok: true };
+    },
+    "vault-reset": async () => {
+      await resetEverything();
       return { ok: true };
     },
   };

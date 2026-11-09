@@ -43,6 +43,14 @@
   let confirmText: HTMLElement | undefined = $state();
   let removeButton: HTMLElement | undefined = $state();
 
+  // "Forgot passphrase?" (ADR 0039): the unlock form gives way to a typed confirmation.
+  const RESET_WORD = "erase";
+  let resetting = $state(false);
+  let resetWord = $state("");
+  let erased = $state(false);
+  let resetText: HTMLElement | undefined = $state();
+  let resetButton: HTMLElement | undefined = $state();
+
   const DAMAGED = "Refill's vault data is damaged";
   const GENERIC = "Something went wrong — try again";
   const TAB_MOVED =
@@ -320,6 +328,42 @@
     }
   }
 
+  async function askReset() {
+    resetting = true;
+    resetWord = "";
+    error = "";
+    await tick();
+    resetText?.focus();
+  }
+
+  async function cancelReset() {
+    resetting = false;
+    error = "";
+    await tick();
+    resetButton?.focus();
+  }
+
+  async function confirmReset(event: SubmitEvent) {
+    event.preventDefault();
+    if (busy || resetWord.trim().toLowerCase() !== RESET_WORD) return;
+    busy = true;
+    error = "";
+    try {
+      await sendToSw({ type: "vault-reset" });
+      resetting = false;
+      passphrase = "";
+      restored = false;
+      erased = true;
+      siteSeq.set(null);
+      await refresh();
+      await focusMessage();
+    } catch {
+      await announce(GENERIC);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function lockNow() {
     if (busy) return;
     busy = true;
@@ -481,13 +525,57 @@
   {/if}
 {/snippet}
 
+{#snippet resetPanel()}
+  <form onsubmit={confirmReset}>
+    <p bind:this={resetText} tabindex="-1">
+      This erases every saved form, your list of sites and your settings. It
+      can't be undone, and your passphrase won't be needed.
+    </p>
+    <p>
+      <label for="reset-word"
+        >Type <strong>{RESET_WORD}</strong> to confirm</label
+      ><br />
+      <input
+        id="reset-word"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        bind:value={resetWord}
+        disabled={busy}
+      />
+    </p>
+    <button
+      type="submit"
+      disabled={busy || resetWord.trim().toLowerCase() !== RESET_WORD}
+    >
+      Erase everything
+    </button>
+    <button type="button" onclick={cancelReset} disabled={busy}>Cancel</button>
+  </form>
+  <div aria-live="polite">
+    {#if error}
+      <p bind:this={message} tabindex="-1">{error}</p>
+    {/if}
+  </div>
+{/snippet}
+
 <main>
   {#if view === "loading"}
     <p>Loading…</p>
   {:else if view === "none"}
+    {#if erased}
+      <p bind:this={message} tabindex="-1" role="status">
+        Refill was reset. Set up a new passphrase to start again.
+      </p>
+    {/if}
     <button type="button" onclick={setUp}>Set up Refill</button>
+  {:else if resetting}
+    {@render resetPanel()}
   {:else if view === "corrupt"}
     <p bind:this={message} tabindex="-1" aria-live="polite">{DAMAGED}</p>
+    <button type="button" bind:this={resetButton} onclick={askReset}>
+      Erase and start over
+    </button>
   {:else if view === "failed"}
     <p bind:this={message} tabindex="-1" aria-live="polite">{GENERIC}</p>
     <button type="button" onclick={retry}>Try again</button>
@@ -513,6 +601,9 @@
         <p bind:this={message} tabindex="-1">{error}</p>
       {/if}
     </div>
+    <button type="button" bind:this={resetButton} onclick={askReset}>
+      Forgot passphrase?
+    </button>
     {@render siteSection()}
   {:else}
     {#if restored}

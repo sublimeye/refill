@@ -49,7 +49,9 @@ dropped and reported on the review screen. Refill does not run on pages you have
 You can export your data (as a separately encrypted file), delete any profile or draft, revoke a
 site (which removes the host permission), and remove the extension, which deletes everything it
 stored. Forgetting your
-passphrase means the data cannot be recovered: there is no backdoor or reset.
+passphrase means the data cannot be recovered: there is no backdoor. "Forgot passphrase?" in the
+popup starts over by erasing everything Refill stored and removing its site access; it does not
+recover anything.
 
 ## Optional Touch ID
 

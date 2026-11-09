@@ -372,6 +372,27 @@ export async function lock(): Promise<void> {
 }
 
 /**
+ * Erases every `storage.local` record, in one call, without needing the passphrase (ADR 0039). Key
+ * material goes first, so work already holding the old epoch cannot save over the erase. Listeners
+ * hear of the lock last, when they find no site left to mark as locked. Rejects if storage cannot
+ * be erased: the vault is then locked, with its data intact.
+ */
+export async function eraseVault(): Promise<void> {
+  epoch++;
+  mem = null;
+  await clearSession();
+  try {
+    await withStoreLock(async (tx) => {
+      await tx.removeItems(Object.keys(await tx.getMany("")));
+    });
+  } finally {
+    epoch++;
+    mem = null;
+    notify(false);
+  }
+}
+
+/**
  * The DEK. After a service-worker restart it is rebuilt from the session mirror, but only within
  * the hard max (`unlockedAt + lock.maxHours`); an expired session, or one next to an unreadable
  * header, is locked instead (ruling R24).

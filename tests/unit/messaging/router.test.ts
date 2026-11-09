@@ -52,6 +52,7 @@ function spyHandlers() {
     "vault-create": vi.fn(async () => ({ ok: true })),
     "vault-unlock": vi.fn(async () => ({ ok: true })),
     "vault-lock": vi.fn(async () => ({ ok: true })),
+    "vault-reset": vi.fn(async () => ({ ok: true })),
     "site-status": vi.fn(async () => ({ origin: null })),
     "site-enable": vi.fn(async () => ({ ok: true })),
     "site-remove": vi.fn(async () => ({ ok: true })),
@@ -412,6 +413,22 @@ describe("router", () => {
       type: "vault-unlock",
       passphrase: P,
     });
+  });
+
+  it("a page can reset; a content script cannot", async () => {
+    const { h, handlers } = spyHandlers();
+    const route = createRouter(handlers);
+    expect(await route({ type: "vault-reset" }, content)).toEqual(REJECTED);
+    expect(h["vault-reset"]).not.toHaveBeenCalled();
+    expect(await route({ type: "vault-reset" }, popup)).toEqual({ ok: true });
+    expect(h["vault-reset"]).toHaveBeenCalledOnce();
+  });
+
+  it("vault-reset refuses extra keys", async () => {
+    expect(parsePageRequest({ type: "vault-reset" })).toEqual({
+      type: "vault-reset",
+    });
+    expect(parsePageRequest({ type: "vault-reset", x: 1 })).toBeNull();
   });
 
   it("content-script sender cannot call vault-unlock", async () => {

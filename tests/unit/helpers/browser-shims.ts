@@ -63,6 +63,7 @@ export function installShims() {
     contains: vi.fn(async (p: { origins?: string[] }) =>
       (p.origins ?? []).every((o) => grants.has(o)),
     ),
+    getAll: vi.fn(async () => ({ origins: [...grants], permissions: [] })),
     request: vi.fn(async (p: { origins?: string[] }) => (void p, true)),
     remove: vi.fn(async (p: { origins?: string[] }) => {
       for (const o of p.origins ?? []) grants.delete(o);
