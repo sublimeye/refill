@@ -161,3 +161,48 @@ test("no permission warnings: no granted host origins at runtime", async ({
   // host_permissions is asserted by `pnpm test:manifest`.
   expect(perms.origins).toEqual(["https://localhost/*"]);
 });
+
+test("a forgotten passphrase can be reset from the popup, then set up again", async ({
+  context,
+  extensionId,
+}) => {
+  const onboarding = await openOnboarding(context, extensionId);
+  await createVault(onboarding);
+  await onboarding.close();
+
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await popup.getByRole("button", { name: "Lock now" }).click();
+
+  // Cancel goes back to the unlock form and focuses where it came from.
+  const forgot = popup.getByRole("button", { name: "Forgot passphrase?" });
+  await forgot.click();
+  await expect(popup.getByLabel("Passphrase")).toBeHidden();
+  await popup.getByRole("button", { name: "Cancel" }).click();
+  await expect(popup.getByLabel("Passphrase")).toBeVisible();
+  await expect(forgot).toBeFocused();
+
+  // The erase needs the word typed out.
+  await forgot.click();
+  const erase = popup.getByRole("button", { name: "Erase everything" });
+  const word = popup.getByLabel("Type erase to confirm");
+  await expect(erase).toBeDisabled();
+  await word.fill("nope");
+  await expect(erase).toBeDisabled();
+  await word.fill("erase");
+  await erase.click();
+
+  const done = popup.getByText(
+    "Refill was reset. Set up a new passphrase to start again.",
+  );
+  await expect(done).toBeVisible();
+  await expect(done).toBeFocused();
+  await expect(
+    popup.getByRole("button", { name: "Set up Refill" }),
+  ).toBeVisible();
+
+  // A new vault can be created: nothing of the old one is left in the way.
+  await createVault(await openOnboarding(context, extensionId));
+  await popup.reload();
+  await expect(popup.getByText("Unlocked", { exact: true })).toBeVisible();
+});

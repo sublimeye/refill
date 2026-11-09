@@ -31,6 +31,7 @@ export type PageRequest =
   | { type: "vault-create"; passphrase: string }
   | { type: "vault-unlock"; passphrase: string }
   | { type: "vault-lock" }
+  | { type: "vault-reset" }
   | { type: "site-status"; origin: string }
   | { type: "site-enable"; tabId: number; origin: string }
   | { type: "site-remove"; origin: string }
@@ -105,7 +106,7 @@ export type PageResponse<R extends PageRequest> = R extends {
     ? { ok: true } | { ok: false; error: "exists" | "weak" }
     : R extends { type: "vault-unlock" }
       ? UnlockResult
-      : R extends { type: "vault-lock" }
+      : R extends { type: "vault-lock" | "vault-reset" }
         ? { ok: true }
         : R extends { type: "site-status" }
           ? SiteStatus
@@ -172,6 +173,7 @@ const KEYS_BY_TYPE: Readonly<Record<PageRequest["type"], readonly string[]>> = {
   "vault-create": ["type", "passphrase"],
   "vault-unlock": ["type", "passphrase"],
   "vault-lock": ["type"],
+  "vault-reset": ["type"],
   "site-status": ["type", "origin"],
   "site-enable": ["type", "tabId", "origin"],
   "site-remove": ["type", "origin"],
@@ -295,6 +297,8 @@ export function parsePageRequest(raw: unknown): PageRequest | null {
       return { type: "vault-status" };
     case "vault-lock":
       return { type: "vault-lock" };
+    case "vault-reset":
+      return { type: "vault-reset" };
     case "vault-create":
     case "vault-unlock": {
       const passphrase = raw["passphrase"];
