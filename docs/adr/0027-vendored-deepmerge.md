@@ -27,3 +27,8 @@ gate; waiting for upstream would block every PR.
 
 ## Status
 Accepted (2026-10-27).
+
+## Addendum: `minimatch` override (GHSA-g3hv-75wg-m249)
+OSV-Scanner later failed on a quadratic-resource denial of service in `minimatch` before 11.0.1, reached only through `eslint`, `@eslint/config-array` and `@typescript-eslint/typescript-estree`. Unlike `deepmerge`, a fixed version exists and glob semantics are not worth reimplementing, so `pnpm.overrides` pins `minimatch` to 11.0.5 instead of vendoring it. The gate is unchanged.
+
+The parents declare `^10.x`, so this is outside their stated range. Verified on the change: the same 164 files lint with the same results, resolved ESLint configs are identical for TypeScript, Svelte, script, vendor and test files, planted violations are still reported, and the production build hashes identically (nothing of `minimatch` ships). Remove the override once all three parents accept a fixed version.
