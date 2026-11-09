@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import Logo from "../../lib/ui/Logo.svelte";
   import { MessagingError, sendToSw } from "../../lib/messaging/protocol";
   import { scorePassphrase } from "../../lib/passphrase/strength";
 
@@ -53,6 +54,7 @@
 </script>
 
 <main>
+  <Logo />
   <h1>Create your Refill passphrase</h1>
   <p>
     Refill encrypts everything it saves with this passphrase. There is no
@@ -106,7 +108,9 @@
           I understand there is no recovery
         </label>
       </p>
-      <button type="submit" disabled={!canCreate}>Create vault</button>
+      <button type="submit" class="primary" disabled={!canCreate}>
+        Create vault
+      </button>
     </form>
     <div aria-live="polite">
       {#if error}
@@ -118,13 +122,20 @@
 
 <style>
   main {
-    max-width: 32rem;
-    margin: 2rem auto;
+    max-width: 28rem;
+    margin: 3.5rem auto;
     padding: 0 1rem;
-    font-family: system-ui, sans-serif;
   }
-  input[type="password"] {
-    width: 100%;
-    box-sizing: border-box;
+  h1 {
+    margin-top: 1rem;
+  }
+  form {
+    margin-top: 1.5rem;
+  }
+  #strength {
+    color: var(--muted);
+  }
+  #mismatch {
+    color: var(--danger);
   }
 </style>

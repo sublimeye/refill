@@ -1,0 +1,188 @@
+/* Shared look of the extension pages. A file, not style attributes: the page CSP is
+   style-src 'self' (ADR 0016). The on-page pill has its own closed shadow root. */
+:root {
+  color-scheme: light dark;
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --text: #1c1c1e;
+  --muted: #5b6068;
+  --line: #d5d8dd;
+  --control: #868b94;
+  --accent: #14703a;
+  --on-accent: #ffffff;
+  --danger: #b3261e;
+  --on-danger: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e;
+    --surface: #2a2a2d;
+    --text: #f5f5f7;
+    --muted: #a8aab0;
+    --line: #434348;
+    --control: #808289;
+    --accent: #30d158;
+    --on-accent: #0b2a15;
+    --danger: #ff6a61;
+    --on-danger: #2c0705;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font:
+    0.875rem/1.45 system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  overflow-wrap: anywhere;
+}
+
+h1,
+h2 {
+  margin: 0 0 0.5rem;
+  line-height: 1.25;
+}
+
+h1 {
+  font-size: 1.375rem;
+}
+
+h2 {
+  font-size: 0.875rem;
+}
+
+p {
+  margin: 0 0 0.5rem;
+}
+
+/* A hint with nothing to say takes no room. */
+p:empty {
+  display: none;
+}
+
+label,
+legend {
+  font-weight: 500;
+}
+
+label:has(input[type="checkbox"], input[type="radio"]) {
+  font-weight: 400;
+}
+
+input,
+select,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* The bar fills across the field as it takes focus: what Refill does, at the size of one field. */
+input[type="text"],
+input[type="password"] {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 0.25rem;
+  padding: 0.4375rem 0.625rem;
+  border: 1px solid var(--control);
+  border-radius: 6px;
+  outline: none;
+  background: linear-gradient(var(--accent), var(--accent)) 0 100% / 0 2px
+    no-repeat var(--surface);
+  transition:
+    background-size 0.18s ease-out,
+    border-color 0.18s ease-out;
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus {
+  border-color: var(--accent);
+  background-size: 100% 2px;
+}
+
+select {
+  padding: 0.3125rem 0.5rem;
+  border: 1px solid var(--control);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+button {
+  margin: 0 0.5rem 0.5rem 0;
+  padding: 0.4375rem 0.75rem;
+  border: 1px solid var(--control);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--text);
+}
+
+button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+button.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--on-danger);
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled),
+button.danger:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+button.quiet {
+  padding: 0.25rem 0;
+  border-color: transparent;
+  background: none;
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+button.quiet:hover:not(:disabled) {
+  border-color: transparent;
+  color: var(--text);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button:focus-visible,
+select:focus-visible,
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Moved to by script to announce a message; a ring there would look like a control. */
+[tabindex="-1"]:focus {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  input[type="text"],
+  input[type="password"] {
+    transition: none;
+  }
+}

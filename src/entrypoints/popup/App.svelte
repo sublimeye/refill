@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import { browser } from "wxt/browser";
   import { sendToSw } from "../../lib/messaging/protocol";
+  import Logo from "../../lib/ui/Logo.svelte";
   import type { VaultStatus } from "../../lib/vault/types";
   import {
     cancelRecordingFor,
@@ -398,7 +399,12 @@
     {:else if s.hasProfile}
       <p>Your saved form fills in as you go; change what's different.</p>
     {/if}
-    <button type="button" onclick={() => record(s)} disabled={siteBusy}>
+    <button
+      type="button"
+      class:primary={s.kind === "on" && !s.hasProfile}
+      onclick={() => record(s)}
+      disabled={siteBusy}
+    >
       {s.recording.state === "off" && s.kind === "on" && s.hasProfile
         ? "Record again"
         : "Record this site"}
@@ -423,6 +429,7 @@
           </p>
           <button
             type="button"
+            class="primary"
             onclick={() => finishRecording(s)}
             disabled={siteBusy}
           >
@@ -434,6 +441,7 @@
           </p>
           <button
             type="button"
+            class="primary"
             onclick={() => finishRecording(s)}
             disabled={siteBusy}
           >
@@ -450,7 +458,12 @@
           <p bind:this={siteStatus} tabindex="-1">
             Refill will ask Chrome for access to this site only.
           </p>
-          <button type="button" onclick={() => enable(s)} disabled={siteBusy}>
+          <button
+            type="button"
+            class="primary"
+            onclick={() => enable(s)}
+            disabled={siteBusy}
+          >
             Enable Refill on this site
           </button>
           {@render recordControls(s)}
@@ -459,7 +472,12 @@
             Access to {s.host} was turned off in Chrome. Enable again to use Refill
             here.
           </p>
-          <button type="button" onclick={() => enable(s)} disabled={siteBusy}>
+          <button
+            type="button"
+            class="primary"
+            onclick={() => enable(s)}
+            disabled={siteBusy}
+          >
             Enable again
           </button>
         {:else if confirming}
@@ -468,6 +486,7 @@
           </p>
           <button
             type="button"
+            class="danger"
             onclick={() => confirmRemove(s)}
             disabled={siteBusy}
           >
@@ -493,6 +512,7 @@
             {#if s.saved.fillMode === "gesture" && rec.state === "off"}
               <button
                 type="button"
+                class="primary"
                 onclick={() => fillNow(s)}
                 disabled={siteBusy}
               >
@@ -503,6 +523,7 @@
           {@render recordControls(s)}
           <button
             type="button"
+            class="quiet"
             bind:this={removeButton}
             onclick={askRemove}
             disabled={siteBusy}
@@ -546,6 +567,7 @@
     </p>
     <button
       type="submit"
+      class="danger"
       disabled={busy || resetWord.trim().toLowerCase() !== RESET_WORD}
     >
       Erase everything
@@ -560,6 +582,16 @@
 {/snippet}
 
 <main>
+  <header>
+    <Logo />
+    <h1>Refill</h1>
+    {#if view === "unlocked" && !resetting}
+      <span class="state">Unlocked</span>
+      <button type="button" class="quiet" onclick={lockNow} disabled={busy}>
+        Lock now
+      </button>
+    {/if}
+  </header>
   {#if view === "loading"}
     <p>Loading…</p>
   {:else if view === "none"}
@@ -568,7 +600,7 @@
         Refill was reset. Set up a new passphrase to start again.
       </p>
     {/if}
-    <button type="button" onclick={setUp}>Set up Refill</button>
+    <button type="button" class="primary" onclick={setUp}>Set up Refill</button>
   {:else if resetting}
     {@render resetPanel()}
   {:else if view === "corrupt"}
@@ -578,7 +610,7 @@
     </button>
   {:else if view === "failed"}
     <p bind:this={message} tabindex="-1" aria-live="polite">{GENERIC}</p>
-    <button type="button" onclick={retry}>Try again</button>
+    <button type="button" class="primary" onclick={retry}>Try again</button>
   {:else if view === "locked"}
     <form onsubmit={unlock}>
       <p>
@@ -592,7 +624,11 @@
           disabled={busy}
         />
       </p>
-      <button type="submit" disabled={busy || passphrase.length === 0}>
+      <button
+        type="submit"
+        class="primary"
+        disabled={busy || passphrase.length === 0}
+      >
         Unlock
       </button>
     </form>
@@ -601,7 +637,12 @@
         <p bind:this={message} tabindex="-1">{error}</p>
       {/if}
     </div>
-    <button type="button" bind:this={resetButton} onclick={askReset}>
+    <button
+      type="button"
+      class="quiet"
+      bind:this={resetButton}
+      onclick={askReset}
+    >
       Forgot passphrase?
     </button>
     {@render siteSection()}
@@ -611,8 +652,6 @@
         Some vault settings were changed outside Refill and have been restored.
       </p>
     {/if}
-    <p>Unlocked</p>
-    <button type="button" onclick={lockNow} disabled={busy}>Lock now</button>
     <div aria-live="polite">
       {#if error}
         <p bind:this={message} tabindex="-1">{error}</p>
@@ -624,8 +663,29 @@
 
 <style>
   main {
-    min-width: 16rem;
-    padding: 0.75rem;
-    font-family: system-ui, sans-serif;
+    box-sizing: border-box;
+    width: 20rem;
+    padding: 0.75rem 1rem 0.5rem;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+  h1 {
+    margin: 0 auto 0 0;
+    font-size: 1rem;
+  }
+  header button {
+    margin: 0;
+  }
+  .state {
+    color: var(--muted);
+  }
+  section {
+    margin-top: 0.5rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--line);
   }
 </style>
