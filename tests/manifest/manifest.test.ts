@@ -45,3 +45,15 @@ test("the content script never looks up globalThis.browser", () => {
   );
   expect(js).toContain("globalThis.chrome");
 });
+
+// Chrome accepts raster icons only, and the store needs the 128 px one in the package.
+test("the package ships a PNG icon of every size the manifest names", () => {
+  const icons = built.icons as Record<string, string>;
+  expect(Object.keys(icons).sort()).toEqual(["128", "16", "32", "48"]);
+  for (const [size, path] of Object.entries(icons)) {
+    const png = readFileSync(`.output/chrome-mv3/${path}`);
+    expect(png.subarray(1, 4).toString()).toBe("PNG");
+    expect(png.readUInt32BE(16)).toBe(Number(size)); // IHDR width
+    expect(png.readUInt32BE(20)).toBe(Number(size)); // IHDR height
+  }
+});

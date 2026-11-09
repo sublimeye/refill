@@ -8,6 +8,7 @@
   // Saved mode (ADR 0035, `?saved=<profile id>`): the same page for the site's saved form, with
   // Close instead of Discard; a lock or the site's removal ends it the same way.
   import { onMount, tick } from "svelte";
+  import Logo from "../../lib/ui/Logo.svelte";
   import { onRecheck } from "../../lib/messaging/recheck";
   import {
     applyLoad,
@@ -175,6 +176,7 @@
 </script>
 
 <main>
+  <Logo />
   {#if page.view === "loading"}
     <p>Loading…</p>
   {:else if page.view === "saved"}
@@ -191,7 +193,7 @@
     </p>
   {:else if page.view === "failed"}
     <p bind:this={message} tabindex="-1" role="status">{GENERIC}</p>
-    <button type="button" onclick={retry}>Try again</button>
+    <button type="button" class="primary" onclick={retry}>Try again</button>
   {:else if page.model && page.form}
     {@const model = page.model}
     {@const form = page.form}
@@ -239,6 +241,7 @@
                          carries the field's label so each button says what it reveals. -->
                     <button
                       type="button"
+                      class="quiet"
                       aria-label={`${page.shown[i] ? "Hide" : "Show"} ${field.label}`}
                       onclick={() => toggle(i)}
                     >
@@ -340,7 +343,7 @@
           {/if}
         </p>
 
-        <button type="submit" disabled={busy}>Save</button>
+        <button type="submit" class="primary" disabled={busy}>Save</button>
         {#if savedMode}
           <button type="button" onclick={close} disabled={busy}>Close</button>
         {:else}
@@ -361,20 +364,43 @@
 <style>
   main {
     max-width: 48rem;
-    margin: 2rem auto;
+    margin: 3.5rem auto;
     padding: 0 1rem;
-    font-family: system-ui, sans-serif;
+  }
+  h1 {
+    margin-top: 1rem;
+  }
+  form {
+    margin-top: 1.5rem;
   }
   table {
+    width: 100%;
     border-collapse: collapse;
-    margin-bottom: 1rem;
+    margin-bottom: 1.5rem;
   }
   th,
   td {
-    border-bottom: 1px solid #ccc;
-    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--line);
+    padding: 0.5rem 0.75rem 0.5rem 0;
     text-align: left;
     vertical-align: middle;
+    font-weight: 400;
+  }
+  thead th {
+    color: var(--muted);
+  }
+  tbody th {
+    font-weight: 500;
+  }
+  td button {
+    margin: 0 0 0 0.5rem;
+  }
+  #name-error,
+  #prefix-error {
+    color: var(--danger);
+  }
+  #prefix-hint {
+    color: var(--muted);
   }
   .value {
     display: inline-block;
@@ -384,13 +410,15 @@
   }
   fieldset {
     margin: 0 0 1rem;
+    padding: 0.5rem 0.75rem 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
   }
   .hint {
+    color: var(--muted);
     font-size: 0.85em;
   }
   input[type="text"] {
-    width: 100%;
     max-width: 24rem;
-    box-sizing: border-box;
   }
 </style>
